@@ -78,7 +78,8 @@ JOB_CALLBACK_SECRET
 ..\.venv\Scripts\python.exe -m alembic upgrade head --sql     # 只渲染 SQL，不连库
 ```
 
-`backend/tests/integration/test_migrations.py` 会校验「迁移执行后的库结构 == ORM 模型」。可单独设置 `TEST_DATABASE_URL`，或由 `DATABASE_URL` 派生测试库；两者均未提供有效配置或 PostgreSQL 不可达时跳过，提交前须确认没有跳过。
+`backend/tests/integration/test_migrations.py` 会校验「迁移执行后的库结构 == ORM 模型」；
+它在专用的 `<名>_migration_check` 库上跑（会回滚整个 schema），PostgreSQL 不可达时自动跳过。
 
 ## 4. Vercel 适配要求
 
