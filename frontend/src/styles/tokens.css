@@ -1,0 +1,122 @@
+/**
+ * 设计令牌 —— 全站唯一的取值来源。
+ *
+ * 基础色板、圆角、间距、布局宽度与字体来自 StudyBuddy 前端开发规格
+ * （DEVELOPMENT_SPEC.md 第 6.2 节 / handoff src/styles/tokens.css）。
+ * 规格里没有给出的状态色、层级与动效取值在下方「派生」区集中定义，
+ * 组件中不得再出现裸十六进制色值。
+ */
+
+:root {
+  /* ------------------------------ 基础色 ------------------------------ */
+  --color-bg: #f5f5f4;
+  --color-surface: #ffffff;
+  --color-surface-muted: #f8f8f7;
+  --color-surface-sunken: #f4f4f2;
+  --color-surface-strong: #efefed;
+  /* 侧栏等深色面上的悬停态，与 surface-strong 形成一档对比 */
+  --color-surface-hover: #e4e4e2;
+
+  --color-text-primary: #171717;
+  --color-text-secondary: #737373;
+  --color-text-tertiary: #9a9a98;
+
+  --color-border: #e7e7e5;
+  --color-border-strong: #d8d8d5;
+
+  --color-brand-dark: #30302f;
+  --color-accent-blue: #6f8cff;
+  --color-accent-purple: #9d86ff;
+  --color-accent-green: #75c9a8;
+  --color-accent-orange: #ee9f54;
+
+  /* ------------------------- 派生：状态与强调 ------------------------- */
+  /* 每个状态都配「浅底 + 深字」，且必须同时有文字标签，
+     颜色不作为表达状态的唯一方式（见 acceptance.md 第 9 节）。 */
+  --color-info-soft: #edf2ff;
+  --color-info-ink: #526bc8;
+
+  --color-warn-soft: #fff2e5;
+  --color-warn-ink: #b96a22;
+
+  --color-success-soft: #e9f6f1;
+  --color-success-ink: #33795f;
+
+  --color-agent-soft: #f1ecff;
+  --color-agent-ink: #6a56b8;
+
+  --color-neutral-soft: #f0f0ef;
+  --color-neutral-ink: #666666;
+
+  --color-danger-soft: #fdeceb;
+  --color-danger-ink: #a5433f;
+
+  --color-focus: #6f8cff;
+
+  /* ------------------------------ 圆角 ------------------------------ */
+  --radius-xs: 8px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 22px;
+  --radius-pill: 999px;
+
+  /* ------------------------------ 间距 ------------------------------ */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ------------------------------ 布局 ------------------------------ */
+  --sidebar-global-width: 248px;
+  --sidebar-course-width: 224px;
+  --buddy-panel-width: 360px;
+  --buddy-panel-min-width: 320px;
+  --buddy-panel-max-width: 440px;
+  --topbar-height: 64px;
+  --content-max-width: 1220px;
+  --workspace-max-width: 980px;
+
+  /* 断点（仅作文档与 JS 判断依据；CSS 中仍需写媒体查询字面量） */
+  --breakpoint-desktop: 1280px;
+  --breakpoint-tablet: 1180px;
+  --breakpoint-mobile: 820px;
+
+  /* ------------------------------ 阴影 ------------------------------ */
+  --shadow-soft: 0 12px 40px rgba(20, 20, 20, 0.04);
+  --shadow-raised: 0 8px 25px rgba(0, 0, 0, 0.14);
+  --shadow-drawer: -12px 0 35px rgba(0, 0, 0, 0.08);
+
+  /* ---------------------------- 层级 ---------------------------- */
+  --z-sticky: 10;
+  --z-drawer: 40;
+  --z-fab: 45;
+  --z-toast: 60;
+  --z-modal: 70;
+
+  /* ---------------------------- 动效 ---------------------------- */
+  --duration-fast: 0.15s;
+  --duration-base: 0.2s;
+  --ease-out: ease;
+
+  /* ---------------------------- 字体 ---------------------------- */
+  --font-sans: Inter, "PingFang SC", "Microsoft YaHei", system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+
+  --text-page-title: 28px;
+  --text-section-title: 21px;
+  --text-card-title: 16px;
+  --text-body: 14px;
+  --text-secondary: 12px;
+  --text-caption: 11px;
+
+  color-scheme: light;
+}

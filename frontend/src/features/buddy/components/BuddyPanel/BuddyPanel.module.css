@@ -1,0 +1,37 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100vh;
+  position: sticky;
+  top: 0;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-surface-sunken);
+}
+
+/* 首页按需弹出的右侧抽屉（非模态，不遮挡页面交互） */
+.overlay {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: var(--z-drawer);
+  width: var(--buddy-panel-width);
+  max-width: calc(100vw - 48px);
+  box-shadow: var(--shadow-drawer);
+}
+
+/*
+ * 900~1279px：三栏收不下，Buddy 退化为右侧浮层抽屉。
+ * 此时它已不在文档流里，Workspace 的网格也只剩两列。
+ */
+@media (max-width: 1180px) {
+  .panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    z-index: var(--z-drawer);
+    width: var(--buddy-panel-width);
+    max-width: calc(100vw - 48px);
+    box-shadow: var(--shadow-drawer);
+  }
+}

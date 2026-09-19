@@ -1,0 +1,34 @@
+/**
+ * 少量跨模块复用的工具类。
+ * 只有出现两个以上真实复用场景才提升到这里（见 docs/collaboration.md 第 5 节）。
+ */
+
+/* 仅供屏幕阅读器；同时满足「表单字段有关联标签」的验收要求 */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clamp2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.visuallyHidden {
+  visibility: hidden;
+}

@@ -1,0 +1,41 @@
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 4px 9px;
+  border-radius: var(--radius-pill);
+  font-size: var(--text-caption);
+  font-weight: 650;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.neutral {
+  background: var(--color-neutral-soft);
+  color: var(--color-neutral-ink);
+}
+
+.info {
+  background: var(--color-info-soft);
+  color: var(--color-info-ink);
+}
+
+.warn {
+  background: var(--color-warn-soft);
+  color: var(--color-warn-ink);
+}
+
+.success {
+  background: var(--color-success-soft);
+  color: var(--color-success-ink);
+}
+
+.danger {
+  background: var(--color-danger-soft);
+  color: var(--color-danger-ink);
+}
+
+.agent {
+  background: var(--color-agent-soft);
+  color: var(--color-agent-ink);
+}

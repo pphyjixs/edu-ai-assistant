@@ -1,0 +1,9 @@
+/*
+ * auto-fit 让卡片数决定列数：3 张就是 3 列，4 张就是 4 列，
+ * 不会出现「最后一张孤零零占一行」的空档，也不需要为此写断点。
+ */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-4);
+}

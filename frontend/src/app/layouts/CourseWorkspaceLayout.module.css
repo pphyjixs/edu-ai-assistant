@@ -1,0 +1,77 @@
+.workspace {
+  display: grid;
+  grid-template-columns:
+    var(--sidebar-current, var(--sidebar-course-width))
+    minmax(0, 1fr)
+    var(--buddy-column, 0px);
+  min-height: 100vh;
+}
+
+.main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-surface-muted);
+}
+
+/* 侧栏槽位：收起时列宽为 0，靠裁切隐藏，占位仍保留 */
+.sidebarSlot {
+  min-width: 0;
+}
+
+.sidebarSlotCollapsed {
+  min-width: 0;
+  overflow: hidden;
+  visibility: hidden;
+}
+
+.content {
+  flex: 1;
+  min-width: 0;
+}
+
+/* --------------------------- 面包屑 --------------------------- */
+.breadcrumb {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.crumbMuted {
+  font-size: var(--text-secondary);
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.crumbSeparator {
+  color: var(--color-text-tertiary);
+}
+
+.crumbStrong {
+  font-size: var(--text-secondary);
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/*
+ * 900~1279px：Buddy 改为右侧浮层抽屉，中间内容占满剩余宽度。
+ * 这里覆盖的是 grid-template-columns 本身（而不是内联的 CSS 变量），
+ * 因此内联样式不会把它顶掉。
+ */
+@media (max-width: 1180px) {
+  .workspace {
+    grid-template-columns: var(--sidebar-current, var(--sidebar-course-width)) minmax(0, 1fr);
+  }
+}
+
+/* < 900px：只保留单栏 */
+@media (max-width: 900px) {
+  .workspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

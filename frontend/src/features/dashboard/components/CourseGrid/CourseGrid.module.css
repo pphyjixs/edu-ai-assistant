@@ -1,0 +1,10 @@
+/*
+ * auto-fit 让卡片数决定列数，避免出现空的尾列。
+ * 最小列宽 240px，窄屏自然退化为两列或单列。
+ * 骨架高度按「2:1 封面 + 信息区」估算，尽量贴近真实卡片高度。
+ */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-4);
+}

@@ -1,0 +1,30 @@
+.page {
+  max-width: var(--workspace-max-width);
+  margin: 0 auto;
+  padding: var(--space-8) var(--space-6) var(--space-16);
+}
+
+.title {
+  margin-bottom: var(--space-5);
+  font-size: var(--text-page-title);
+  font-weight: 650;
+}
+
+/* 形如次要按钮的链接；用链接语义承载导航，不嵌套 <button> */
+.buttonLink {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 9px;
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-size: var(--text-secondary);
+  font-weight: 650;
+}
+
+.buttonLink:hover {
+  background: var(--color-surface-muted);
+  border-color: var(--color-border-strong);
+}
