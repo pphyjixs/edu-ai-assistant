@@ -19,7 +19,7 @@ jobs            ``/jobs``
 dashboard       ``/dashboard``
 ==============  ==================
 
-当前已接入：``auth``（含 ``/users/me``）。其余模块由各自负责人实现后在此登记。
+当前已接入：``auth``（含 ``/users/me``）、``courses``。其余模块由各自负责人实现后在此登记。
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.modules.auth.router import auth_router, me_router
+from app.modules.courses.router import courses_router
 
 #: v1 路由聚合器；业务模块实现后在此 include_router。
 api_router = APIRouter()
@@ -34,5 +35,8 @@ api_router = APIRouter()
 # ------------------------------- auth -------------------------------
 api_router.include_router(auth_router)
 api_router.include_router(me_router)
+
+# ------------------------------ courses ------------------------------
+api_router.include_router(courses_router)
 
 __all__ = ["api_router"]

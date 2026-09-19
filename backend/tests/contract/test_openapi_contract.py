@@ -27,13 +27,34 @@ OPENAPI_PATH = (
     Path(__file__).resolve().parents[3] / "contracts" / "openapi" / "openapi.json"
 )
 
-#: 契约中已实现的路径 → 允许的状态码
-EXPECTED_OPERATIONS: dict[str, tuple[str, set[str]]] = {
-    "/api/v1/auth/register": ("post", {"201", "409", "422", "500"}),
-    "/api/v1/auth/login": ("post", {"200", "401", "422", "429", "500"}),
-    "/api/v1/auth/refresh": ("post", {"200", "401", "422", "500"}),
-    "/api/v1/auth/logout": ("post", {"204", "401", "404", "422", "500"}),
-    "/api/v1/users/me": ("get", {"200", "401", "500"}),
+#: 契约中已实现的路径 → 方法 → 声明的状态码（与 docs/api-contract.md 逐条对应）
+EXPECTED_OPERATIONS: dict[str, dict[str, set[str]]] = {
+    "/api/v1/auth/register": {"post": {"201", "409", "422", "500"}},
+    "/api/v1/auth/login": {"post": {"200", "401", "422", "429", "500"}},
+    "/api/v1/auth/refresh": {"post": {"200", "401", "422", "500"}},
+    "/api/v1/auth/logout": {"post": {"204", "401", "404", "422", "500"}},
+    "/api/v1/users/me": {"get": {"200", "401", "500"}},
+    # 课程：创建需要教师角色所以带 403；详情只读、归档幂等，都不需要 409
+    "/api/v1/courses": {
+        "post": {"201", "401", "403", "422", "500"},
+        "get": {"200", "401", "422", "500"},
+    },
+    "/api/v1/courses/join": {
+        "post": {"200", "201", "401", "403", "409", "422", "500"},
+    },
+    "/api/v1/courses/{course_id}": {
+        "get": {"200", "401", "403", "404", "422", "500"},
+        "patch": {"200", "401", "403", "404", "409", "422", "500"},
+    },
+    "/api/v1/courses/{course_id}/archive": {
+        "post": {"200", "401", "403", "404", "422", "500"},
+    },
+    "/api/v1/courses/{course_id}/invite-code": {
+        "post": {"200", "401", "403", "404", "409", "422", "500"},
+    },
+    "/api/v1/courses/{course_id}/members": {
+        "get": {"200", "401", "403", "404", "422", "500"},
+    },
 }
 
 #: 统一错误结构必须出现在组件里
@@ -57,9 +78,12 @@ def test_health_paths_are_outside_api_prefix(schema: dict) -> None:
 
 
 def test_documented_status_codes_match_contract(schema: dict) -> None:
-    for path, (method, expected_codes) in EXPECTED_OPERATIONS.items():
-        actual = set(schema["paths"][path][method]["responses"])
-        assert actual == expected_codes, f"{method.upper()} {path} 状态码不一致: {actual}"
+    for path, operations in EXPECTED_OPERATIONS.items():
+        for method, expected_codes in operations.items():
+            actual = set(schema["paths"][path][method]["responses"])
+            assert actual == expected_codes, (
+                f"{method.upper()} {path} 状态码不一致: {actual}"
+            )
 
 
 def test_error_components_are_present(schema: dict) -> None:

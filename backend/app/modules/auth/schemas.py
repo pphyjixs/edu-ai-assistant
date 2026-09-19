@@ -107,6 +107,21 @@ class UserProfile(BaseModel):
     created_at: UtcTimestamp
 
 
+class UserPublicSummary(BaseModel):
+    """跨模块公开的成员摘要。
+
+    只暴露 ID、姓名与平台角色，**不含邮箱**，供课程等模块展示成员列表；
+    其他模块应通过 ``auth.service.get_public_user_summaries`` 批量取得，
+    不得直接查询 ``users`` 表。
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    display_name: str
+    role: UserRole
+
+
 class LoginResponse(BaseModel):
     """登录响应（契约 2.1）。"""
 

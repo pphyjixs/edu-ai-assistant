@@ -247,7 +247,35 @@ Access Token 缺少、格式错误、签名不符或已过期时返回 `401` 与
 | POST | `/courses/join` | 使用邀请码加入 | 学生 |
 | GET | `/courses/{course_id}/members` | 课程成员列表 | 课程教师 |
 
-创建课程：
+### 3.1 通用规则与权限
+
+本节定义课程模块的请求与响应 Schema，供后续实现和前端联调使用。所有接口使用 Bearer 认证，路径均相对于 `/api/v1`；UUID、UTC 时间、分页和统一错误响应遵循第 1 节。
+
+- 课程状态 `CourseStatus` 为 `ACTIVE` 或 `ARCHIVED`；新建课程为 `ACTIVE`。
+- 教师创建课程时，服务端设置 `teacher_id` 为当前用户，并自动创建其 `TEACHER` 课程成员记录。
+- 第一版由创建教师管理课程；平台角色为教师不代表可以管理其他教师的课程。
+- 课程成员可读取课程详情；只有创建教师可修改、归档、重置邀请码和读取成员列表。
+- 课程列表包含本人参与的活动课程及归档课程；课程和成员列表均使用 `page`、`page_size`，不返回完整无分页列表。
+- 归档课程保持可读，不提供恢复接口。修改、加入或重置邀请码返回 `409 COURSE_ARCHIVED`；重复归档返回 `200` 和当前详情，不重复改变归档结果。
+- 邀请码由服务端生成，为 12 位大写字母与数字；客户端按不透明字符串提交与展示，不依赖其长度或字符格式。
+- 邀请码仅在创建教师查看未归档课程的详情，以及重置邀请码的响应中返回。课程列表、学生响应和已归档课程详情均省略 `invite_code` 字段，不返回 `null`。
+- 邀请码全局唯一；重置后旧码立即失效，旧码加入返回 `422 INVITE_CODE_INVALID`。
+
+### 3.2 请求 Schema
+
+课程 JSON 请求拒绝未声明字段和显式 `null`，校验失败返回 `422 VALIDATION_ERROR`。课程 ID、教师 ID、状态和时间由服务端维护，不能通过创建或修改请求指定。
+
+| Schema | 字段 | 类型 | 必填 | 规则 |
+| --- | --- | --- | --- | --- |
+| `CourseCreateRequest` | `name` | string | 是 | 去除首尾空白后为 1–100 个字符，不能全为空白 |
+| `CourseCreateRequest` | `description` | string | 否 | 最多 2000 个字符；省略时默认为空字符串 |
+| `CourseUpdateRequest` | `name` | string | 否 | 提供时按创建规则校验；省略时保持原值 |
+| `CourseUpdateRequest` | `description` | string | 否 | 最多 2000 个字符；省略时保持原值，传空字符串表示清空 |
+| `CourseJoinRequest` | `invite_code` | string | 是 | 非空字符串；客户端按不透明字符串提交，不依赖示例中的长度或字符格式 |
+
+`CourseUpdateRequest` 至少包含 `name`、`description` 中的一项，空对象返回 `422 VALIDATION_ERROR`。归档和重置邀请码接口无请求体。
+
+创建课程请求：
 
 ```json
 {
@@ -256,11 +284,95 @@ Access Token 缺少、格式错误、签名不符或已过期时返回 `401` 与
 }
 ```
 
-加入课程：
+修改课程请求示例（清空说明）：
 
 ```json
-{ "invite_code": "AB12CD" }
+{ "description": "" }
 ```
+
+加入课程请求：
+
+```json
+{ "invite_code": "AB12CD34EF56" }
+```
+
+### 3.3 响应 Schema
+
+`CourseSummary` 的以下字段始终存在且不为 `null`：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `id` | UUID string | 课程 ID |
+| `name` | string | 课程名称 |
+| `description` | string | 课程说明；未填写时为空字符串 |
+| `teacher_id` | UUID string | 创建教师的用户 ID |
+| `status` | `ACTIVE` / `ARCHIVED` | 课程状态 |
+| `created_at` | ISO 8601 UTC string | 创建时间 |
+| `updated_at` | ISO 8601 UTC string | 最近更新时间 |
+
+`CourseDetail` 包含 `CourseSummary` 全部字段，不含 `invite_code`。`CourseDetailWithInviteCode` 在此基础上要求非空字符串 `invite_code`。创建和修改课程返回含邀请码详情；归档返回普通详情。读取详情时，创建教师查看未归档课程返回 `CourseDetailWithInviteCode`，其他成员或归档课程返回 `CourseDetail`。OpenAPI 分别声明这两种结构，不把邀请码声明为可返回 `null`。
+
+教师创建课程的 `201` 响应示例：
+
+```json
+{
+  "id": "70d1bdfa-bb1a-4b22-9f13-9f1398aeb53c",
+  "name": "软件工程实验",
+  "description": "课程说明",
+  "teacher_id": "a5e675f0-696c-4970-a453-e05c85d4a9e9",
+  "status": "ACTIVE",
+  "created_at": "2026-09-19T08:30:00Z",
+  "updated_at": "2026-09-19T08:30:00Z",
+  "invite_code": "AB12CD34EF56"
+}
+```
+
+服务端生成 **12 位大写字母与数字** 的邀请码；示例仅用于说明，
+客户端必须按不透明字符串处理，不依赖其长度或字符格式。
+
+`CourseMemberSummary` 的以下字段始终存在且不为 `null`；不返回成员邮箱：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `user_id` | UUID string | 成员用户 ID |
+| `display_name` | string | 成员显示名称 |
+| `course_role` | `TEACHER` / `STUDENT` | 课程内角色 |
+| `joined_at` | ISO 8601 UTC string | 加入时间；创建教师为课程创建时的成员记录时间 |
+
+成员列表包含创建教师和已加入学生。`Page<T>` 表示第 1 节的分页对象，其中 `items` 为对应类型的数组，`page`、`page_size`、`total` 为整数。
+
+### 3.4 接口成功响应与幂等行为
+
+| 方法与路径 | 请求 | HTTP | 响应 Schema |
+| --- | --- | --- | --- |
+| `POST /courses` | `CourseCreateRequest` | 201 | `CourseDetailWithInviteCode` |
+| `GET /courses` | 分页查询参数 | 200 | `Page<CourseSummary>` |
+| `GET /courses/{course_id}` | 无请求体 | 200 | `CourseDetailWithInviteCode` 或 `CourseDetail`，按邀请码可见性决定 |
+| `PATCH /courses/{course_id}` | `CourseUpdateRequest` | 200 | `CourseDetailWithInviteCode` |
+| `POST /courses/{course_id}/archive` | 无请求体 | 200 | `CourseDetail`，状态为 `ARCHIVED`，不含邀请码 |
+| `POST /courses/{course_id}/invite-code` | 无请求体 | 200 | `{ "invite_code": "string" }` |
+| `POST /courses/join` | `CourseJoinRequest` | 201 / 200 | `CourseSummary` |
+| `GET /courses/{course_id}/members` | 分页查询参数 | 200 | `Page<CourseMemberSummary>` |
+
+学生使用当前有效邀请码首次加入时返回 `201`；已是该课程成员时返回 `200` 和现有课程信息，不创建重复成员记录。并发重复加入也必须保证成员记录唯一。幂等加入仅适用于活动课程及当前有效邀请码：旧码失效后返回 `422 INVITE_CODE_INVALID`；归档课程返回 `409 COURSE_ARCHIVED`，即使学生已经加入。
+
+重置邀请码成功后旧码立即失效，响应中的新码用于后续加入。客户端从课程详情重新取得当前邀请码，不应依赖本地缓存的旧码。
+
+### 3.5 课程错误响应
+
+所有错误沿用第 1 节的 `error` 对象和请求追踪规则。
+
+| 场景 | HTTP | 错误码 |
+| --- | --- | --- |
+| 缺少、无效或过期的 Access Token | 401 | `AUTH_TOKEN_EXPIRED` |
+| 学生调用教师接口，或教师调用学生加入接口 | 403 | `ROLE_FORBIDDEN` |
+| 非课程成员读取详情，或非创建教师管理课程、读取成员列表 | 403 | `COURSE_FORBIDDEN` |
+| 指定的课程不存在 | 404 | `RESOURCE_NOT_FOUND` |
+| 对归档课程执行修改、加入或重置邀请码 | 409 | `COURSE_ARCHIVED` |
+| 邀请码不存在或已被重置失效 | 422 | `INVITE_CODE_INVALID` |
+| 请求字段、UUID、分页参数不合法，或修改请求为空 | 422 | `VALIDATION_ERROR` |
+
+通过课程 ID 操作时，完成认证和资源权限检查后才返回归档状态错误，避免向无权访问者暴露课程状态。
 
 ## 4. 文件上传协议
 
@@ -495,6 +607,7 @@ Dashboard 只返回页面首屏需要的摘要和最近记录，不返回完整�
 | `AUTH_TOO_MANY_ATTEMPTS` | 429 | 登录失败次数超过限流阈值 |
 | `ROLE_FORBIDDEN` | 403 | 角色无权执行操作 |
 | `COURSE_FORBIDDEN` | 403 | 不是课程成员或教师 |
+| `COURSE_ARCHIVED` | 409 | 课程已归档，不能执行写入操作 |
 | `RESOURCE_NOT_FOUND` | 404 | 资源不存在或不可见 |
 | `INVITE_CODE_INVALID` | 422 | 邀请码无效 |
 | `UPLOAD_INVALID` | 422 | 上传未完成、类型或校验不符 |

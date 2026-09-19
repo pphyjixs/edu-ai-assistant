@@ -10,12 +10,15 @@ from sqlalchemy import MetaData
 
 from app.db.base import Base
 from app.modules.auth.models import AuthSession, LoginAttempt, User
+from app.modules.courses.models import Course, CourseMember
 
 #: 供 Alembic 比较与自动生成迁移使用
 target_metadata: MetaData = Base.metadata
 
 __all__ = [
     "AuthSession",
+    "Course",
+    "CourseMember",
     "LoginAttempt",
     "User",
     "target_metadata",
