@@ -1,0 +1,14 @@
+<svg width="320" height="160" viewBox="0 0 320 160" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="g2" x1="0" y1="0" x2="320" y2="160">
+      <stop stop-color="#EFE9FF"/>
+      <stop offset="1" stop-color="#D2C5FF"/>
+    </linearGradient>
+  </defs>
+  <rect width="320" height="160" rx="20" fill="url(#g2)"/>
+  <circle cx="262" cy="18" r="84" fill="white" fill-opacity=".33"/>
+  <ellipse cx="98" cy="56" rx="48" ry="18" fill="white" fill-opacity=".75"/>
+  <path d="M50 56V103C50 113 71 121 98 121C125 121 146 113 146 103V56" stroke="#8B74D8" stroke-width="7"/>
+  <path d="M50 79C50 89 71 97 98 97C125 97 146 89 146 79" stroke="#8B74D8" stroke-width="7"/>
+  <text x="268" y="126" text-anchor="end" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="#5A478F">DB</text>
+</svg>

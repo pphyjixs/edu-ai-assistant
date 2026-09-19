@@ -1,0 +1,17 @@
+.summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-2);
+}
+
+.summaryText {
+  font-size: var(--text-secondary);
+  color: var(--color-text-tertiary);
+}
+
+.list {
+  display: block;
+}

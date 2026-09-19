@@ -1,0 +1,46 @@
+.assistant,
+.user {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.user {
+  justify-content: flex-end;
+}
+
+.avatar {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-xs);
+  background: var(--color-brand-dark);
+  color: #ffffff;
+}
+
+.bubble {
+  max-width: 86%;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.user .bubble {
+  background: var(--color-brand-dark);
+  border-color: var(--color-brand-dark);
+  color: #ffffff;
+}
+
+.content {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ungrounded {
+  margin-top: var(--space-3);
+}
