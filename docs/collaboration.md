@@ -96,9 +96,9 @@ npx openapi-typescript contracts/openapi/openapi.json -o contracts/generated/api
 ..\.venv\Scripts\python.exe scripts\export_openapi.py      # 接口有改动时重新导出契约
 ```
 
-集成与契约测试需要可连的 PostgreSQL：可单独设置 `TEST_DATABASE_URL`（库名以 `_test` 结尾），
-或由 `DATABASE_URL` 自动派生独立测试库 `<开发库名>_test`，并在结束时删除。
-账号需要建库权限；创建被拒绝时不会清理目标库。没有可用数据库时需要数据库的用例自动跳过，
+集成与契约测试需要一个可连的 PostgreSQL，只设置 `TEST_DATABASE_URL` 即可运行：
+否则会自动派生专用测试库 `<开发库名>_test`，表结构由迁移创建，会话结束自动删除
+（规则见 `docs/acceptance.md` 第 12 节）。没有可用数据库时这些用例自动跳过，
 因此**只跑单元测试通过并不代表集成测试通过**，提交前请确认没有 skip。
 
 ## 7. 联调数据
