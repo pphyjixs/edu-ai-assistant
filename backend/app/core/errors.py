@@ -98,6 +98,12 @@ class CourseForbiddenError(ApiError):
     code = ErrorCode.COURSE_FORBIDDEN
 
 
+class CourseArchivedError(ApiError):
+    """课程已归档，不能执行修改、加入或重置邀请码等写入操作。"""
+
+    code = ErrorCode.COURSE_ARCHIVED
+
+
 class ResourceNotFoundError(ApiError):
     code = ErrorCode.RESOURCE_NOT_FOUND
 

@@ -23,11 +23,25 @@ from app.core.config import BACKEND_DIR
 from app.db.registry import target_metadata
 from tests import pg_support
 
-EXPECTED_TABLES = {"users", "auth_sessions", "login_attempts"}
+EXPECTED_TABLES = {
+    "users",
+    "auth_sessions",
+    "login_attempts",
+    "courses",
+    "course_members",
+}
+
+#: 迁移引入的原生枚举类型，回滚时必须全部清理
+EXPECTED_ENUMS: dict[str, list[str]] = {
+    "user_role": ["TEACHER", "STUDENT"],
+    "course_status": ["ACTIVE", "ARCHIVED"],
+    "course_role": ["TEACHER", "STUDENT"],
+}
 
 COMPARE_OPTIONS = {"compare_type": True, "compare_server_default": True}
 
-REVISION = "0001_auth_base"
+#: head 对应的最新迁移
+REVISION = "0002_courses"
 
 
 @pytest.fixture(scope="module")
@@ -49,7 +63,9 @@ def migration_database_url(pg_test_url: str) -> Iterator[str]:
     finally:
         try:
             if created:
-                pg_support.drop_test_database(admin, name, suffix=pg_support.MIGRATION_SUFFIX)
+                pg_support.drop_test_database(
+                    admin, name, suffix=pg_support.MIGRATION_SUFFIX
+                )
         finally:
             admin.dispose()
 
@@ -152,6 +168,41 @@ def test_role_column_is_native_enum(migrated_engine: Engine) -> None:
     assert labels == ["TEACHER", "STUDENT"]
 
 
+def test_all_migration_enums_are_native(migrated_engine: Engine) -> None:
+    """迁移引入的每个枚举类型都存在，且取值与 ORM 枚举一致。"""
+    with migrated_engine.connect() as connection:
+        for type_name, expected_labels in EXPECTED_ENUMS.items():
+            labels = (
+                connection.execute(
+                    text(
+                        "SELECT enumlabel FROM pg_enum e"
+                        " JOIN pg_type t ON t.oid = e.enumtypid"
+                        " WHERE t.typname = :name ORDER BY e.enumsortorder"
+                    ),
+                    {"name": type_name},
+                )
+                .scalars()
+                .all()
+            )
+            assert labels == expected_labels, f"{type_name} 枚举取值不一致"
+
+
+def test_course_unique_constraints_exist(migrated_engine: Engine) -> None:
+    """邀请码全局唯一 + 同一课程内用户唯一，是并发场景的唯一防线。"""
+    inspector = inspect(migrated_engine)
+
+    course_unique = {
+        constraint["name"] for constraint in inspector.get_unique_constraints("courses")
+    }
+    member_unique = {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints("course_members")
+    }
+
+    assert "uq_courses_invite_code" in course_unique
+    assert "uq_course_members_course_id_user_id" in member_unique
+
+
 def test_rollback_to_base_removes_every_schema_object(
     alembic_config: Config, migration_database_url: str
 ) -> None:
@@ -169,10 +220,17 @@ def test_rollback_to_base_removes_every_schema_object(
 
         assert EXPECTED_TABLES.isdisjoint(set(inspect(engine).get_table_names()))
         with engine.connect() as connection:
-            leftover_enum = connection.execute(
-                text("SELECT 1 FROM pg_type WHERE typname = 'user_role'")
-            ).scalar()
-        assert leftover_enum is None, "回滚后不应残留 user_role 枚举类型"
+            leftover = (
+                connection.execute(
+                    text(
+                        "SELECT typname FROM pg_type WHERE typname = ANY(:names)"
+                    ),
+                    {"names": list(EXPECTED_ENUMS)},
+                )
+                .scalars()
+                .all()
+            )
+        assert not leftover, f"回滚后不应残留枚举类型：{leftover}"
 
         # 复位并确认可以重新建起来（等价于"全新数据库"的路径）
         with pg_support.alembic_database_url(migration_database_url):

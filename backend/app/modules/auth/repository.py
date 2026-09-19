@@ -7,12 +7,14 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Collection
 from datetime import datetime
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.auth.models import AuthSession, LoginAttempt, User, UserRole
+from app.modules.auth.schemas import UserPublicSummary
 
 
 async def get_user_by_id(session: AsyncSession, user_id: uuid.UUID) -> User | None:
@@ -115,6 +117,24 @@ def add_login_failure(
     attempt = LoginAttempt(email_normalized=email_normalized, failed_at=failed_at)
     session.add(attempt)
     return attempt
+
+
+async def get_users_public_summaries(
+    session: AsyncSession, user_ids: Collection[uuid.UUID]
+) -> dict[uuid.UUID, UserPublicSummary]:
+    """批量取公开用户摘要，供其他模块展示成员等信息。
+
+    返回 ``{user_id: 摘要}``；不存在的 ID 直接缺席，由调用方决定降级显示。
+    """
+    wanted = set(user_ids)
+    if not wanted:
+        return {}
+
+    result = await session.execute(select(User).where(User.id.in_(wanted)))
+    return {
+        user.id: UserPublicSummary.model_validate(user)
+        for user in result.scalars().all()
+    }
 
 
 async def delete_login_failures(

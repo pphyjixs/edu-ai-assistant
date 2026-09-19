@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import logging
+import uuid
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -25,7 +27,11 @@ from app.core.time import utc_now
 from app.modules.auth import repository as repo
 from app.modules.auth import security
 from app.modules.auth.models import AuthSession, User
-from app.modules.auth.schemas import LoginRequest, RegisterRequest
+from app.modules.auth.schemas import (
+    LoginRequest,
+    RegisterRequest,
+    UserPublicSummary,
+)
 
 logger = logging.getLogger("app.auth")
 
@@ -131,6 +137,17 @@ async def login(
     issued = _issue_tokens(session, settings, user, now=now)
     await session.commit()
     return user, issued
+
+
+async def get_public_user_summaries(
+    session: AsyncSession, user_ids: Collection[uuid.UUID]
+) -> dict[uuid.UUID, UserPublicSummary]:
+    """批量取公开用户摘要（ID、姓名、平台角色，不含邮箱）。
+
+    供课程等模块展示成员列表：跨模块只允许走这个入口，
+    不允许直接查询 ``users`` 表（见 ``docs/architecture.md`` 第 4 节）。
+    """
+    return await repo.get_users_public_summaries(session, user_ids)
 
 
 async def refresh_access_token(

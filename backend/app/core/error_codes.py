@@ -22,6 +22,8 @@ class ErrorCode(str, Enum):
     AUTH_TOO_MANY_ATTEMPTS = "AUTH_TOO_MANY_ATTEMPTS"
     ROLE_FORBIDDEN = "ROLE_FORBIDDEN"
     COURSE_FORBIDDEN = "COURSE_FORBIDDEN"
+    #: 课程已归档，不能对其执行修改、加入或重置邀请码等写入操作
+    COURSE_ARCHIVED = "COURSE_ARCHIVED"
     RESOURCE_NOT_FOUND = "RESOURCE_NOT_FOUND"
     INVITE_CODE_INVALID = "INVITE_CODE_INVALID"
     UPLOAD_INVALID = "UPLOAD_INVALID"
@@ -50,6 +52,7 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.AUTH_TOO_MANY_ATTEMPTS: "登录失败次数过多，请稍后再试",
     ErrorCode.ROLE_FORBIDDEN: "当前角色无权执行该操作",
     ErrorCode.COURSE_FORBIDDEN: "你没有访问该课程的权限",
+    ErrorCode.COURSE_ARCHIVED: "课程已归档，不能执行该操作",
     ErrorCode.RESOURCE_NOT_FOUND: "资源不存在或不可见",
     ErrorCode.INVITE_CODE_INVALID: "邀请码无效",
     ErrorCode.UPLOAD_INVALID: "上传未完成，或文件类型与校验信息不符",
@@ -73,6 +76,7 @@ DEFAULT_STATUS_CODES: dict[ErrorCode, int] = {
     ErrorCode.AUTH_TOO_MANY_ATTEMPTS: 429,
     ErrorCode.ROLE_FORBIDDEN: 403,
     ErrorCode.COURSE_FORBIDDEN: 403,
+    ErrorCode.COURSE_ARCHIVED: 409,
     ErrorCode.RESOURCE_NOT_FOUND: 404,
     ErrorCode.INVITE_CODE_INVALID: 422,
     ErrorCode.UPLOAD_INVALID: 422,

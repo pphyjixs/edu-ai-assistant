@@ -31,12 +31,20 @@
 
 ## 3. Courses 验收
 
-- [ ] 教师可以创建、编辑和归档课程。
-- [ ] 学生可以用有效邀请码加入，错误邀请码有提示。
-- [ ] 同一学生重复加入不会产生重复成员记录。
-- [ ] 非课程成员无法读取课程详情。
-- [ ] 教师可以查看成员列表并重新生成邀请码。
-- [ ] 归档课程停止新增资料、任务和提交。
+- [x] 教师创建课程返回 `201 CourseDetailWithInviteCode`，状态为 `ACTIVE`，`teacher_id` 指向本人，且自动建立教师成员记录；学生创建课程返回 `403 ROLE_FORBIDDEN`。
+- [x] 课程名称去除首尾空白后须为 1–100 字符，说明最多 2000 字符；创建时省略说明返回空字符串。超限、全空白名称、未知字段和显式 `null` 返回 `422 VALIDATION_ERROR`。
+- [x] 修改课程允许只提交名称或说明；省略字段保持原值，空字符串说明清空原值，空对象被拒绝；响应为更新后的 `CourseDetailWithInviteCode`。
+- [x] 课程列表分页返回本人参与的活动与归档课程，成员列表也按 `items/page/page_size/total` 分页；默认每页 20 条，最大 100 条。
+- [x] 学生用当前有效邀请码首次加入活动课程返回 `201 CourseSummary`，重复加入返回 `200 CourseSummary`；并发重复加入不会产生重复成员记录。
+- [x] 无效或已被重置的邀请码返回 `422 INVITE_CODE_INVALID`；教师调用加入接口返回 `403 ROLE_FORBIDDEN`。
+- [x] 非课程成员读取详情返回 `403 COURSE_FORBIDDEN`；其他教师不能管理课程或读取成员列表；不存在的课程返回 `404 RESOURCE_NOT_FOUND`。
+- [x] 创建教师可查看成员列表，列表包含教师和学生的 `user_id`、`display_name`、`course_role`、`joined_at`，不返回邮箱。
+- [x] 创建教师可重置邀请码，返回 `200` 与新码，旧码立即失效；当前邀请码仅出现在其未归档课程详情或重置响应中。
+- [x] 课程列表、学生响应和已归档课程详情均省略 `invite_code`，不返回 `null`；课程概要、详情及时间格式与 API 契约一致。
+- [x] 归档成功返回 `200 CourseDetail` 和 `ARCHIVED` 状态；重复归档返回当前详情；成员仍能读取课程。
+- [x] 已归档课程的修改、加入及邀请码重置返回 `409 COURSE_ARCHIVED`，已加入学生再次加入也不例外；无权限者不能通过这些接口读取归档状态。
+- [ ] 归档课程停止新增资料、任务、提交和发布任务；第一版不提供恢复接口。资料、任务、提交和发布接口尚未实现，待后续模块接入 `require_course_active` 后验收。
+- [x] 所有课程错误使用统一错误结构，响应头与错误体的 request ID 一致；OpenAPI 声明各接口的响应 Schema、成功状态码及业务错误。
 
 ## 4. Materials 验收
 
@@ -140,10 +148,10 @@ cd backend
 
 | 层 | 数量 | 数据库 |
 | --- | --- | --- |
-| `tests/unit` | 72 | 不接触数据库；外部依赖替换为 fake |
-| `tests/integration` | 57 | **专用测试库**，表结构由 Alembic 迁移创建 |
-| `tests/contract` | 24 | 同上（令牌格式与 OpenAPI 一致性） |
-| 合计 | 153 | 本机连真实 PostgreSQL 时：全部通过，0 跳过 |
+| `tests/unit` | 93 | 不接触数据库；外部依赖替换为 fake |
+| `tests/integration` | 97 | **专用测试库**，表结构由 Alembic 迁移创建 |
+| `tests/contract` | 31 | 同上（令牌格式、课程契约与 OpenAPI 一致性） |
+| 合计 | 221 | 本机连真实 PostgreSQL 时：全部通过，0 跳过 |
 
 测试库规则（见 `backend/tests/pg_support.py`）：
 
@@ -189,11 +197,19 @@ cd backend
 | 启动不建表、不迁移、不连库 | `unit/test_startup_contract.py` |
 | 测试库只允许 `_test` 专用库、创建前冲突检查、结束清理 | `unit/test_pg_support.py`、`integration/test_test_database_lifecycle.py` |
 | 建库被拒绝时保留目标库、迁移失败后清理本次创建的库 | `unit/test_database_fixture_cleanup.py` |
+| 课程 8 个接口、分页、邀请码轮换、归档后读写 | `integration/test_courses_api.py` |
+| 首次 201 / 重复 200 加入、并发成员唯一、并发重置邀请码 | `integration/test_courses_api.py` |
+| 归档状态不泄露给无权限者、成员列表不含邮箱、默认每页 20 | `integration/test_courses_api.py` |
+| 课程请求校验、邀请码生成、教师/成员/归档权限判断 | `unit/test_courses.py` |
+| 课程成功状态码、错误结构、邀请码字段可见性、Bearer 要求 | `contract/test_courses_contract.py` |
+| 新增表、约束、枚举与升级回滚 | `integration/test_migrations.py` |
 
-本次交付验证：153 项通过（72 unit / 57 integration / 24 contract），0 跳过。
-在本地 PostgreSQL 上仅提供 `TEST_DATABASE_URL` 执行完整套件，运行后确认测试库、
-迁移库及生命周期检查库均无残留。存在 2 条测试客户端依赖弃用警告。
-Preview 尚未验证；403 仍由 `TeacherDep` 探针覆盖，待业务接口接入后补充真实路由验收。
+本次课程模块交付验证：221 项通过（93 unit / 97 integration / 31 contract），0 跳过。
+在本地 PostgreSQL 上执行完整套件，运行后确认测试库、迁移库及生命周期检查库均无残留。
+存在 2 条测试客户端依赖弃用警告。
+Preview 尚未验证；其他教师不能管理他人课程的判断已由课程模块覆盖，
+但平台角色守卫（`ROLE_FORBIDDEN`）仍由 `TeacherDep` 探针验证，
+待更多业务接口接入后补充真实路由验收。
 
 契约测试只校验请求与响应格式：契约 2.2 把令牌存放位置交给前端自行决定，
 因此测试反过来断言服务端不通过 Cookie 下发令牌，不假设也不约束前端的存储方式。
