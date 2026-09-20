@@ -48,7 +48,7 @@ EXPECTED_ENUMS: dict[str, list[str]] = {
 COMPARE_OPTIONS = {"compare_type": True, "compare_server_default": True}
 
 #: head 对应的最新迁移
-REVISION = "0004_upload_session_expired_at"
+REVISION = "0005_material_outline"
 
 
 @pytest.fixture(scope="module")

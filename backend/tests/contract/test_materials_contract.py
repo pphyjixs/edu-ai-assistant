@@ -172,3 +172,109 @@ def test_material_detail_is_reused_by_status_query(schema: dict) -> None:
         "application/json"
     ]["schema"]["$ref"]
     assert job_ref.endswith("/JobStatus")
+
+
+# --------------------------------------------------------------------------- #
+# 契约 5.1–5.4：列表、删除、重试解析、大纲查询
+# --------------------------------------------------------------------------- #
+LIST_PATH = "/api/v1/courses/{course_id}/materials"
+DELETE_URL_PATH = "/api/v1/materials/{material_id}"
+PARSE_PATH = "/api/v1/materials/{material_id}/parse"
+OUTLINE_PATH = "/api/v1/materials/{material_id}/outline"
+
+
+def test_new_material_endpoints_are_documented(schema: dict) -> None:
+    """契约 5.1–5.4 的四个接口必须出现在 OpenAPI 并声明成功状态码。"""
+    assert LIST_PATH in schema["paths"]
+    assert PARSE_PATH in schema["paths"]
+    assert OUTLINE_PATH in schema["paths"]
+    assert DELETE_URL_PATH in schema["paths"]
+
+    assert schema["paths"][LIST_PATH]["get"]["responses"].keys() >= {"200"}
+    assert schema["paths"][DELETE_URL_PATH]["delete"]["responses"].keys() >= {"204"}
+    assert schema["paths"][PARSE_PATH]["post"]["responses"].keys() >= {"202"}
+    assert schema["paths"][OUTLINE_PATH]["get"]["responses"].keys() >= {"200"}
+
+
+def test_new_endpoints_require_bearer_and_declare_errors(schema: dict) -> None:
+    """四个接口都挂 Bearer，并声明契约 5 节的业务错误状态码。"""
+    list_op = schema["paths"][LIST_PATH]["get"]
+    assert list_op.get("security")
+    assert {"401", "404", "422"} <= list_op["responses"].keys()
+
+    delete_op = schema["paths"][DELETE_URL_PATH]["delete"]
+    assert delete_op.get("security")
+    assert {"401", "403", "404", "409"} <= delete_op["responses"].keys()
+
+    parse_op = schema["paths"][PARSE_PATH]["post"]
+    assert parse_op.get("security")
+    assert {"401", "403", "404", "409"} <= parse_op["responses"].keys()
+
+    outline_op = schema["paths"][OUTLINE_PATH]["get"]
+    assert outline_op.get("security")
+    assert {"401", "404", "409", "502"} <= outline_op["responses"].keys()
+
+
+def test_list_response_is_page_of_material_detail(schema: dict) -> None:
+    """列表响应是分页包装，items 复用 ``MaterialDetail``。"""
+    ref = schema["paths"][LIST_PATH]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]["$ref"]
+    assert ref.endswith("/Page%5BMaterialDetail%5D") or ref.endswith(
+        "/Page_MaterialDetail_"
+    )
+
+    page_name = ref.rsplit("/", 1)[-1]
+    page = _component(schema, page_name)
+    assert set(page["properties"]) == {"items", "page", "page_size", "total"}
+
+
+def test_parse_response_reuses_job_status(schema: dict) -> None:
+    """重试解析响应复用 ``JobStatus``，不引入新的任务结构。"""
+    ref = schema["paths"][PARSE_PATH]["post"]["responses"]["202"]["content"][
+        "application/json"
+    ]["schema"]["$ref"]
+    assert ref.endswith("/JobStatus")
+
+
+def test_outline_response_components(schema: dict) -> None:
+    """大纲响应固定为 ``MaterialOutline``，章节与知识点字段与契约一致。"""
+    ref = schema["paths"][OUTLINE_PATH]["get"]["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]["$ref"]
+    assert ref.endswith("/MaterialOutline")
+
+    outline = _component(schema, "MaterialOutline")["properties"]
+    assert set(outline) == {"material_id", "sections"}
+
+    section = _component(schema, "MaterialSection")["properties"]
+    assert set(section) == {
+        "id",
+        "order",
+        "title",
+        "source_type",
+        "location_start",
+        "location_end",
+        "knowledge_points",
+    }
+
+    source_type = _component(schema, "MaterialSectionSourceType")
+    assert set(source_type["enum"]) == {"PDF_PAGE", "PPTX_SLIDE", "DOCX_PARAGRAPH"}
+
+    point = _component(schema, "MaterialKnowledgePoint")["properties"]
+    assert set(point) == {
+        "id",
+        "order",
+        "title",
+        "description",
+        "quote",
+        "location_start",
+        "location_end",
+    }
+
+
+def test_error_code_enum_includes_material_already_ready(schema: dict) -> None:
+    error_code = _component(schema, "ErrorCode")
+    assert "MATERIAL_ALREADY_READY" in error_code["enum"]
+    assert "MATERIAL_NOT_READY" in error_code["enum"]
+    assert "AI_JOB_FAILED" in error_code["enum"]

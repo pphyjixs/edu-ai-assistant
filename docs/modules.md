@@ -68,11 +68,11 @@ Access Token 有效期 1 小时，Refresh Token 自登录签发起有效 7 天�
 
 上传采用预签名直传：初始化（`POST /courses/{id}/materials/uploads`）返回 PUT 地址（10 分钟有效）与确认窗口（24 小时）；完成（`.../{upload_id}/complete`）时服务端确认对象存在且大小、类型、存储侧 SHA-256 与声明一致，才在同一事务中创建资料与 `MATERIAL_PARSE` 任务。重复完成同一上传会话是幂等的，只返回同一资料与同一任务，不产生重复记录。过期未确认的上传会话由独立维护命令锁定，删除其孤立对象并标记 `expired_at`；首次确认始终按 `UPLOAD_INVALID` 拒绝。
 
-权限与检查顺序：只有课程创建教师能初始化与完成；学生 `403 ROLE_FORBIDDEN`，其他教师 `403 COURSE_FORBIDDEN`，归档课程 `409 COURSE_ARCHIVED`，三者都先于元数据校验发生，因此失败请求不会留下上传会话。资料详情与解析任务状态查询已开放给课程成员；资料列表、大纲、删除和重试解析属于后续阶段。
+权限与检查顺序：只有课程创建教师能初始化与完成；学生 `403 ROLE_FORBIDDEN`，其他教师 `403 COURSE_FORBIDDEN`，归档课程 `409 COURSE_ARCHIVED`，三者都先于元数据校验发生，因此失败请求不会留下上传会话。资料详情、解析任务状态查询、资料列表与大纲查询已开放给课程成员；删除与重试解析仅课程创建教师可用（契约 5.2/5.3）。
 
 解析状态：`UPLOADING`、`UPLOADED`、`PROCESSING`、`READY`、`FAILED`；任务状态：`PENDING`、`RUNNING`、`SUCCEEDED`、`FAILED`、`CANCELLED`。
 
-第一版不实现解析 Worker：完成确认后资料为 `PROCESSING`、任务为 `PENDING`，且不会自动推进，前端按“处理中”展示并轮询。接入 Worker 后失败必须返回可重试的错误说明，不能让资料永久停留在处理中。
+解析 Worker（契约 5.5）：完成上传与重试解析后由后台任务执行解析，推进任务 `PENDING → RUNNING → SUCCEEDED/FAILED` 与资料 `PROCESSING → READY/FAILED`；解析结果（章节与知识点）一次性落库，失败只写安全摘要、不产生部分数据。第一版不做扫描版 PDF 的 OCR，也不提供通用 `POST /jobs/{job_id}/retry`。
 
 ## 5. Learning 模块
 

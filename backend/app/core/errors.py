@@ -124,6 +124,12 @@ class MaterialNotReadyError(ApiError):
     code = ErrorCode.MATERIAL_NOT_READY
 
 
+class MaterialAlreadyReadyError(ApiError):
+    """资料已解析完成，无需再次解析（契约 5.3 重试解析的就绪分流）。"""
+
+    code = ErrorCode.MATERIAL_ALREADY_READY
+
+
 class AssignmentNotOpenError(ApiError):
     code = ErrorCode.ASSIGNMENT_NOT_OPEN
 

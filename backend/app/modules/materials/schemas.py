@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import enum
 import uuid
 
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -116,3 +117,71 @@ class MaterialUploadCompleteResponse(BaseModel):
 
     material: MaterialDetail
     job: JobStatus
+
+
+class MaterialSectionSourceType(str, enum.Enum):
+    """章节定位的来源类型（契约 5.4），由资料的 MIME 推导。
+
+    定位单位：PDF 页码、PPTX 幻灯片号、DOCX 段落序号，均从 1 开始。
+    """
+
+    PDF_PAGE = "PDF_PAGE"
+    PPTX_SLIDE = "PPTX_SLIDE"
+    DOCX_PARAGRAPH = "DOCX_PARAGRAPH"
+
+
+#: 规范 MIME → 来源类型
+SOURCE_TYPE_BY_CONTENT_TYPE: dict[str, MaterialSectionSourceType] = {
+    "application/pdf": MaterialSectionSourceType.PDF_PAGE,
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": (
+        MaterialSectionSourceType.PPTX_SLIDE
+    ),
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (
+        MaterialSectionSourceType.DOCX_PARAGRAPH
+    ),
+}
+
+
+def source_type_for_content_type(content_type: str) -> MaterialSectionSourceType:
+    """由规范 MIME 推导章节来源类型；未知类型按 PDF 页处理。"""
+    return SOURCE_TYPE_BY_CONTENT_TYPE.get(
+        content_type, MaterialSectionSourceType.PDF_PAGE
+    )
+
+
+class MaterialKnowledgePoint(BaseModel):
+    """知识点（契约 5.4）：含可核对的原文摘录与定位。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    #: 章节内从 1 开始的顺序号
+    order: int
+    title: str
+    description: str
+    #: 解析时从资料对应位置抽取的原文摘录
+    quote: str
+    location_start: int
+    location_end: int
+
+
+class MaterialSection(BaseModel):
+    """章节（契约 5.4）：按 order 升序，含知识点列表。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    #: 从 1 开始的顺序号
+    order: int
+    title: str
+    source_type: MaterialSectionSourceType
+    location_start: int
+    location_end: int
+    knowledge_points: list[MaterialKnowledgePoint]
+
+
+class MaterialOutline(BaseModel):
+    """大纲查询响应（契约 5.4）。"""
+
+    material_id: uuid.UUID
+    sections: list[MaterialSection]

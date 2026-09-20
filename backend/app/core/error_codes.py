@@ -29,6 +29,8 @@ class ErrorCode(str, Enum):
     UPLOAD_INVALID = "UPLOAD_INVALID"
     RUBRIC_SCORE_MISMATCH = "RUBRIC_SCORE_MISMATCH"
     MATERIAL_NOT_READY = "MATERIAL_NOT_READY"
+    #: 资料已解析完成，无需再次解析（重试解析接口，契约 5.3）
+    MATERIAL_ALREADY_READY = "MATERIAL_ALREADY_READY"
     ASSIGNMENT_NOT_OPEN = "ASSIGNMENT_NOT_OPEN"
     GRADE_NOT_REVIEWED = "GRADE_NOT_REVIEWED"
     AI_JOB_FAILED = "AI_JOB_FAILED"
@@ -58,6 +60,7 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.UPLOAD_INVALID: "上传未完成，或文件类型与校验信息不符",
     ErrorCode.RUBRIC_SCORE_MISMATCH: "评分项分值合计与任务总分不一致",
     ErrorCode.MATERIAL_NOT_READY: "课程资料尚未解析完成",
+    ErrorCode.MATERIAL_ALREADY_READY: "课程资料已解析完成，无需再次解析",
     ErrorCode.ASSIGNMENT_NOT_OPEN: "任务未发布或已关闭",
     ErrorCode.GRADE_NOT_REVIEWED: "尚未完成教师复核，不能发布",
     ErrorCode.AI_JOB_FAILED: "AI 或解析任务执行失败",
@@ -82,6 +85,7 @@ DEFAULT_STATUS_CODES: dict[ErrorCode, int] = {
     ErrorCode.UPLOAD_INVALID: 422,
     ErrorCode.RUBRIC_SCORE_MISMATCH: 422,
     ErrorCode.MATERIAL_NOT_READY: 409,
+    ErrorCode.MATERIAL_ALREADY_READY: 409,
     ErrorCode.ASSIGNMENT_NOT_OPEN: 409,
     ErrorCode.GRADE_NOT_REVIEWED: 409,
     ErrorCode.AI_JOB_FAILED: 502,

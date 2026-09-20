@@ -44,3 +44,7 @@ argon2-cffi>=23.1.0,<26.0.0
 PyJWT>=2.8.0,<3.0.0
 # Pydantic EmailStr 依赖；注册与登录的邮箱校验
 email-validator>=2.1.0,<3.0.0
+
+# --------------------------- 课件解析 Worker -------------------------
+# 解析 Worker（契约 5.5）从 PDF 抽取文本；PPTX/DOCX 用标准库解析 OOXML
+pypdf>=4.0.0,<6.0.0

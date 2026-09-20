@@ -128,6 +128,9 @@ class Settings(BaseSettings):
     material_max_upload_bytes: int = 50 * 1024 * 1024
     #: 上传确认窗口（秒），契约 4.6 固定 24 小时
     material_upload_confirm_ttl_seconds: int = 24 * 3600
+    #: 解析 Worker（契约 5.5）：完成上传/重试解析后内联执行解析；
+    #: 测试默认关闭（conftest 的 make_settings），由 Worker 专项用例显式开启
+    material_parse_worker_enabled: bool = True
 
     # ------------------------------ AI ------------------------------
     ai_provider: str = ""

@@ -543,6 +543,46 @@ class S3Storage:
             )
         return True
 
+    # ------------------------------ 读取 ------------------------------ #
+    def get_object(self, object_key: str) -> bytes:
+        """读取对象完整内容（解析 Worker 使用，契约 5.5）。
+
+        与上传协议不同：这里由服务端主动拉取字节流，不涉及浏览器直传。
+
+        :raises StorageObjectNotFoundError: 对象不存在。
+        :raises StorageUnavailableError: 超时、连接失败、5xx、凭据被拒或未配置。
+        """
+        self._require_configured()
+        headers = self._signed_headers("GET", self._object_path(object_key), {})
+        url = self._object_url(object_key)
+
+        try:
+            response = self._http().request("GET", url, headers=headers)
+        except httpx.TimeoutException as exc:
+            raise StorageUnavailableError(
+                f"对象存储请求超时（{type(exc).__name__}）", reason="timeout"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise StorageUnavailableError(
+                f"对象存储连接失败（{type(exc).__name__}）", reason="connection"
+            ) from exc
+
+        if response.status_code == 404:
+            raise StorageObjectNotFoundError(object_key)
+        if response.status_code in (401, 403):
+            logger.warning("对象存储拒绝访问（status=%s）", response.status_code)
+            raise StorageUnavailableError("对象存储拒绝了访问凭据", reason="access_denied")
+        if response.status_code in _TRANSIENT_STATUS:
+            raise StorageUnavailableError(
+                f"对象存储返回 {response.status_code}", reason="server_error"
+            )
+        if response.status_code != 200:
+            raise StorageUnavailableError(
+                f"对象存储返回非预期状态 {response.status_code}",
+                reason="unexpected_status",
+            )
+        return response.content
+
     # ---------------------------- 请求签名 ---------------------------- #
     def _signed_headers(
         self, method: str, path: str, extra_headers: dict[str, str]

@@ -179,7 +179,11 @@ def test_presigned_put_requires_configuration() -> None:
 
 
 def test_adapter_never_accepts_file_content() -> None:
-    """适配器不提供任何接收文件内容的入口（契约：文件不经后端）。"""
+    """适配器不提供任何接收文件内容的**写入**入口（契约 4.4 / 5.5）。
+
+    浏览器直传协议下文件不经后端写入对象存储；``get_object`` 是契约 5.5
+    允许的唯一服务端读取路径（解析 Worker 拉取字节流做解析）。
+    """
     public_methods = {
         name
         for name, _ in inspect.getmembers(S3Storage, predicate=inspect.isfunction)
@@ -192,6 +196,7 @@ def test_adapter_never_accepts_file_content() -> None:
         "create_presigned_put",
         "delete_object",
         "ensure_bucket",
+        "get_object",
         "head_object",
     }
 

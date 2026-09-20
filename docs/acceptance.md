@@ -51,10 +51,10 @@
 - [x] 教师可以上传 PDF、PPTX、DOCX，学生不能上传课程资料。（初始化与完成接口已实现并验收：学生 `403 ROLE_FORBIDDEN`，其他教师 `403 COURSE_FORBIDDEN`）
 - [x] 文件直接进入对象存储，不依赖后端本地磁盘持久化。（预签名直传：后端只签发地址与读取对象元数据，从不接收文件内容）
 - [x] 不支持的类型、超限文件和校验失败有明确错误。（业务规则为 `422 UPLOAD_INVALID` + 稳定 `details.reason`，结构问题为 `422 VALIDATION_ERROR`）
-- [ ] 上传后显示处理状态和进度。（后端 `GET /materials/{material_id}` 与 `GET /jobs/{job_id}` 已验收：资料为 `PROCESSING`、任务为 `PENDING` 且进度为 0；前端展示尚未验收。课程成员可读，非成员与不存在统一 `404 RESOURCE_NOT_FOUND`，归档课程仍可读）
-- [ ] 成功解析后显示有顺序的大纲和知识点。（**解析任务执行尚未交付**：第一版未接入解析 Worker，资料与任务状态不会自动推进）
-- [ ] 解析结果保留来源页码或章节定位。（**解析任务执行尚未交付**）
-- [ ] 解析失败可以重试，不产生重复章节和知识点。（**解析任务执行尚未交付**）
+- [ ] 上传后显示处理状态和进度。（后端 `GET /materials/{material_id}` 与 `GET /jobs/{job_id}` 已验收：`PROCESSING`/`PENDING` 表示排队或处理中，状态由解析 Worker 推进；前端展示尚未验收。课程成员可读，非成员与不存在统一 `404 RESOURCE_NOT_FOUND`，归档课程仍可读）
+- [ ] 成功解析后显示有顺序的大纲和知识点。（**后端已交付**：解析 Worker 推进 `READY` 后，`GET /materials/{material_id}/outline` 返回按 `order` 排列的章节与知识点，课程成员可读、未就绪 `409 MATERIAL_NOT_READY`、失败 `502 AI_JOB_FAILED`；前端展示尚未验收）
+- [ ] 解析结果保留来源页码或章节定位。（**后端已交付**：章节与知识点均含 `source_type` 与从 1 开始的 `location_start`/`location_end`（PDF 页码 / PPTX 幻灯片号 / DOCX 段落序号），知识点含可核对原文摘录 `quote`；前端展示尚未验收）
+- [ ] 解析失败可以重试，不产生重复章节和知识点。（**后端已交付**：失败资料 `502 AI_JOB_FAILED` 带 `details.job_id`，`POST /materials/{material_id}/parse` 复用原 job ID 重置为 `PENDING` 并全量重写解析产物；已就绪资料返回 `409 MATERIAL_ALREADY_READY`；前端重试入口尚未验收）
 
 ## 5. Learning 验收
 
@@ -91,10 +91,10 @@
 ## 8. Jobs 验收
 
 - [x] 创建异步操作后 API 在合理时间内返回 202 和任务 ID。（完成上传返回 `202` 与 `MATERIAL_PARSE` 任务；`GET /jobs/{job_id}` 查询接口已实现，可见性等同于资料所属课程成员）
-- [ ] 任务状态只能按合法路径变化，例如 `PENDING → RUNNING → SUCCEEDED`。（**解析任务执行尚未交付**：本阶段无 Worker，任务恒为 `PENDING`）
-- [x] 任务包含 0 到 100 的进度或明确的不确定进度状态。（`PENDING` 时 `progress` 为 0，符合契约）
-- [x] 同一幂等请求不会并行创建重复任务。（`(type, resource_id)` 唯一约束 + 完成接口行锁，重复/并发完成只产生一个任务）
-- [ ] 失败任务包含面向用户的错误说明和内部 request ID。（**解析任务执行尚未交付**：本阶段任务不会进入 `FAILED`）
+- [x] 任务状态只能按合法路径变化，例如 `PENDING → RUNNING → SUCCEEDED`。（解析 Worker 已交付并验收：完成上传后原子领取任务推进 `PENDING → RUNNING`，解析成功落库章节/知识点后任务 `SUCCEEDED`（progress 100）、资料 `READY`；失败路径任务与资料同步 `FAILED`，重试解析复用原 job ID 重置回 `PENDING`）
+- [x] 任务包含 0 到 100 的进度或明确的不确定进度状态。（`PENDING`/`RUNNING` 起始进度为 0，`SUCCEEDED` 为 100，符合契约）
+- [x] 同一幂等请求不会并行创建重复任务。（`(type, resource_id)` 唯一约束 + 完成接口行锁 + Worker 原子领取，重复/并发完成与重试只产生一个任务）
+- [ ] 失败任务包含面向用户的错误说明和内部 request ID。（**后端已交付**：`FAILED` 任务与资料写入可安全展示的中文摘要，不回显堆栈或原始内容，错误结构含 request ID；前端展示尚未验收）
 - [ ] 前端停止轮询已完成、失败或取消的任务。（**解析任务执行尚未交付**：本阶段任务不会推进到终态）
 
 ## 9. 前端体验验收
@@ -148,10 +148,10 @@ cd backend
 
 | 层 | 数量 | 数据库 |
 | --- | --- | --- |
-| `tests/unit` | 128 | 不接触数据库与网络；外部依赖替换为 fake 或 `MockTransport` |
-| `tests/integration` | 165 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储用例需配置 S3 端点 |
-| `tests/contract` | 41 | 同上（令牌格式、课程与课件上传契约、OpenAPI 一致性） |
-| 合计 | 334 | 连真实 PostgreSQL + 对象存储时：333 通过、1 跳过（语义性，见下） |
+| `tests/unit` | 141 | 不接触数据库与网络；外部依赖替换为 fake 或 `MockTransport` |
+| `tests/integration` | 179 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储用例需配置 S3 端点 |
+| `tests/contract` | 47 | 同上（令牌格式、课程与课件上传契约、OpenAPI 一致性） |
+| 合计 | 367 | 连真实 PostgreSQL + 对象存储时全部通过（解析 Worker 用例以内联模式执行） |
 
 测试库规则（见 `backend/tests/pg_support.py`）：
 
@@ -214,6 +214,13 @@ cd backend
 | 课件上传接口的路径、状态码、Bearer、响应组件与枚举、组件名稳定 | `contract/test_materials_contract.py` |
 | 资料详情与任务状态查询：成员可读、非成员/不存在统一 404、归档可读 | `integration/test_materials_query_api.py` |
 | 资料/任务状态查询接口的路径、Bearer、响应组件（`MaterialDetail` / `JobStatus`） | `contract/test_materials_contract.py` |
+| 资料列表：成员可读、分页与倒序、归档可读、不含已删除、非成员 404 | `integration/test_materials_api.py` |
+| 删除：创建教师 204/幂等 204、学生 403、归档 409、删除后读路径与对象清理 | `integration/test_materials_api.py` |
+| 重试解析：失败 202 复用 job ID、就绪 409、处理中幂等 202、归档 409 | `integration/test_materials_api.py` |
+| 大纲查询：READY 200 含定位与摘录、PROCESSING 409、FAILED 502 带 job_id | `integration/test_materials_api.py` |
+| 解析 Worker：`PENDING → RUNNING → SUCCEEDED`/`FAILED`、产物落库、失败不落库 | `integration/test_materials_api.py` |
+| 解析器：DOCX/PPTX 章节与知识点抽取、损坏与空文本失败、来源类型推导 | `unit/test_materials_parser.py` |
+| 列表/删除/重试/大纲的路径、状态码、响应组件（`MaterialOutline` 等）与错误码 | `contract/test_materials_contract.py` |
 | 过期上传清理：删孤立对象并标记过期、幂等、已完成资料不删、与完成请求争锁、存储不可用跳过；维护命令连接隔离测试库与真实测试桶执行两次 | `integration/test_upload_cleanup.py` |
 | 上传会话 `expired_at` 过期清理标记列 | `integration/test_migrations.py` |
 
@@ -231,13 +238,21 @@ unit 128 / contract 41 / integration 165，Auth 相关用例全部真实执行�
 运行前清理了上次异常退出残留的 `edu_ai_dev_test` 与 `edu_ai_dev_migration_check`
 （无活动连接，符合规则 3 的残留判定），本次会话结束后复查 `pg_database` 无残留。
 
+资料接口与解析 Worker 交付验证：独立测试库 `edu_ai_pr_verify_test` + MinIO
+测试桶 `edu-ai-test` 下 367 项全部通过、0 失败、0 跳过
+（unit 141 / contract 47 / integration 179）；资料列表、删除、重试解析、
+大纲查询及 Worker 状态推进用例均真实执行，运行后 `pg_database` 无残留。
+
 HeadObject 带 `x-amz-checksum-mode: ENABLED` 后，MinIO 回显已存储的
 `x-amz-checksum-sha256`，校验值读取也由真实存储用例验证。真实 PUT、内容与签名哈希不符被拒、
 重复 PUT 被拒、篡改签名头被拒、跨域预检、后端不代传文件内容等用例在 MinIO 上均完整执行并断言。
 
-**解析任务执行尚未交付**：第一版未接入解析 Worker，资料恒为 `PROCESSING`、
-任务恒为 `PENDING`，二者都不会自动推进；大纲/知识点生成、解析失败重试、
-任务状态推进与失败错误说明均属后续阶段。
+**解析 Worker 已交付**（契约 5.5）：完成上传与重试解析后由后台任务执行解析，
+推进资料 `PROCESSING → READY/FAILED` 与任务 `PENDING → RUNNING → SUCCEEDED/FAILED`；
+大纲/知识点查询（`GET /materials/{material_id}/outline`）、失败重试
+（`POST /materials/{material_id}/parse`）、资料列表与删除接口均已交付并验收。
+第一版不做扫描版 PDF 的 OCR，也不提供通用 `POST /jobs/{job_id}/retry`；
+前端对解析状态、大纲与重试入口的展示仍属后续阶段。
 
 对象存储验收怎么跑（`tests/integration/test_storage_minio.py`，用例对服务端不做假设）:
 

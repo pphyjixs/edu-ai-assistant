@@ -36,6 +36,8 @@ class FakeObject:
     size: int
     content_type: str
     checksum_sha256_base64: str | None
+    #: 对象内容（解析 Worker 测试用；生产适配器从真实存储拉取）
+    content: bytes = b""
 
 
 class FakeStorage(S3Storage):
@@ -67,6 +69,7 @@ class FakeStorage(S3Storage):
         size: int,
         content_type: str,
         sha256_hex: str | None,
+        content: bytes = b"",
     ) -> None:
         """放入一份对象；``sha256_hex`` 为 ``None`` 时不带校验值。"""
         self.objects[object_key] = FakeObject(
@@ -75,6 +78,7 @@ class FakeStorage(S3Storage):
             checksum_sha256_base64=(
                 sha256_base64(sha256_hex) if sha256_hex is not None else None
             ),
+            content=content,
         )
 
     def as_unavailable(self, reason: str = "connection") -> None:
@@ -134,6 +138,14 @@ class FakeStorage(S3Storage):
     def delete_object(self, object_key: str) -> bool:
         self._guard()
         return self.objects.pop(object_key, None) is not None
+
+    def get_object(self, object_key: str) -> bytes:
+        """返回对象内容（与真实适配器的解析 Worker 读取路径一致）。"""
+        self._guard()
+        stored = self.objects.get(object_key)
+        if stored is None:
+            raise StorageObjectNotFoundError(object_key)
+        return stored.content
 
     def purged(self) -> bool:
         """测试断言用：后端从未接收过文件内容，因此也不该缓存对象。"""
