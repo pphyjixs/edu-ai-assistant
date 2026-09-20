@@ -182,30 +182,32 @@ async def _write_success(
     期间被删除，或任务已被重试重置并由新一轮执行接管（令牌不匹配）时
     放弃回写，返回 ``False``。
     """
-    fresh = await repo.get_visible_material_for_update(session, material.id)
+    material_id = material.id  # rollback 会使 ORM 对象过期，先取标量避免懒加载
+    fresh = await repo.get_visible_material_for_update(session, material_id)
     if fresh is None:
         await session.rollback()
-        logger.info("资料在解析期间被删除，放弃回写结果（material_id=%s）", material.id)
+        logger.info("资料在解析期间被删除，放弃回写结果（material_id=%s）", material_id)
         return False
 
     job = await session.execute(
         select(Job)
         .where(
             Job.type == JobType.MATERIAL_PARSE,
-            Job.resource_id == material.id,
+            Job.resource_id == material_id,
             Job.run_token == run_token,
+            Job.status == JobStatusValue.RUNNING,
         )
         .with_for_update()
     )
     job_row = job.scalar_one_or_none()
     if job_row is None:
-        # 任务已被重试重置并由新的运行令牌接管：本轮结果作废
+        # 任务已被重试重置（令牌清空）或已非 RUNNING：本轮结果作废
         await session.rollback()
-        logger.info("运行令牌不匹配，放弃回写结果（material_id=%s）", material.id)
+        logger.info("运行令牌不匹配或任务已非 RUNNING，放弃回写结果（material_id=%s）", material_id)
         return False
 
     # 全量重写解析产物：重试场景下清掉上一次（未成功）的残留
-    await repo.delete_sections(session, material_id=material.id)
+    await repo.delete_sections(session, material_id=material_id)
     # 两表之间没有 relationship，unit of work 不保证插入顺序：
     # 先写章节并 flush，知识点的外键才有可引用的行
     section_ids: list[uuid.UUID] = []
@@ -214,7 +216,7 @@ async def _write_success(
         repo.add_section(
             session,
             section_id=section_id,
-            material_id=material.id,
+            material_id=material_id,
             order=order,
             title=section.title,
             location_start=section.location_start,
@@ -267,6 +269,7 @@ async def _write_failure(
                 Job.type == JobType.MATERIAL_PARSE,
                 Job.resource_id == material_id,
                 Job.run_token == run_token,
+                Job.status == JobStatusValue.RUNNING,
             )
             .with_for_update()
         )

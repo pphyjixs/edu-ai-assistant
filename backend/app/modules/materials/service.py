@@ -609,13 +609,16 @@ async def retry_parse(
     ):
         return job, locked, False
 
-    # 重试：复用原任务 ID，清空全部执行痕迹（契约 5.3）。
+    # 重试：复用原任务 ID，清空全部执行痕迹并**撤销旧执行者的运行令牌**
+    # （契约 5.3）：清空 ``run_token`` 与租约后，任何携带旧令牌的回写都会
+    # 因令牌/状态不匹配被拒绝，旧执行者不能再改变任务、资料或解析产物。
     # 覆盖：FAILED 任务、崩溃后的 RUNNING 租约过期（执行者失联）等。
     job.status = JobStatusValue.PENDING
     job.progress = 0
     job.error = None
     job.started_at = None
     job.finished_at = None
+    job.run_token = None
     job.lease_expires_at = None
     locked.status = MaterialStatus.PROCESSING
     locked.error_message = None

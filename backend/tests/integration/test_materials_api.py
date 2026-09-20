@@ -22,10 +22,11 @@ import httpx
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.engine import Engine
 
 from app.core.time import utc_now
+from app.modules.materials.models import Material
 from app.storage.deps import get_storage_dep
 from tests.storage_fake import FakeStorage
 
@@ -1491,3 +1492,148 @@ def test_job_aborts_when_material_deleted_mid_parse(
         ).scalar_one()
     assert job_status == "CANCELLED"
     assert section_count == 0
+
+
+def test_retry_revokes_stale_worker_write_back(
+    client: TestClient,
+    fake_storage: FakeStorage,
+    pg_sync_engine: Engine,
+    pg_session_factory,
+    make_settings,
+) -> None:
+    """竞态回归：租约过期被重试回收后，旧执行者不能再回写（契约 5.3/5.5）。
+
+    场景：Worker 领取后崩溃（租约过期但令牌仍在）；重试接口把任务重置为
+    ``PENDING`` 并**清空运行令牌**；此时旧执行者恢复，分别尝试**成功回写**
+    与**失败回写**——两者都必须被拒绝；随后新 Worker 领取并正常完成。
+    """
+    import asyncio
+    from datetime import timedelta
+
+    from app.modules.materials import worker
+    from app.modules.materials.outline_ai import GeneratedKnowledgePoint, GeneratedSection, GeneratedOutline
+
+    _register(client, "teacher@example.com", "TEACHER")
+    teacher = _login(client, "teacher@example.com")
+    course_id = _create_course(client, teacher)
+    completed = _upload(client, fake_storage, teacher, course_id)
+    material_id = completed["material"]["id"]
+    job_id = completed["job"]["id"]
+
+    # 用过去的时间领取：租约从领取时刻起算，天然已过期（不依赖 sleep）
+    stale_claim_time = utc_now() - timedelta(seconds=7200)
+
+    async def stale_claim():
+        return await worker.claim_next(
+            pg_session_factory,
+            now=stale_claim_time,
+            lease_seconds=3600,  # 租约在 1 小时前已到期
+        )
+
+    claimed = asyncio.run(stale_claim())
+    assert claimed is not None
+    assert claimed.job_id == uuid.UUID(job_id)
+    stale_token = claimed.run_token
+    material_uuid = uuid.UUID(material_id)
+
+    # 重试回收：任务重置为 PENDING、令牌被清空
+    retried = client.post(
+        PARSE_URL.format(material_id=material_id), headers=_auth(teacher)
+    )
+    assert retried.status_code == 202
+    assert retried.json()["status"] == "PENDING"
+    assert retried.json()["id"] == job_id
+
+    # 旧执行者恢复：尝试成功回写（携带过期前取得的令牌）
+    old_outline = GeneratedOutline(
+        sections=[
+            GeneratedSection(
+                title="旧执行者的章节",
+                location_start=1,
+                location_end=1,
+                knowledge_points=[
+                    GeneratedKnowledgePoint(
+                        title="旧知识点",
+                        description="不应被发布。",
+                        quote="软件工程是应用系统化的方法。",
+                        location_start=1,
+                        location_end=1,
+                    )
+                ],
+            )
+        ]
+    )
+
+    async def stale_write_success() -> bool:
+        async with pg_session_factory() as session:
+            material = (
+                (
+                    await session.execute(
+                        select(Material).where(Material.id == material_uuid)
+                    )
+                )
+                .scalars()
+                .one()
+            )
+            return await worker._write_success(
+                session,
+                material=material,
+                outline=old_outline,
+                run_token=stale_token,
+                now=utc_now(),
+            )
+
+    assert asyncio.run(stale_write_success()) is False
+
+    # 旧执行者尝试失败回写：同样被拒绝
+    async def stale_write_failure() -> None:
+        await worker._write_failure(
+            pg_session_factory,
+            material_id=material_uuid,
+            run_token=stale_token,
+            message="旧执行者的失败",
+            now=utc_now(),
+        )
+
+    asyncio.run(stale_write_failure())
+
+    # 任务仍为 PENDING、资料仍为 PROCESSING、没有旧解析产物
+    detail = client.get(f"/api/v1/materials/{material_id}", headers=_auth(teacher))
+    assert detail.json()["status"] == "PROCESSING"
+    assert detail.json()["error_message"] is None
+    job = client.get(f"/api/v1/jobs/{job_id}", headers=_auth(teacher)).json()
+    assert job["status"] == "PENDING"
+    assert job["error"] is None
+    with pg_sync_engine.connect() as connection:
+        section_count = connection.execute(
+            text(
+                "SELECT count(*) FROM material_sections "
+                "WHERE material_id = CAST(:id AS uuid)"
+            ),
+            {"id": material_id},
+        ).scalar_one()
+    assert section_count == 0
+
+    # 新 Worker 领取：新令牌（与旧令牌不同）、原 job ID 不变，并正常完成
+    ai_factory = _fake_model_client(
+        lambda request: _model_json_response(VALID_OUTLINE_PAYLOAD)
+    )
+    assert (
+        _drive_worker(pg_session_factory, fake_storage, make_settings, ai_factory)
+        == 1
+    )
+    detail = client.get(f"/api/v1/materials/{material_id}", headers=_auth(teacher))
+    assert detail.json()["status"] == "READY"
+    job = client.get(f"/api/v1/jobs/{job_id}", headers=_auth(teacher)).json()
+    assert job["id"] == job_id
+    assert job["status"] == "SUCCEEDED"
+
+    # 令牌确实更换：直接查库比对
+    with pg_sync_engine.connect() as connection:
+        token = connection.execute(
+            text("SELECT run_token FROM jobs WHERE id = CAST(:id AS uuid)"),
+            {"id": job_id},
+        ).scalar_one()
+    assert token is not None
+    assert token != stale_token
+    assert job["progress"] == 100

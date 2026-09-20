@@ -95,7 +95,7 @@
 - [x] 任务包含 0 到 100 的进度或明确的不确定进度状态。（`PENDING`/`RUNNING` 起始进度为 0，`SUCCEEDED` 为 100，符合契约）
 - [x] 同一幂等请求不会并行创建重复任务。（`(type, resource_id)` 唯一约束 + 完成接口行锁 + Worker 原子领取，重复/并发完成与重试只产生一个任务）
 - [ ] 失败任务包含面向用户的错误说明和内部 request ID。（**后端已交付**：`FAILED` 任务与资料写入可安全展示的中文摘要，不回显堆栈或原始内容，错误结构含 request ID；前端展示尚未验收）
-- [ ] 前端停止轮询已完成、失败或取消的任务。（**解析任务执行尚未交付**：本阶段任务不会推进到终态）
+- [ ] 前端停止轮询已完成、失败或取消的任务。（后端任务状态已由解析 Worker 推进到 `SUCCEEDED`/`FAILED` 终态，前端轮询逻辑尚未实现，属前端验收范畴）
 
 ## 9. 前端体验验收
 
@@ -149,9 +149,9 @@ cd backend
 | 层 | 数量 | 数据库 |
 | --- | --- | --- |
 | `tests/unit` | 141 | 不接触数据库与网络；外部依赖替换为 fake 或 `MockTransport` |
-| `tests/integration` | 198 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储与解析 Worker 端到端用例需配置 S3 端点 |
+| `tests/integration` | 199 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储与解析 Worker 端到端用例需配置 S3 端点 |
 | `tests/contract` | 47 | 同上（令牌格式、课程与课件上传契约、OpenAPI 一致性） |
-| 合计 | 386 | 连真实 PostgreSQL + 对象存储时全部通过（模型为本地假 HTTP 服务） |
+| 合计 | 387 | 连真实 PostgreSQL + 对象存储时全部通过（模型为本地假 HTTP 服务） |
 
 测试库规则（见 `backend/tests/pg_support.py`）：
 
@@ -226,6 +226,7 @@ cd backend
 | 解析上限：全文超 120,000 字符直接 FAILED，不截断 | `integration/test_materials_api.py` |
 | 扫描版 PDF：无可提取文本明确 FAILED，不做 OCR | `integration/test_materials_api.py` |
 | 崩溃恢复：RUNNING 租约过期后重试解析回收任务 | `integration/test_materials_api.py` |
+| 竞态回归：重试撤销旧令牌后，旧执行者成功/失败回写均被拒绝，新执行者正常完成 | `integration/test_materials_api.py` |
 | 解析中删除：回写前检查删除标记与运行令牌，放弃发布、任务保持 CANCELLED | `integration/test_materials_api.py` |
 | 真实 MinIO 端到端：DOCX/PPTX/PDF 直传→解析→READY，删除后真实对象清理 | `integration/test_parse_worker_minio.py` |
 | 列表/删除/重试/大纲的路径、状态码、响应组件（`MaterialOutline` 等）与错误码 | `contract/test_materials_contract.py` |
@@ -247,8 +248,8 @@ unit 128 / contract 41 / integration 165，Auth 相关用例全部真实执行�
 （无活动连接，符合规则 3 的残留判定），本次会话结束后复查 `pg_database` 无残留。
 
 资料接口与解析 Worker 交付验证：独立测试库 `edu_ai_pr_verify_test` + MinIO
-测试桶 `edu-ai-test` 下 386 项全部通过、0 失败、0 跳过
-（unit 141 / contract 47 / integration 198）；资料列表、删除、重试解析、
+测试桶 `edu-ai-test` 下 387 项全部通过、0 失败、0 跳过
+（unit 141 / contract 47 / integration 199）；资料列表、删除、重试解析、
 大纲查询及 Worker 状态推进用例均真实执行，运行后 `pg_database` 无残留。
 删除流水线专项：删除事务取消未完成解析并写入对象删除待办；维护命令在
 PUT 地址过期 + 缓冲期后删除对象、失败持续重试、删除后核查晚到 PUT；
