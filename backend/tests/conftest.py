@@ -55,9 +55,6 @@ def make_settings() -> SettingsFactory:
             "database_url": TEST_DATABASE_URL,
             "app_secret_key": TEST_SECRET_KEY,
             "frontend_origins": "http://localhost:5173",
-            # 解析 Worker 默认关闭：上传/删除/重试等接口测试不依赖后台解析；
-            # Worker 行为由专项用例显式开启（material_parse_worker_enabled=True）
-            "material_parse_worker_enabled": False,
         }
         values.update(overrides)
         # _env_file=None: 隔离本地 .env，保证测试可重复

@@ -756,9 +756,11 @@ Authorization: Bearer <access_token>
 | 资料状态 | 对应任务状态 | 结果 |
 | --- | --- | --- |
 | `READY` | `SUCCEEDED` | `409 MATERIAL_ALREADY_READY`，不做任何修改 |
-| `PROCESSING` | `PENDING` / `RUNNING` | 幂等返回 `202` 与当前任务的**原样** `JobStatus`，不重置进度与时间戳 |
+| `PROCESSING` | `PENDING` | 幂等返回 `202` 与当前任务的**原样** `JobStatus`，不重置进度与时间戳 |
+| `PROCESSING` | `RUNNING` 且租约未过期 | 幂等返回 `202` 与当前任务原样 `JobStatus` |
+| `PROCESSING` | `RUNNING` 但租约已过期（执行者崩溃失联） | **回收**：复用原 job ID 重置为 `PENDING` 并返回 `202`（同 `FAILED` 分支） |
 | `PROCESSING` | `SUCCEEDED`（资料未 READY 的异常窗口，如 Worker 中断） | 重置后返回 `202`（同 `FAILED` 分支） |
-| `FAILED` | `FAILED` | **重试**：复用原 job ID，任务重置为 `PENDING`（`progress=0`、`error=null`、`started_at=null`、`finished_at=null`），资料状态回到 `PROCESSING` 并清空 `error_message`，返回 `202` |
+| `FAILED` | `FAILED` | **重试**：复用原 job ID，任务重置为 `PENDING`（`progress=0`、`error=null`、`started_at=null`、`finished_at=null`、租约清除），资料状态回到 `PROCESSING` 并清空 `error_message`，返回 `202` |
 | `UPLOADING` / `UPLOADED` | — | 不会通过公开接口出现（完成确认后即为 `PROCESSING`）；出现时按 `FAILED` 分支处理 |
 
 规则：
@@ -857,12 +859,12 @@ Authorization: Bearer <access_token>
 解析 Worker 是独立于 API 进程的后台组件（独立进程/独立部署单元，通过同一数据库与对象存储协作），不对外暴露接口。职责与行为：
 
 1. **领取**：以原子方式领取一个 `PENDING` 的 `MATERIAL_PARSE` 任务（`UPDATE ... WHERE status='PENDING' ... RETURNING` 或等价的行锁方案），置为 `RUNNING`、记录 `started_at`、`progress` 从 0 开始；同时递增执行**尝试次数**（`attempts`）、生成**运行令牌**（`run_token`）并设置**租约**（`lease_expires_at`，配置 `MATERIAL_PARSE_LEASE_SECONDS`）。
-2. **解析**：按资料的 `content_type` 与 `source_type` 从存储对象抽取章节与知识点；抽取的原文摘录写入 `quote`。
+2. **解析**：按资料的 `content_type` 流式下载对象并复核大小与 SHA-256（与资料声明比对，不符即拒绝）；用 `pypdf` / `python-pptx` / `python-docx` 提取带来源位置的文本并按来源顺序分块（默认全文 120,000 字符上限、每块 8,000 字符，由 `MATERIAL_PARSE_MAX_CHARS` / `MATERIAL_PARSE_CHUNK_CHARS` 配置；超限直接进入 `FAILED`，不截断后宣称成功；扫描版 PDF 无可提取文本时明确失败，不提供 OCR）；把分块全文送入 Chat Completions 兼容端点（`AI_BASE_URL` / `AI_MODEL`），生成**同原文主要语言**的章节标题与知识点；模型输出经 Pydantic 校验，原文摘录必须能在对应来源文本中找到（找不到视为幻觉、整体无效）。
 3. **成功**：章节与知识点在**同一事务**中落库并把任务置为 `SUCCEEDED`（`progress=100`、`finished_at`），资料状态置为 `READY`。资料状态与任务状态在成功路径上**允许短暂不一致**（先任务后资料或反之），读接口以资料状态为准（5.4 的分流表），不因此返回错误。
 4. **失败**：任务置为 `FAILED`、资料状态置为 `FAILED`，`error` / `error_message` 写入**安全摘要**（不含堆栈、不含对象键、不含内部地址）；解析结果不落库，不产生部分章节。
 5. **回写校验**：成功与失败的回写都必须携带领取时获得的运行令牌；令牌不匹配（任务已被 5.3 重置并由新一轮执行接管）或资料已被删除（5.2）时放弃回写，仅记日志。
 6. **崩溃安全**：Worker 中断后任务停留于 `RUNNING` 直到租约到期；5.3 的重试对“任务 `SUCCEEDED` 但资料未 `READY`”等异常窗口同样可重置（见 5.3 分流表），不要求 Worker 自身实现租约续期。
-7. 第一版 Worker 为**同步内联实现**（完成确认后同进程执行解析，`MATERIAL_PARSE` 的 `202` 返回时任务可能已推进）；后续可替换为独立部署进程而不改变任何 API 行为。
+7. **独立进程部署**：Worker 由独立进程运行（``scripts/parse_worker.py``），直接轮询数据库领取任务，不依赖 API 请求进程或内存队列；API 进程只创建 ``PENDING`` 任务。轮询间隔与批大小由部署配置决定（``WORKER_POLL_SECONDS`` / ``WORKER_BATCH_SIZE``）。
 
 第一版不实现：扫描版 PDF 的 OCR（图片型页面按空章节处理或解析失败，失败原因写入安全摘要）；通用 `POST /jobs/{job_id}/retry`（重试一律经由 5.3，按资源类型收口）。
 

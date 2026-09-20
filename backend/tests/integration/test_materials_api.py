@@ -16,13 +16,16 @@ import hashlib
 import io
 import uuid
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+
+import httpx
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from app.core.time import utc_now
 from app.storage.deps import get_storage_dep
 from tests.storage_fake import FakeStorage
 
@@ -46,37 +49,34 @@ OUTLINE_URL = "/api/v1/materials/{material_id}/outline"
 # 构造可解析的字节流
 # --------------------------------------------------------------------------- #
 def build_docx(paragraphs: list[tuple[str, str | None]]) -> bytes:
-    """最小 DOCX：``(文本, Heading 样式或 None)`` 列表。"""
-    ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
-    body = ""
-    for value, style in paragraphs:
-        style_xml = f'<w:pPr><w:pStyle w:val="{style}"/></w:pPr>' if style else ""
-        body += f"<w:p>{style_xml}<w:r><w:t>{value}</w:t></w:r></w:p>"
-    document = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        f'<w:document xmlns:w="{ns}"><w:body>{body}</w:body></w:document>'
-    )
+    """用 python-docx 生成真实 DOCX：``(文本, Heading 样式或 None)`` 列表。"""
+    import docx
+
+    document = docx.Document()
+    for text, style in paragraphs:
+        paragraph = document.add_paragraph()
+        if style is not None:
+            paragraph.style = document.styles[style]
+        paragraph.add_run(text)
     buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w") as archive:
-        archive.writestr("word/document.xml", document)
+    document.save(buffer)
     return buffer.getvalue()
 
 
 def build_pptx(slides: list[list[str]]) -> bytes:
-    """最小 PPTX：每张幻灯片是一组文本块。"""
-    ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    """用 python-pptx 生成真实 PPTX：每张幻灯片是「标题 + 内容条目」。"""
+    from pptx import Presentation
+
+    presentation = Presentation()
+    for texts in slides:
+        slide = presentation.slides.add_slide(presentation.slide_layouts[1])
+        slide.shapes.title.text = texts[0]
+        body = slide.placeholders[1].text_frame
+        body.text = texts[1] if len(texts) > 1 else " "
+        for extra in texts[2:]:
+            body.add_paragraph().text = extra
     buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w") as archive:
-        for index, texts in enumerate(slides, start=1):
-            paragraphs = "".join(
-                f"<a:p><a:r><a:t>{value}</a:t></a:r></a:p>" for value in texts
-            )
-            archive.writestr(
-                f"ppt/slides/slide{index}.xml",
-                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-                f'<p:sld xmlns:a="{ns}" xmlns:p="urn:x">'
-                f"<p:cSld>{paragraphs}</p:cSld></p:sld>",
-            )
+    presentation.save(buffer)
     return buffer.getvalue()
 
 
@@ -106,31 +106,109 @@ def fake_storage() -> FakeStorage:
 
 
 def _make_client(
-    db_isolation: None, pg_app, fake_storage: FakeStorage, *, worker: bool
+    db_isolation: None, pg_app, fake_storage: FakeStorage
 ) -> TestClient:
-    """构造应用；``worker=True`` 时启用解析 Worker（契约 5.5 内联实现）。"""
-    overrides = (
-        {"material_parse_worker_enabled": True} if worker else {}
-    )
-    app = pg_app(**overrides)
+    """构造应用（解析由独立 Worker 进程领取，测试中手动驱动）。"""
+    app = pg_app()
     app.dependency_overrides[get_storage_dep] = lambda: fake_storage
     return TestClient(app)
 
 
 @pytest.fixture
 def client(db_isolation: None, pg_app, fake_storage: FakeStorage) -> Iterator[TestClient]:
-    """Worker 关闭：资料停留在 PROCESSING，供列表/删除/大纲分流测试。"""
-    with _make_client(db_isolation, pg_app, fake_storage, worker=False) as test_client:
+    """应用客户端：资料停留在 PROCESSING，由用例手动驱动 Worker。"""
+    with _make_client(db_isolation, pg_app, fake_storage) as test_client:
         yield test_client
 
 
-@pytest.fixture
-def worker_client(
-    db_isolation: None, pg_app, fake_storage: FakeStorage
-) -> Iterator[TestClient]:
-    """Worker 开启：完成上传/重试后解析在响应返回前执行完毕。"""
-    with _make_client(db_isolation, pg_app, fake_storage, worker=True) as test_client:
-        yield test_client
+def _drive_worker(
+    pg_session_factory,
+    fake_storage: FakeStorage,
+    make_settings,
+    ai_client_factory=None,
+    **overrides: object,
+) -> int:
+    """在测试库上驱动 Worker 领取并执行一批任务（同步包装）。
+
+    ``ai_client_factory`` 可注入本地假模型 HTTP 服务
+    （``httpx.MockTransport`` 支撑的 ``httpx.Client``）。默认提供假模型的
+    端点与模型名配置；需要验证「未配置模型」分支时显式传 ``ai_base_url=""``。
+    """
+    import asyncio
+
+    from app.modules.materials import worker
+
+    overrides.setdefault("ai_base_url", "http://fake-model.local/v1")
+    overrides.setdefault("ai_model", "fake-model")
+    settings = make_settings(**overrides)
+
+    async def run() -> int:
+        return await worker.run_pending_batch(
+            pg_session_factory,
+            storage=fake_storage,
+            settings=settings,
+            ai_client_factory=ai_client_factory,
+        )
+
+    return asyncio.run(run())
+
+
+def _fake_model_client(responder):
+    """构造注入假模型 HTTP 服务的客户端工厂。"""
+    import httpx
+
+    def factory() -> httpx.Client:
+        return httpx.Client(transport=httpx.MockTransport(responder))
+
+    return factory
+
+
+def _model_json_response(payload: dict) -> httpx.Response:
+    import json
+
+    return httpx.Response(
+        200,
+        json={
+            "choices": [
+                {"message": {"content": json.dumps(payload, ensure_ascii=False)}}
+            ]
+        },
+    )
+
+
+# 合法模型输出：摘录逐字取自 PARSEABLE_DOCX 的提取文本
+VALID_OUTLINE_PAYLOAD = {
+    "sections": [
+        {
+            "title": "绪论",
+            "location_start": 1,
+            "location_end": 2,
+            "knowledge_points": [
+                {
+                    "title": "系统化方法",
+                    "description": "软件工程是应用系统化的方法。",
+                    "quote": "软件工程是应用系统化的方法。",
+                    "location_start": 2,
+                    "location_end": 2,
+                }
+            ],
+        },
+        {
+            "title": "需求分析",
+            "location_start": 3,
+            "location_end": 4,
+            "knowledge_points": [
+                {
+                    "title": "生命周期起点",
+                    "description": "需求分析是起点。",
+                    "quote": "需求分析是软件生命周期的起点。",
+                    "location_start": 4,
+                    "location_end": 4,
+                }
+            ],
+        },
+    ]
+}
 
 
 def _register(client: TestClient, email: str, role: str) -> None:
@@ -465,9 +543,11 @@ def test_deleted_material_is_invisible_to_others(
 # 5.3 重试解析
 # --------------------------------------------------------------------------- #
 def test_retry_reuses_job_id_after_failure(
-    worker_client: TestClient, fake_storage: FakeStorage
+    client: TestClient,
+    fake_storage: FakeStorage,
+    pg_session_factory,
+    make_settings,
 ) -> None:
-    client = worker_client
     _register(client, "teacher@example.com", "TEACHER")
     teacher = _login(client, "teacher@example.com")
     course_id = _create_course(client, teacher)
@@ -478,6 +558,8 @@ def test_retry_reuses_job_id_after_failure(
     material_id = completed["material"]["id"]
     failed_job_id = completed["job"]["id"]
 
+    # 手动驱动 Worker：无效内容 → 提取失败 → 任务与资料 FAILED
+    assert _drive_worker(pg_session_factory, fake_storage, make_settings) == 1
     detail = client.get(f"/api/v1/materials/{material_id}", headers=_auth(teacher))
     assert detail.json()["status"] == "FAILED"
     assert detail.json()["error_message"]
@@ -497,10 +579,10 @@ def test_retry_reuses_job_id_after_failure(
     assert job["started_at"] is None
     assert job["finished_at"] is None
 
-    # 同步 Worker 在响应后立即重新解析：内容仍无法解析 → 再次 FAILED。
-    # 重置动作本身（PENDING、清空 error、复用 ID）已由上面的响应断言验证。
+    # 重置后的任务等待 Worker 领取：本轮未驱动，资料回到 PROCESSING
     detail = client.get(f"/api/v1/materials/{material_id}", headers=_auth(teacher))
-    assert detail.json()["status"] == "FAILED"
+    assert detail.json()["status"] == "PROCESSING"
+    assert detail.json()["error_message"] is None
 
     # 学生与非成员：403 / 404
     _register(client, "student@example.com", "STUDENT")
@@ -512,15 +594,23 @@ def test_retry_reuses_job_id_after_failure(
 
 
 def test_retry_on_ready_returns_409(
-    worker_client: TestClient, fake_storage: FakeStorage
+    client: TestClient,
+    fake_storage: FakeStorage,
+    pg_session_factory,
+    make_settings,
 ) -> None:
-    client = worker_client
     _register(client, "teacher@example.com", "TEACHER")
     teacher = _login(client, "teacher@example.com")
     course_id = _create_course(client, teacher)
     completed = _upload(client, fake_storage, teacher, course_id)
     material_id = completed["material"]["id"]
 
+    ai_factory = _fake_model_client(
+        lambda request: _model_json_response(VALID_OUTLINE_PAYLOAD)
+    )
+    assert _drive_worker(
+        pg_session_factory, fake_storage, make_settings, ai_factory
+    ) == 1
     detail = client.get(f"/api/v1/materials/{material_id}", headers=_auth(teacher))
     assert detail.json()["status"] == "READY"
 
@@ -586,9 +676,11 @@ def test_outline_not_ready_returns_409(
 
 
 def test_outline_failed_returns_502_with_job_id(
-    worker_client: TestClient, fake_storage: FakeStorage
+    client: TestClient,
+    fake_storage: FakeStorage,
+    pg_session_factory,
+    make_settings,
 ) -> None:
-    client = worker_client
     _register(client, "teacher@example.com", "TEACHER")
     teacher = _login(client, "teacher@example.com")
     course_id = _create_course(client, teacher)
@@ -597,6 +689,8 @@ def test_outline_failed_returns_502_with_job_id(
     )
     material_id = completed["material"]["id"]
     job_id = completed["job"]["id"]
+
+    assert _drive_worker(pg_session_factory, fake_storage, make_settings) == 1
 
     response = client.get(
         OUTLINE_URL.format(material_id=material_id), headers=_auth(teacher)
@@ -608,9 +702,11 @@ def test_outline_failed_returns_502_with_job_id(
 
 
 def test_outline_returns_sections_with_locations_and_quotes(
-    worker_client: TestClient, fake_storage: FakeStorage
+    client: TestClient,
+    fake_storage: FakeStorage,
+    pg_session_factory,
+    make_settings,
 ) -> None:
-    client = worker_client
     _register(client, "teacher@example.com", "TEACHER")
     _register(client, "student@example.com", "STUDENT")
     teacher = _login(client, "teacher@example.com")
@@ -632,6 +728,45 @@ def test_outline_returns_sections_with_locations_and_quotes(
     )
     material_id = completed["material"]["id"]
 
+    pptx_outline = {
+        "sections": [
+            {
+                "title": "软件工程概述",
+                "location_start": 1,
+                "location_end": 1,
+                "knowledge_points": [
+                    {
+                        "title": "定义与范围",
+                        "description": "定义与范围。",
+                        "quote": "定义与范围",
+                        "location_start": 1,
+                        "location_end": 1,
+                    }
+                ],
+            },
+            {
+                "title": "需求工程",
+                "location_start": 2,
+                "location_end": 2,
+                "knowledge_points": [
+                    {
+                        "title": "需求获取",
+                        "description": "需求获取。",
+                        "quote": "需求获取",
+                        "location_start": 2,
+                        "location_end": 2,
+                    }
+                ],
+            },
+        ]
+    }
+    ai_factory = _fake_model_client(
+        lambda request: _model_json_response(pptx_outline)
+    )
+    assert _drive_worker(
+        pg_session_factory, fake_storage, make_settings, ai_client_factory=ai_factory
+    ) == 1
+
     detail = client.get(f"/api/v1/courses/{course_id}", headers=_auth(teacher))
     _join_course(client, student, course_id, detail.json()["invite_code"])
 
@@ -649,7 +784,7 @@ def test_outline_returns_sections_with_locations_and_quotes(
     first = outline["sections"][0]
     assert first["source_type"] == "PPTX_SLIDE"
     assert first["location_start"] == first["location_end"] == 1
-    assert [point["order"] for point in first["knowledge_points"]] == [1, 2]
+    assert [point["order"] for point in first["knowledge_points"]] == [1]
     assert first["knowledge_points"][0]["quote"] == "定义与范围"
     assert first["knowledge_points"][0]["location_start"] == 1
 
@@ -663,9 +798,12 @@ def test_outline_returns_sections_with_locations_and_quotes(
 
 
 def test_worker_advances_material_and_job_to_succeeded(
-    worker_client: TestClient, fake_storage: FakeStorage, pg_sync_engine: Engine
+    client: TestClient,
+    fake_storage: FakeStorage,
+    pg_sync_engine: Engine,
+    pg_session_factory,
+    make_settings,
 ) -> None:
-    client = worker_client
     _register(client, "teacher@example.com", "TEACHER")
     teacher = _login(client, "teacher@example.com")
     course_id = _create_course(client, teacher)
@@ -673,7 +811,13 @@ def test_worker_advances_material_and_job_to_succeeded(
     material_id = completed["material"]["id"]
     job_id = completed["job"]["id"]
 
-    # Worker 在响应返回前执行完毕：资料 READY、任务 SUCCEEDED
+    # 手动驱动 Worker（本地假模型 HTTP 服务）：资料 READY、任务 SUCCEEDED
+    ai_factory = _fake_model_client(
+        lambda request: _model_json_response(VALID_OUTLINE_PAYLOAD)
+    )
+    assert _drive_worker(
+        pg_session_factory, fake_storage, make_settings, ai_factory
+    ) == 1
     detail = client.get(f"/api/v1/materials/{material_id}", headers=_auth(teacher))
     assert detail.json()["status"] == "READY"
     assert detail.json()["error_message"] is None
@@ -690,9 +834,12 @@ def test_worker_advances_material_and_job_to_succeeded(
 
 
 def test_worker_failure_marks_material_and_job_failed(
-    worker_client: TestClient, fake_storage: FakeStorage, pg_sync_engine: Engine
+    client: TestClient,
+    fake_storage: FakeStorage,
+    pg_sync_engine: Engine,
+    pg_session_factory,
+    make_settings,
 ) -> None:
-    client = worker_client
     _register(client, "teacher@example.com", "TEACHER")
     teacher = _login(client, "teacher@example.com")
     course_id = _create_course(client, teacher)
@@ -702,6 +849,7 @@ def test_worker_failure_marks_material_and_job_failed(
     material_id = completed["material"]["id"]
     job_id = completed["job"]["id"]
 
+    assert _drive_worker(pg_session_factory, fake_storage, make_settings) == 1
     detail = client.get(f"/api/v1/materials/{material_id}", headers=_auth(teacher))
     assert detail.json()["status"] == "FAILED"
     message = detail.json()["error_message"]
@@ -871,10 +1019,12 @@ def test_cleanup_survives_storage_outage_and_retries(
 
 
 def test_repeat_complete_returns_first_snapshot_after_deletion(
-    worker_client: TestClient, fake_storage: FakeStorage
+    client: TestClient,
+    fake_storage: FakeStorage,
+    pg_session_factory,
+    make_settings,
 ) -> None:
     """删除或状态变化后重复完成上传，仍返回首次响应快照（契约 4.6 / 5.2）。"""
-    client = worker_client
     _register(client, "teacher@example.com", "TEACHER")
     teacher = _login(client, "teacher@example.com")
     course_id = _create_course(client, teacher)
@@ -910,6 +1060,12 @@ def test_repeat_complete_returns_first_snapshot_after_deletion(
     assert first_body["material"]["status"] == "PROCESSING"
     material_id = first_body["material"]["id"]
 
+    ai_factory = _fake_model_client(
+        lambda request: _model_json_response(VALID_OUTLINE_PAYLOAD)
+    )
+    assert _drive_worker(
+        pg_session_factory, fake_storage, make_settings, ai_factory
+    ) == 1
     current = client.get(f"/api/v1/materials/{material_id}", headers=_auth(teacher))
     assert current.json()["status"] == "READY"
 
@@ -991,3 +1147,347 @@ def test_delete_cancels_pending_parse_job(
             {"id": job_id},
         ).scalar_one()
     assert status == "CANCELLED"
+
+
+# --------------------------------------------------------------------------- #
+# Worker 失败路径：模型输出校验、超限、扫描 PDF、AI 未配置、超时
+# --------------------------------------------------------------------------- #
+def _failed_detail(client: TestClient, teacher: str, material_id: str) -> dict:
+    detail = client.get(f"/api/v1/materials/{material_id}", headers=_auth(teacher))
+    assert detail.json()["status"] == "FAILED", detail.json()
+    return detail.json()
+
+
+def test_worker_fails_when_model_not_configured(
+    client: TestClient, fake_storage: FakeStorage, pg_session_factory, make_settings
+) -> None:
+    _register(client, "teacher@example.com", "TEACHER")
+    teacher = _login(client, "teacher@example.com")
+    course_id = _create_course(client, teacher)
+    completed = _upload(client, fake_storage, teacher, course_id)
+
+    assert (
+        _drive_worker(
+            pg_session_factory,
+            fake_storage,
+            make_settings,
+            ai_base_url="",  # 未配置模型端点
+        )
+        == 1
+    )
+    detail = _failed_detail(client, teacher, completed["material"]["id"])
+    assert "未配置" in detail["error_message"]
+
+
+def test_worker_fails_on_invalid_model_json(
+    client: TestClient, fake_storage: FakeStorage, pg_session_factory, make_settings
+) -> None:
+    _register(client, "teacher@example.com", "TEACHER")
+    teacher = _login(client, "teacher@example.com")
+    course_id = _create_course(client, teacher)
+    completed = _upload(client, fake_storage, teacher, course_id)
+
+    import httpx as httpx_module
+
+    def responder(request):
+        return httpx_module.Response(200, text="这不是 JSON")
+
+    assert (
+        _drive_worker(
+            pg_session_factory,
+            fake_storage,
+            make_settings,
+            ai_client_factory=_fake_model_client(responder),
+        )
+        == 1
+    )
+    detail = _failed_detail(client, teacher, completed["material"]["id"])
+    assert "格式无效" in detail["error_message"]
+
+    # 模型回复正文不是 JSON → 同样 FAILED
+    completed2 = _upload(client, fake_storage, teacher, course_id)
+    assert (
+        _drive_worker(
+            pg_session_factory,
+            fake_storage,
+            make_settings,
+            ai_client_factory=_fake_model_client(
+                lambda request: httpx_module.Response(
+                    200,
+                    json={"choices": [{"message": {"content": "{invalid json"}}]},
+                )
+            ),
+        )
+        == 1
+    )
+    detail2 = _failed_detail(client, teacher, completed2["material"]["id"])
+    assert "JSON" in detail2["error_message"]
+
+
+def test_worker_fails_on_model_http_error(
+    client: TestClient, fake_storage: FakeStorage, pg_session_factory, make_settings
+) -> None:
+    _register(client, "teacher@example.com", "TEACHER")
+    teacher = _login(client, "teacher@example.com")
+    course_id = _create_course(client, teacher)
+    completed = _upload(client, fake_storage, teacher, course_id)
+
+    import httpx as httpx_module
+
+    assert (
+        _drive_worker(
+            pg_session_factory,
+            fake_storage,
+            make_settings,
+            ai_client_factory=_fake_model_client(
+                lambda request: httpx_module.Response(500)
+            ),
+        )
+        == 1
+    )
+    detail = _failed_detail(client, teacher, completed["material"]["id"])
+    assert "500" in detail["error_message"]
+
+
+def test_worker_fails_on_hallucinated_quote(
+    client: TestClient,
+    fake_storage: FakeStorage,
+    pg_sync_engine: Engine,
+    pg_session_factory,
+    make_settings,
+) -> None:
+    """摘录不在来源文本中（模型幻觉）→ 整体无效，FAILED。"""
+    _register(client, "teacher@example.com", "TEACHER")
+    teacher = _login(client, "teacher@example.com")
+    course_id = _create_course(client, teacher)
+    completed = _upload(client, fake_storage, teacher, course_id)
+
+    import copy
+
+    bad_payload = copy.deepcopy(VALID_OUTLINE_PAYLOAD)
+    bad_payload["sections"][0]["knowledge_points"][0]["quote"] = (
+        "这句话在原文里根本不存在"
+    )
+    assert (
+        _drive_worker(
+            pg_session_factory,
+            fake_storage,
+            make_settings,
+            ai_client_factory=_fake_model_client(
+                lambda request: _model_json_response(bad_payload)
+            ),
+        )
+        == 1
+    )
+    detail = _failed_detail(client, teacher, completed["material"]["id"])
+    assert "摘录" in detail["error_message"]
+
+    # 失败不落库：没有部分章节
+    with pg_sync_engine.connect() as connection:
+        count = connection.execute(
+            text("SELECT count(*) FROM material_sections")
+        ).scalar_one()
+    assert count == 0
+
+
+def test_worker_fails_on_model_timeout(
+    client: TestClient, fake_storage: FakeStorage, pg_session_factory, make_settings
+) -> None:
+    _register(client, "teacher@example.com", "TEACHER")
+    teacher = _login(client, "teacher@example.com")
+    course_id = _create_course(client, teacher)
+    completed = _upload(client, fake_storage, teacher, course_id)
+
+    import httpx as httpx_module
+
+    def timeout_responder(request):
+        raise httpx_module.ConnectTimeout("timed out")
+
+    assert (
+        _drive_worker(
+            pg_session_factory,
+            fake_storage,
+            make_settings,
+            ai_client_factory=_fake_model_client(timeout_responder),
+        )
+        == 1
+    )
+    detail = _failed_detail(client, teacher, completed["material"]["id"])
+    assert "超时" in detail["error_message"]
+
+
+def test_worker_fails_when_text_exceeds_limit(
+    client: TestClient, fake_storage: FakeStorage, pg_session_factory, make_settings
+) -> None:
+    """全文超过 120,000 字符上限 → 直接 FAILED，不截断后宣称成功（契约 5.5）。"""
+    _register(client, "teacher@example.com", "TEACHER")
+    teacher = _login(client, "teacher@example.com")
+    course_id = _create_course(client, teacher)
+    # 20 段 × 7,000 字符（低于单段截断阈值）= 140,000 字符
+    big_content = build_docx([(f"段{i}。" + "内容" * 3500, None) for i in range(20)])
+    completed = _upload(
+        client, fake_storage, teacher, course_id, content=big_content
+    )
+
+    # 无需模型：上限检查发生在提取阶段
+    assert _drive_worker(pg_session_factory, fake_storage, make_settings) == 1
+    detail = _failed_detail(client, teacher, completed["material"]["id"])
+    assert "上限" in detail["error_message"]
+
+
+def test_worker_marks_scanned_pdf_failed_without_ocr(
+    client: TestClient, fake_storage: FakeStorage, pg_session_factory, make_settings
+) -> None:
+    """扫描版（图片型）PDF 无可提取文本：明确 FAILED，不做 OCR（契约 5.5）。"""
+    import io
+
+    from pypdf import PdfWriter
+
+    _register(client, "teacher@example.com", "TEACHER")
+    teacher = _login(client, "teacher@example.com")
+    course_id = _create_course(client, teacher)
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    blank_pdf = buffer.getvalue()
+
+    completed = _upload(
+        client,
+        fake_storage,
+        teacher,
+        course_id,
+        filename="scanned.pdf",
+        content_type=PDF_MIME,
+        content=blank_pdf,
+    )
+
+    assert _drive_worker(pg_session_factory, fake_storage, make_settings) == 1
+    detail = _failed_detail(client, teacher, completed["material"]["id"])
+    assert "扫描" in detail["error_message"] or "OCR" in detail["error_message"]
+
+
+# --------------------------------------------------------------------------- #
+# 崩溃恢复与解析中删除
+# --------------------------------------------------------------------------- #
+def test_retry_recovers_job_after_lease_expiry(
+    client: TestClient,
+    fake_storage: FakeStorage,
+    pg_session_factory,
+    make_settings,
+) -> None:
+    """Worker 崩溃后 RUNNING 租约过期 → 重试解析回收任务（契约 5.3/5.5）。"""
+    import asyncio
+    import time as time_module
+
+    from app.modules.materials import worker
+
+    _register(client, "teacher@example.com", "TEACHER")
+    teacher = _login(client, "teacher@example.com")
+    course_id = _create_course(client, teacher)
+    completed = _upload(client, fake_storage, teacher, course_id)
+    material_id = completed["material"]["id"]
+    job_id = completed["job"]["id"]
+
+    # 模拟 Worker 崩溃：领取（1 秒租约）后不再执行
+    settings = make_settings(material_parse_lease_seconds=1)
+
+    async def claim() -> None:
+        await worker.claim_next(
+            pg_session_factory, now=utc_now(), lease_seconds=1
+        )
+
+    asyncio.run(claim())
+    job = client.get(f"/api/v1/jobs/{job_id}", headers=_auth(teacher)).json()
+    assert job["status"] == "RUNNING"
+
+    # 租约未过期时重试：幂等返回 RUNNING 任务
+    immediate = client.post(
+        PARSE_URL.format(material_id=material_id), headers=_auth(teacher)
+    )
+    assert immediate.status_code == 202
+    assert immediate.json()["status"] == "RUNNING"
+
+    # 租约过期后重试：回收任务 → PENDING
+    time_module.sleep(1.1)
+    recovered = client.post(
+        PARSE_URL.format(material_id=material_id), headers=_auth(teacher)
+    )
+    assert recovered.status_code == 202
+    assert recovered.json()["status"] == "PENDING"
+    assert recovered.json()["id"] == job_id
+
+    detail = client.get(f"/api/v1/materials/{material_id}", headers=_auth(teacher))
+    assert detail.json()["status"] == "PROCESSING"
+
+
+def test_job_aborts_when_material_deleted_mid_parse(
+    client: TestClient,
+    fake_storage: FakeStorage,
+    pg_sync_engine: Engine,
+    pg_session_factory,
+    make_settings,
+) -> None:
+    """解析中删除资料：Worker 回写前发现删除标记，放弃发布（契约 5.5 第 5 步）。"""
+    import asyncio
+
+    from app.modules.materials import worker
+
+    _register(client, "teacher@example.com", "TEACHER")
+    teacher = _login(client, "teacher@example.com")
+    course_id = _create_course(client, teacher)
+    completed = _upload(client, fake_storage, teacher, course_id)
+    material_id = completed["material"]["id"]
+    job_id = completed["job"]["id"]
+
+    # 手动领取（模拟 Worker 已开始执行）
+    settings = make_settings(material_parse_lease_seconds=300)
+
+    async def claim():
+        return await worker.claim_next(
+            pg_session_factory, now=utc_now(), lease_seconds=300
+        )
+
+    claimed = asyncio.run(claim())
+    assert claimed is not None and claimed.material.id == uuid.UUID(material_id)
+
+    # 解析执行期间删除资料（事务取消任务 + 标记删除）
+    deleted = client.delete(
+        DELETE_URL.format(material_id=material_id), headers=_auth(teacher)
+    )
+    assert deleted.status_code == 204
+
+    # Worker 携带旧令牌回写成功结果：因资料已删除被放弃
+    ai_factory = _fake_model_client(
+        lambda request: _model_json_response(VALID_OUTLINE_PAYLOAD)
+    )
+    asyncio.run(
+        worker.run_job(
+            pg_session_factory,
+            claimed=claimed,
+            storage=fake_storage,
+            settings=settings,
+            ai_client_factory=ai_factory,
+        )
+    )
+
+    # 资料仍处于已删除状态，没有章节被发布，任务保持 CANCELLED
+    assert (
+        client.get(f"/api/v1/materials/{material_id}", headers=_auth(teacher)).status_code
+        == 404
+    )
+    with pg_sync_engine.connect() as connection:
+        job_status = connection.execute(
+            text("SELECT status FROM jobs WHERE id = CAST(:id AS uuid)"),
+            {"id": job_id},
+        ).scalar_one()
+        section_count = connection.execute(
+            text(
+                "SELECT count(*) FROM material_sections "
+                "WHERE material_id = CAST(:id AS uuid)"
+            ),
+            {"id": material_id},
+        ).scalar_one()
+    assert job_status == "CANCELLED"
+    assert section_count == 0

@@ -583,6 +583,76 @@ class S3Storage:
             )
         return response.content
 
+    def get_object_verified(
+        self,
+        object_key: str,
+        *,
+        expected_size: int,
+        expected_sha256_hex: str,
+    ) -> bytes:
+        """流式下载对象并复核大小与 SHA-256（解析 Worker 专用，契约 5.5）。
+
+        用 ``httpx`` 的流式响应分块读取：边读边累计字节数与内容摘要，
+        与资料记录声明的 ``size`` / ``sha256`` 比对，不符立即拒绝——
+        防止对象被其他途径改写后仍被解析。
+
+        :raises StorageObjectNotFoundError: 对象不存在。
+        :raises StorageVerificationError: 大小或 SHA-256 与声明不符。
+        :raises StorageUnavailableError: 超时、连接失败、5xx、凭据被拒或未配置。
+        """
+        self._require_configured()
+        headers = self._signed_headers("GET", self._object_path(object_key), {})
+        url = self._object_url(object_key)
+
+        hasher = hashlib.sha256()
+        size_seen = 0
+        parts: list[bytes] = []
+        try:
+            with self._http().stream("GET", url, headers=headers) as response:
+                if response.status_code == 404:
+                    raise StorageObjectNotFoundError(object_key)
+                if response.status_code in (401, 403):
+                    logger.warning(
+                        "对象存储拒绝访问（status=%s）", response.status_code
+                    )
+                    raise StorageUnavailableError(
+                        "对象存储拒绝了访问凭据", reason="access_denied"
+                    )
+                if response.status_code in _TRANSIENT_STATUS:
+                    raise StorageUnavailableError(
+                        f"对象存储返回 {response.status_code}", reason="server_error"
+                    )
+                if response.status_code != 200:
+                    raise StorageUnavailableError(
+                        f"对象存储返回非预期状态 {response.status_code}",
+                        reason="unexpected_status",
+                    )
+                for block in response.iter_bytes():
+                    size_seen += len(block)
+                    hasher.update(block)
+                    parts.append(block)
+        except httpx.TimeoutException as exc:
+            raise StorageUnavailableError(
+                f"对象存储请求超时（{type(exc).__name__}）", reason="timeout"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise StorageUnavailableError(
+                f"对象存储连接失败（{type(exc).__name__}）", reason="connection"
+            ) from exc
+
+        if size_seen != expected_size:
+            raise StorageVerificationError(
+                f"对象实际大小（{size_seen}）与资料声明（{expected_size}）不一致",
+                reason="size_mismatch",
+            )
+        actual_sha256 = hasher.hexdigest()
+        if actual_sha256 != expected_sha256_hex.lower():
+            raise StorageVerificationError(
+                "对象内容的 SHA-256 与资料声明不一致，已拒绝解析",
+                reason="checksum_mismatch",
+            )
+        return b"".join(parts)
+
     # ---------------------------- 请求签名 ---------------------------- #
     def _signed_headers(
         self, method: str, path: str, extra_headers: dict[str, str]

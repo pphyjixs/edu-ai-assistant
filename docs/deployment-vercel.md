@@ -57,6 +57,7 @@ STORAGE_UPLOAD_URL_TTL_SECONDS
 MATERIAL_MAX_UPLOAD_BYTES
 MATERIAL_UPLOAD_CONFIRM_TTL_SECONDS
 AI_PROVIDER
+AI_BASE_URL
 AI_API_KEY
 AI_MODEL
 EMBEDDING_MODEL
@@ -92,6 +93,27 @@ SigV4 预签名与 HeadObject 请求都在应用侧完成（`app/storage/s3.py`�
 - 预检成功后浏览器才会发起真正的 PUT；未配置 CORS 的桶会以 `403` 或 `CORS error` 拒绝直传，与后端接口无关。
 
 过期上传清理由独立调度任务执行，不能依赖 Vercel 请求进程常驻。建议每 5 分钟在受信任的后端任务环境运行一次 `python scripts/cleanup_expired_uploads.py`；该命令使用该环境的 `DATABASE_URL` 和 `STORAGE_*`，每次最多处理 100 条超过确认窗口且尚未完成的会话。它先删除孤立对象，再将会话标记为 `expired_at`；删除失败的会话留待下次重试，已完成资料不会进入清理范围。调度频率和单次处理量须按实际上传量监控调整。
+
+已删除资料的对象清理由另一条独立命令执行：`python scripts/cleanup_deleted_materials.py`（建议与过期上传清理同频率调度，例如每 5–15 分钟）。它处理 `material_delete_todos` 中「原 PUT 地址过期 + 缓冲期」已过的待办，删除对象并核查晚到 PUT；失败持续重试，不会留下永久孤立对象。缓冲期由 `MATERIAL_DELETE_BUFFER_SECONDS` 控制（默认 3600 秒）。
+
+**解析 Worker** 是独立常驻进程（契约 5.5），不能部署为 Vercel Serverless 函数（长任务超出执行时长限制）。在受信任的后端任务环境（容器 / 常驻主机 / 平台 Worker）运行：
+
+```bash
+python scripts/parse_worker.py
+```
+
+Worker 依赖该环境的 `DATABASE_URL`、`STORAGE_*` 与模型 `AI_BASE_URL` / `AI_MODEL`（Chat Completions 兼容端点；`AI_API_KEY` 可选）。可选调优：
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `WORKER_POLL_SECONDS` | 5 | 队列空时的轮询间隔 |
+| `WORKER_BATCH_SIZE` | 5 | 单批最多领取的任务数 |
+| `MATERIAL_PARSE_LEASE_SECONDS` | 300 | 任务租约；崩溃后超过租约的任务由重试解析接口回收 |
+| `MATERIAL_PARSE_MAX_CHARS` | 120000 | 送入模型的全文上限，超限任务直接 `FAILED` |
+| `MATERIAL_PARSE_CHUNK_CHARS` | 8000 | 送入模型的单块文本上限 |
+| `AI_TIMEOUT_SECONDS` | 60 | 模型请求超时 |
+
+`AI_BASE_URL` / `AI_MODEL` 未配置时，Worker 会把领取到的任务置为 `FAILED`（安全提示"未配置模型端点"），不会崩溃或无限重试。
 
 开发、Preview 和 Production 使用独立配置。任何密钥都不能使用 `VITE_` 前缀，也不能提交到仓库。
 

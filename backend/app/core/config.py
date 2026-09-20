@@ -128,21 +128,28 @@ class Settings(BaseSettings):
     material_max_upload_bytes: int = 50 * 1024 * 1024
     #: 上传确认窗口（秒），契约 4.6 固定 24 小时
     material_upload_confirm_ttl_seconds: int = 24 * 3600
-    #: 解析 Worker（契约 5.5）：完成上传/重试解析后内联执行解析；
-    #: 测试默认关闭（conftest 的 make_settings），由 Worker 专项用例显式开启
-    material_parse_worker_enabled: bool = True
     #: Worker 租约时长（秒）：RUNNING 超过租约视为执行者失联，
     #: 回写须携带匹配的运行令牌
     material_parse_lease_seconds: int = 300
     #: 对象删除待办的缓冲期（秒）：原 PUT 地址过期后再等该时长才真正删除对象，
     #: 覆盖晚到 PUT 的重建窗口（契约 5.2）
     material_delete_buffer_seconds: int = 3600
+    #: 送入模型的全文上限（字符）：超过直接 FAILED，不截断后宣称成功（契约 5.5）
+    material_parse_max_chars: int = 120_000
+    #: 送入模型的单块文本上限（字符）：全文按来源顺序切分为多块
+    material_parse_chunk_chars: int = 8_000
 
     # ------------------------------ AI ------------------------------
     ai_provider: str = ""
     ai_api_key: str = ""
     ai_model: str = ""
     embedding_model: str = ""
+    #: Chat Completions 兼容端点（如 https://api.openai.com/v1）；
+    #: 解析 Worker 用它生成章节标题与知识点（契约 5.5）。为空时 Worker 领取后
+    #: 直接以「解析失败（模型未配置）」进入 FAILED，而不是崩溃或无限重试
+    ai_base_url: str = ""
+    #: 模型请求超时（秒）
+    ai_timeout_seconds: float = 60.0
 
     # --------------------------- 异步任务 ---------------------------
     job_callback_secret: str = ""

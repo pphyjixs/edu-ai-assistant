@@ -592,21 +592,31 @@ async def retry_parse(
         raise InternalError()
 
     now = utc_now()
+
+    def _lease_still_valid() -> bool:
+        """RUNNING 任务是否仍在租约内（执行者还活着）。"""
+        return (
+            job.lease_expires_at is not None and job.lease_expires_at > now
+        )
+
     if (
         locked.status == MaterialStatus.PROCESSING
         and job.status == JobStatusValue.PENDING
     ) or (
         locked.status == MaterialStatus.PROCESSING
         and job.status == JobStatusValue.RUNNING
+        and _lease_still_valid()
     ):
         return job, locked, False
 
-    # 重试：复用原任务 ID，清空全部执行痕迹（契约 5.3）
+    # 重试：复用原任务 ID，清空全部执行痕迹（契约 5.3）。
+    # 覆盖：FAILED 任务、崩溃后的 RUNNING 租约过期（执行者失联）等。
     job.status = JobStatusValue.PENDING
     job.progress = 0
     job.error = None
     job.started_at = None
     job.finished_at = None
+    job.lease_expires_at = None
     locked.status = MaterialStatus.PROCESSING
     locked.error_message = None
     locked.updated_at = now

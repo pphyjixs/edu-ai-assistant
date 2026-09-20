@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Response, status
+from fastapi import APIRouter, Response, status
 
 from app.core.deps import SettingsDep
 from app.core.pagination import Page, PaginationDep
@@ -18,7 +18,7 @@ from app.core.schemas import ErrorResponse
 from app.db.session import SessionDep
 from app.modules.auth.permissions import CurrentUserDep, TeacherDep
 from app.modules.jobs.schemas import JobStatus
-from app.modules.materials import service, worker
+from app.modules.materials import service
 from app.modules.materials.schemas import (
     MaterialDetail,
     MaterialKnowledgePoint,
@@ -121,8 +121,8 @@ async def init_material_upload(
     description=(
         "仅课程创建教师可调用。确认对象存在且大小、类型、SHA-256 与初始化声明一致后，"
         "在同一事务中创建资料（PROCESSING）与 MATERIAL_PARSE 任务（PENDING）。"
-        "重复确认（含并发）返回同一份 202 结果，不产生第二份资料或任务。"
-        "第一版不实现解析 Worker，资料与任务状态不会自动推进。"
+        "重复确认（含并发）返回首次完成响应快照，不产生第二份资料或任务。"
+        "解析由独立 Worker 进程领取执行（契约 5.5），状态通过轮询获取。"
     ),
     responses={
         202: {"description": "已受理，返回资料与解析任务"},
@@ -141,9 +141,7 @@ async def complete_material_upload(
     upload_id: uuid.UUID,
     teacher: TeacherDep,
     session: SessionDep,
-    settings: SettingsDep,
     storage: StorageDep,
-    background_tasks: BackgroundTasks,
     # 该接口没有请求字段：只接受省略请求体或空对象 {}，多余字段返回 422
     _payload: MaterialUploadCompleteRequest | None = None,
 ) -> MaterialUploadCompleteResponse:
@@ -154,15 +152,6 @@ async def complete_material_upload(
         upload_id=upload_id,
         storage=storage,
     )
-    # 契约 5.5：完成确认后调度解析 Worker（响应返回后执行）。
-    # 仅在真正创建资料时调度：重复确认返回的是首次快照，不再重复解析。
-    if result.created:
-        worker.schedule_material_parse(
-            background_tasks,
-            settings=settings,
-            material_id=result.response.material.id,
-            storage=storage,
-        )
     return result.response
 
 
@@ -305,17 +294,11 @@ async def retry_material_parse(
     material_id: uuid.UUID,
     user: CurrentUserDep,
     session: SessionDep,
-    settings: SettingsDep,
-    storage: StorageDep,
-    background_tasks: BackgroundTasks,
 ) -> JobStatus:
-    job, _material, reset = await service.retry_parse(
+    job, _material, _reset = await service.retry_parse(
         session, user=user, material_id=material_id
     )
-    if reset:
-        worker.schedule_material_parse(
-            background_tasks, settings=settings, material_id=material_id, storage=storage
-        )
+    # 重置后的任务由独立解析 Worker 进程领取执行（契约 5.5）
     return JobStatus.model_validate(job)
 
 

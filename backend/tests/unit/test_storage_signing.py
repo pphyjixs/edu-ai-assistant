@@ -197,6 +197,7 @@ def test_adapter_never_accepts_file_content() -> None:
         "delete_object",
         "ensure_bucket",
         "get_object",
+        "get_object_verified",
         "head_object",
     }
 

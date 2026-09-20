@@ -149,9 +149,9 @@ cd backend
 | 层 | 数量 | 数据库 |
 | --- | --- | --- |
 | `tests/unit` | 141 | 不接触数据库与网络；外部依赖替换为 fake 或 `MockTransport` |
-| `tests/integration` | 185 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储用例需配置 S3 端点 |
+| `tests/integration` | 198 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储与解析 Worker 端到端用例需配置 S3 端点 |
 | `tests/contract` | 47 | 同上（令牌格式、课程与课件上传契约、OpenAPI 一致性） |
-| 合计 | 373 | 连真实 PostgreSQL + 对象存储时全部通过（解析 Worker 用例以内联模式执行） |
+| 合计 | 386 | 连真实 PostgreSQL + 对象存储时全部通过（模型为本地假 HTTP 服务） |
 
 测试库规则（见 `backend/tests/pg_support.py`）：
 
@@ -222,6 +222,12 @@ cd backend
 | 解析器：DOCX/PPTX 章节与知识点抽取、损坏与空文本失败、来源类型推导 | `unit/test_materials_parser.py` |
 | 删除流水线：删除事务取消解析并写待办、维护命令延迟删除、晚到 PUT 核查、存储故障重试 | `integration/test_materials_api.py` |
 | 完成响应快照：重复确认（含资料删除/状态变化后）返回首次结果 | `integration/test_materials_api.py` |
+| Worker 模型分支：无效 JSON、HTTP 500、幻觉摘录、超时、AI 未配置 → FAILED | `integration/test_materials_api.py` |
+| 解析上限：全文超 120,000 字符直接 FAILED，不截断 | `integration/test_materials_api.py` |
+| 扫描版 PDF：无可提取文本明确 FAILED，不做 OCR | `integration/test_materials_api.py` |
+| 崩溃恢复：RUNNING 租约过期后重试解析回收任务 | `integration/test_materials_api.py` |
+| 解析中删除：回写前检查删除标记与运行令牌，放弃发布、任务保持 CANCELLED | `integration/test_materials_api.py` |
+| 真实 MinIO 端到端：DOCX/PPTX/PDF 直传→解析→READY，删除后真实对象清理 | `integration/test_parse_worker_minio.py` |
 | 列表/删除/重试/大纲的路径、状态码、响应组件（`MaterialOutline` 等）与错误码 | `contract/test_materials_contract.py` |
 | 过期上传清理：删孤立对象并标记过期、幂等、已完成资料不删、与完成请求争锁、存储不可用跳过；维护命令连接隔离测试库与真实测试桶执行两次 | `integration/test_upload_cleanup.py` |
 | 上传会话 `expired_at` 过期清理标记列 | `integration/test_migrations.py` |
@@ -241,13 +247,18 @@ unit 128 / contract 41 / integration 165，Auth 相关用例全部真实执行�
 （无活动连接，符合规则 3 的残留判定），本次会话结束后复查 `pg_database` 无残留。
 
 资料接口与解析 Worker 交付验证：独立测试库 `edu_ai_pr_verify_test` + MinIO
-测试桶 `edu-ai-test` 下 373 项全部通过、0 失败、0 跳过
-（unit 141 / contract 47 / integration 185）；资料列表、删除、重试解析、
+测试桶 `edu-ai-test` 下 386 项全部通过、0 失败、0 跳过
+（unit 141 / contract 47 / integration 198）；资料列表、删除、重试解析、
 大纲查询及 Worker 状态推进用例均真实执行，运行后 `pg_database` 无残留。
 删除流水线专项：删除事务取消未完成解析并写入对象删除待办；维护命令在
 PUT 地址过期 + 缓冲期后删除对象、失败持续重试、删除后核查晚到 PUT；
 存储故障期间待办保留并在恢复后重试成功；完成响应快照保证重复确认
 （含资料删除后）返回首次结果；迁移 0006 升级/回退均通过。
+Worker 端到端（`test_parse_worker_minio.py`，真实 MinIO + 本地假模型
+HTTP 服务）：DOCX / PPTX / PDF 三种格式经真实预签名直传后由 Worker
+从真实桶流式读取（复核大小与 SHA-256）解析为 READY；删除后维护命令
+从真实桶移除对象。**真实外部模型调用未验收**：假模型服务仅覆盖
+Chat Completions 请求形状与失败分支，模型生成质量属后续验收。
 
 HeadObject 带 `x-amz-checksum-mode: ENABLED` 后，MinIO 回显已存储的
 `x-amz-checksum-sha256`，校验值读取也由真实存储用例验证。真实 PUT、内容与签名哈希不符被拒、

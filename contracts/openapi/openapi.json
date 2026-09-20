@@ -1272,7 +1272,7 @@
           "materials"
         ],
         "summary": "完成课件上传",
-        "description": "仅课程创建教师可调用。确认对象存在且大小、类型、SHA-256 与初始化声明一致后，在同一事务中创建资料（PROCESSING）与 MATERIAL_PARSE 任务（PENDING）。重复确认（含并发）返回同一份 202 结果，不产生第二份资料或任务。第一版不实现解析 Worker，资料与任务状态不会自动推进。",
+        "description": "仅课程创建教师可调用。确认对象存在且大小、类型、SHA-256 与初始化声明一致后，在同一事务中创建资料（PROCESSING）与 MATERIAL_PARSE 任务（PENDING）。重复确认（含并发）返回首次完成响应快照，不产生第二份资料或任务。解析由独立 Worker 进程领取执行（契约 5.5），状态通过轮询获取。",
         "operationId": "complete_material_upload_api_v1_courses__course_id__materials_uploads__upload_id__complete_post",
         "security": [
           {

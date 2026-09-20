@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -153,6 +154,33 @@ class FakeStorage(S3Storage):
         stored = self.objects.get(object_key)
         if stored is None:
             raise StorageObjectNotFoundError(object_key)
+        return stored.content
+
+    def get_object_verified(
+        self,
+        object_key: str,
+        *,
+        expected_size: int,
+        expected_sha256_hex: str,
+    ) -> bytes:
+        """返回对象内容并复核大小与 SHA-256（与真实适配器语义一致）。"""
+        from app.storage.errors import StorageVerificationError
+
+        self._guard()
+        stored = self.objects.get(object_key)
+        if stored is None:
+            raise StorageObjectNotFoundError(object_key)
+        if stored.size != expected_size:
+            raise StorageVerificationError(
+                f"对象实际大小（{stored.size}）与资料声明（{expected_size}）不一致",
+                reason="size_mismatch",
+            )
+        actual = hashlib.sha256(stored.content).hexdigest()
+        if actual != expected_sha256_hex.lower():
+            raise StorageVerificationError(
+                "对象内容的 SHA-256 与资料声明不一致，已拒绝解析",
+                reason="checksum_mismatch",
+            )
         return stored.content
 
     def purged(self) -> bool:
