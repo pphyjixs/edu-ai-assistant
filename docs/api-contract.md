@@ -374,13 +374,61 @@ Access Token 缺少、格式错误、签名不符或已过期时返回 `401` 与
 
 通过课程 ID 操作时，完成认证和资源权限检查后才返回归档状态错误，避免向无权访问者暴露课程状态。
 
-## 4. 文件上传协议
+## 4. 课件上传协议
 
-文件不写入 Vercel 本地磁盘，采用浏览器直传对象存储：
+课件文件不写入应用实例本地磁盘，统一由浏览器使用预签名地址直传对象存储。本节冻结第一版落地的 **4 个接口**：两个写入接口（初始化、完成）与两个状态查询接口（资料详情、任务状态）。第 5 节表中其余资料接口属于后续阶段，以本节定义的资料与任务结构为准。
 
-1. 调用初始化接口取得 `upload_url`。
-2. 浏览器把文件上传至该地址。
-3. 调用完成接口，后端校验对象并创建业务记录。
+| 方法 | 路径 | 说明 | 权限 | 本节 |
+| --- | --- | --- | --- | --- |
+| POST | `/courses/{course_id}/materials/uploads` | 初始化上传 | 课程教师 | 4.3 |
+| PUT | 预签名 `upload_url` | 浏览器直传对象存储（不经后端） | 地址自带签名 | 4.4 |
+| POST | `/courses/{course_id}/materials/uploads/{upload_id}/complete` | 完成上传并创建解析任务 | 课程教师 | 4.5 |
+| GET | `/materials/{material_id}` | 资料详情与处理状态 | 课程成员 | 4.7 |
+| GET | `/jobs/{job_id}` | 任务状态 | 任务关联资料的课程成员 | 4.7 |
+
+### 4.1 上传流程
+
+1. 教师调用初始化接口，提交文件名、MIME、字节大小和 sha256。
+2. 服务端校验通过后创建上传会话（`upload_id`），返回 `201` 与预签名 `upload_url`、`method`、`headers`、`expires_at`、`confirm_deadline_at`。
+3. 浏览器在 `expires_at` 之前，使用 `method` 与 `headers` 把文件字节流 PUT 到 `upload_url`。
+4. 教师调用完成接口；服务端确认对象存在且大小与声明一致，创建资料记录与 `MATERIAL_PARSE` 任务，返回 `202`。
+5. 前端用 `GET /materials/{material_id}` 与 `GET /jobs/{job_id}` 轮询状态。
+
+第一版**不实现解析 Worker**：完成确认后资料状态为 `PROCESSING`、任务状态为 `PENDING`，二者都不会自动变化，直到后续阶段接入 Worker。因此状态查询接口在本阶段的稳定返回就是 `PROCESSING` + `PENDING`。
+
+### 4.2 文件类型与大小
+
+| 扩展名（比较时忽略大小写） | 规范 MIME |
+| --- | --- |
+| `.pdf` | `application/pdf` |
+| `.pptx` | `application/vnd.openxmlformats-officedocument.presentationml.presentation` |
+| `.docx` | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` |
+
+- `filename` 去除首尾空白后为 1–255 个字符，不能只包含空白；不得包含 `/`、`\` 或空字节。服务端保存去除首尾空白后的文件名，并原样保留大小写。
+- `filename` 必须以上表扩展名之一结尾；扩展名比较不区分大小写。
+- `content_type` 必须**精确等于**该扩展名对应的规范 MIME。不接受 `application/octet-stream`、近似类型或带参数的形式（例如 `application/pdf; charset=utf-8`）。
+- 扩展名与 MIME 不匹配时以 `UPLOAD_INVALID` 拒绝，服务端不做猜测、纠正或规范化。
+- `size` 为对象字节数，取值 1 – 上限。上限默认 **50 MiB（52 428 800 字节）**，由部署配置 `MATERIAL_MAX_UPLOAD_BYTES` 决定；服务端按启动时生效值校验，并在超限错误的 `details.max_size_bytes` 中回显当前上限。
+- `sha256` 为 64 位十六进制字符串（`^[0-9a-fA-F]{64}$`），大小写均可接受，服务端统一按小写持久化。服务端**不在应用侧**重新读取文件做比对，而是把该摘要以 Base64 形式放进初始化响应的 `x-amz-checksum-sha256` 头并参与签名，由对象存储校验内容，不符时直接拒绝直传。
+- 同一课程、同一文件的重复初始化不做去重，每次调用都创建新的 `upload_id`。
+
+### 4.3 初始化上传
+
+```http
+POST /api/v1/courses/{course_id}/materials/uploads
+Authorization: Bearer <access_token>
+```
+
+请求 Schema `MaterialUploadInitRequest`：
+
+| 字段 | 类型 | 必填 | 规则 |
+| --- | --- | --- | --- |
+| `filename` | string | 是 | 4.2 的文件名与扩展名规则 |
+| `content_type` | string | 是 | 4.2 表中的规范 MIME，且必须与扩展名匹配 |
+| `size` | integer | 是 | 1 – `MATERIAL_MAX_UPLOAD_BYTES`（默认 52 428 800） |
+| `sha256` | string | 是 | 64 位十六进制字符串 |
+
+请求体拒绝未声明字段和显式 `null`，否则返回 `422 VALIDATION_ERROR`。
 
 初始化请求：
 
@@ -389,50 +437,234 @@ Access Token 缺少、格式错误、签名不符或已过期时返回 `401` 与
   "filename": "chapter-1.pdf",
   "content_type": "application/pdf",
   "size": 1048576,
-  "sha256": "hex-string"
+  "sha256": "3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855e"
 }
 ```
 
-初始化响应：
+成功响应为 `201 Created`，Schema `MaterialUploadInitResponse`：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `upload_id` | UUID string | 上传会话 ID，供完成接口引用 |
+| `upload_url` | string | 预签名上传地址 |
+| `method` | string | 固定为 `PUT` |
+| `headers` | object | 直传时必须逐字附带的请求头，固定为 `Content-Type`（规范 MIME）、`x-amz-checksum-sha256`（`sha256` 的 Base64）、`If-None-Match: *`；三者都参与签名，增删改任一都会导致签名不符 |
+| `expires_at` | ISO 8601 UTC string | **PUT 地址的到期时间**：初始化时刻 + 10 分钟（配置 `MATERIAL_UPLOAD_URL_TTL_SECONDS`）。仅约束直传，与确认截止时间无关 |
+| `confirm_deadline_at` | ISO 8601 UTC string | 完成确认的截止时间：初始化时刻 + 24 小时（配置 `MATERIAL_UPLOAD_CONFIRM_TTL_SECONDS`） |
 
 ```json
 {
-  "upload_id": "uuid",
-  "upload_url": "https://storage.example/upload",
+  "upload_id": "0f6b8b2c-6a4c-4f2e-9f9f-2a1f4c9d7e10",
+  "upload_url": "https://storage.example/edu-ai/courses/70d1bdfa/materials/0f6b8b2c?X-Amz-Signature=...",
   "method": "PUT",
-  "headers": {},
-  "expires_at": "2026-09-18T08:40:00Z"
+  "headers": {
+    "Content-Type": "application/pdf"
+  },
+  "expires_at": "2026-09-20T08:40:00Z",
+  "confirm_deadline_at": "2026-09-21T08:30:00Z"
+}
+```
+
+服务端必须先在同一事务中持久化上传会话并**提交成功后**才返回 `201`；落库失败返回 `500 INTERNAL_ERROR`，且不得下发预签名地址。
+
+### 4.4 浏览器直传约定
+
+- 必须使用响应中的 `method`，并完整、原样发送响应 `headers` 中的三个签名头；浏览器自动附加的 `Origin`、`Content-Length` 等头不在此限制内。三个签名头的含义分别是：`Content-Type` 声明类型；`x-amz-checksum-sha256` 让对象存储校验内容与声明摘要一致，不符时 PUT 被拒；`If-None-Match: *` 是条件写入，对象已存在时 PUT 返回 `412`，因此**重复 PUT 不会被覆盖**。
+- 请求体为文件原始字节流，不得使用 multipart 表单或额外包装。
+- 必须发送声明的 `size` 个字节；服务端在完成接口比对实际大小。
+- PUT 应在 `expires_at` 之前发起。地址过期由对象存储自行拒绝（通常 `403`），不涉及本 API 的错误码；客户端应重新初始化上传。
+- `upload_url` 与 `headers` 含签名参数，前端不得持久化缓存，也不得写入日志或上报。
+- 对象存储须配置允许前端来源的 `PUT` 与 `Content-Type` 头，否则浏览器预检失败。
+
+### 4.5 完成上传
+
+```http
+POST /api/v1/courses/{course_id}/materials/uploads/{upload_id}/complete
+Authorization: Bearer <access_token>
+```
+
+该接口**没有请求字段**：请求体可以省略或传空对象 `{}`；带任何未声明字段（或字段结构不合法）时返回 `422 VALIDATION_ERROR`。
+
+服务端处理顺序固定为：认证（401）→ 课程存在（404）→ 课程教师（403）→ 课程未归档（409）→ 上传会话存在且属于本课程（404）→ **已完成则幂等返回 202** → 会话未过期（422）→ 对象确认（422/503）→ 创建资料与任务（202）。该顺序决定同时违反多条规则时的响应；幂等判定排在到期校验之前，因此重复确认不会因为确认窗口已过而失败（见 4.6）。
+
+对象确认：服务端向存储适配器发起带 `x-amz-checksum-mode: ENABLED` 的 HeadObject，读取对象实际大小、内容类型与**存储侧记录的 SHA-256 校验值**（`x-amz-checksum-sha256`，Base64），**不使用 ETag 代替内容摘要**（ETag 对分片上传不是内容摘要）。判定规则：
+
+| 情况 | 结果 |
+| --- | --- |
+| 对象不存在 | `422 UPLOAD_INVALID`（`OBJECT_MISSING`） |
+| 实际大小 ≠ 初始化的 `size` | `422 UPLOAD_INVALID`（`OBJECT_SIZE_MISMATCH`） |
+| 存储侧返回的内容类型 ≠ 初始化的规范 MIME | `422 UPLOAD_INVALID`（`OBJECT_TYPE_MISMATCH`） |
+| 存储侧记录了校验值且 ≠ 初始化的 `sha256` | `422 UPLOAD_INVALID`（`CHECKSUM_MISMATCH`） |
+| 存储侧未返回校验值 | 只记日志，不因此拒绝（部分兼容实现不返回该头）；大小与类型仍必须一致 |
+| 存储配置缺失、超时或不可达 | `503 SERVICE_UNAVAILABLE`，**不创建资料与任务** |
+
+内容与声明摘要的一致性问题在直传阶段就已由存储侧拦截（4.4），因此 `CHECKSUM_MISMATCH` 只在对象由其他途径写入时才可能出现，属防御性校验。
+
+成功响应为 `202 Accepted`，Schema `MaterialUploadCompleteResponse`：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `material` | `MaterialDetail` | 新建或已存在的资料，见 4.7 |
+| `job` | `JobStatus` | `MATERIAL_PARSE` 任务，见 4.7 |
+
+```json
+{
+  "material": {
+    "id": "9c2f1e77-5b3a-4d18-9c1e-6f1a2b3c4d5e",
+    "course_id": "70d1bdfa-bb1a-4b22-9f13-9f1398aeb53c",
+    "filename": "chapter-1.pdf",
+    "content_type": "application/pdf",
+    "size": 1048576,
+    "status": "PROCESSING",
+    "uploaded_by": "a5e675f0-696c-4970-a453-e05c85d4a9e9",
+    "error_message": null,
+    "created_at": "2026-09-20T08:31:00Z",
+    "updated_at": "2026-09-20T08:31:00Z"
+  },
+  "job": {
+    "id": "b1e4d2c8-7f5a-4a19-8e2d-3c6b5a4f9e01",
+    "type": "MATERIAL_PARSE",
+    "status": "PENDING",
+    "progress": 0,
+    "resource_type": "MATERIAL",
+    "resource_id": "9c2f1e77-5b3a-4d18-9c1e-6f1a2b3c4d5e",
+    "error": null,
+    "created_at": "2026-09-20T08:31:00Z",
+    "started_at": null,
+    "finished_at": null
+  }
+}
+```
+
+资料与任务必须**在同一事务中创建**；任一失败整体回滚，不产生孤立的资料或无任务的资料。
+
+### 4.6 重复完成与到期规则
+
+重复完成语义：
+
+- 首次完成：返回 `202`，创建一条资料与一个 `MATERIAL_PARSE` 任务。
+- 同一 `upload_id` 的**重复完成（含并发）一律返回 `202`**，响应中的 `material` 与 `job` 与首次完全相同；不创建第二条资料，也不创建第二个任务。
+- 实现要求：完成操作先对上传会话行加锁（`SELECT ... FOR UPDATE`），并以该会话上的完成标记或已创建资料 ID 判定，保证并发下唯一。
+- 已完成会话的重复确认**不受 24 小时确认窗口限制**；窗口只约束首次确认。
+- 该接口不是“重试解析”：资料已存在时的重试解析属于第 5 节的 `POST /materials/{material_id}/parse`。
+
+到期规则：
+
+| 项目 | 时限 | 配置 | 过期后果 |
+| --- | --- | --- | --- |
+| 预签名 PUT 地址 | 10 分钟 | `MATERIAL_UPLOAD_URL_TTL_SECONDS` | 对象存储拒绝 PUT，客户端需重新初始化 |
+| 完成确认窗口 | 24 小时 | `MATERIAL_UPLOAD_CONFIRM_TTL_SECONDS` | 首次确认返回 `422 UPLOAD_INVALID`（`UPLOAD_EXPIRED`） |
+
+两个时限都自初始化时刻起算，互不影响：`expires_at` 过期后对象已直传成功，仍可在确认窗口内完成确认。
+
+过期清理：服务端定期锁定超过确认窗口仍未确认的上传会话，删除其孤立对象并设置 `expired_at`；会话记录保留供审计，已标记的会话不重复处理。清理通过独立维护命令执行，不对外暴露接口；清理前后，过期会话的首次确认均按 `UPLOAD_EXPIRED` 拒绝。已完成的会话及其资料对象不被清理。
+
+### 4.7 状态查询接口
+
+两个状态查询接口返回同一份业务事实的两个视角：资料的处理状态，与解析任务的执行状态。
+
+`MaterialDetail`：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `id` | UUID string | 资料 ID |
+| `course_id` | UUID string | 所属课程 ID |
+| `filename` | string | 原始文件名 |
+| `content_type` | string | 规范 MIME |
+| `size` | integer | 字节数 |
+| `status` | `UPLOADING` / `UPLOADED` / `PROCESSING` / `READY` / `FAILED` | 解析状态；本阶段完成确认后即为 `PROCESSING` |
+| `uploaded_by` | UUID string | 上传教师的用户 ID |
+| `error_message` | string 或 `null` | 失败原因的安全描述；非 `FAILED` 时为 `null` |
+| `created_at` | ISO 8601 UTC string | 创建时间 |
+| `updated_at` | ISO 8601 UTC string | 最近更新时间 |
+
+`JobStatus`（与第 10 节 `GET /jobs/{job_id}` 同一结构）：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `id` | UUID string | 任务 ID |
+| `type` | `MATERIAL_PARSE` / `PRACTICE_GENERATE` / `SUBMISSION_GRADE` | 任务类型；课件上传只会产生 `MATERIAL_PARSE` |
+| `status` | `PENDING` / `RUNNING` / `SUCCEEDED` / `FAILED` / `CANCELLED` | 任务状态；本阶段恒为 `PENDING` |
+| `progress` | integer | 0–100；`PENDING` 为 `0` |
+| `resource_type` | `MATERIAL` / `PRACTICE_SET` / `SUBMISSION` | 关联资源类型 |
+| `resource_id` | UUID string | 关联资源 ID（资料 ID） |
+| `error` | string 或 `null` | 失败原因的安全描述；非 `FAILED` 时为 `null` |
+| `created_at` | ISO 8601 UTC string | 创建时间 |
+| `started_at` | ISO 8601 UTC string 或 `null` | 开始时间 |
+| `finished_at` | ISO 8601 UTC string 或 `null` | 结束时间 |
+
+接口与权限：
+
+| 方法与路径 | 请求 | HTTP | 响应 Schema | 权限 |
+| --- | --- | --- | --- | --- |
+| `GET /materials/{material_id}` | 无请求体 | 200 | `MaterialDetail` | 资料所属课程的成员（教师或学生） |
+| `GET /jobs/{job_id}` | 无请求体 | 200 | `JobStatus` | `MATERIAL_PARSE` 任务的可见性等同于其 `resource_id` 对应资料所属课程的成员 |
+
+- 两个接口均无查询参数；不返回章节、大纲或知识点。
+- 归档课程的资料与任务**仍可读**，返回 `200`；归档只禁止写入。
+- 资料或任务不存在，或当前用户不是对应课程成员时，统一返回 `404 RESOURCE_NOT_FOUND`，不区分“不存在”与“不可见”，避免用于枚举资源。
+- 这两个接口不适用 `ROLE_FORBIDDEN`：访问权完全由课程成员身份决定，教师与学生同等可读。
+- 轮询建议沿用第 10 节；本阶段状态不会推进，前端应展示“排队中/处理中”并按固定间隔刷新，不得把 `PROCESSING`/`PENDING` 判定为失败。
+
+### 4.8 上传与状态查询的错误响应
+
+所有错误沿用第 1 节的 `error` 对象与请求追踪规则。`UPLOAD_INVALID` 的 `details` 至少包含 `reason`（稳定枚举字符串）与 `field`（相关请求字段，可选）。
+
+| 场景 | HTTP | 错误码 | `details.reason` |
+| --- | --- | --- | --- |
+| 缺少、无效或过期的 Access Token | 401 | `AUTH_TOKEN_EXPIRED` | — |
+| 学生调用初始化或完成接口 | 403 | `ROLE_FORBIDDEN` | — |
+| 教师但不是该课程的创建教师 | 403 | `COURSE_FORBIDDEN` | — |
+| 课程不存在 | 404 | `RESOURCE_NOT_FOUND` | — |
+| `upload_id` 不存在，或不属于路径中的课程 | 404 | `RESOURCE_NOT_FOUND` | — |
+| 资料或任务不存在，或当前用户不是课程成员 | 404 | `RESOURCE_NOT_FOUND` | — |
+| 对归档课程初始化或完成上传 | 409 | `COURSE_ARCHIVED` | — |
+| 请求体结构不合法：缺字段、类型错误、未声明字段、显式 `null`，或路径 UUID 不合法 | 422 | `VALIDATION_ERROR` | `details.errors` 为字段级说明 |
+| `filename` 扩展名不在白名单，或含 `/`、`\`、空字节、超长 | 422 | `UPLOAD_INVALID` | `FILE_TYPE_NOT_ALLOWED`（`field`: `filename`） |
+| `content_type` 不是规范 MIME，或与扩展名不匹配 | 422 | `UPLOAD_INVALID` | `CONTENT_TYPE_MISMATCH`（`field`: `content_type`） |
+| `size` 小于 1 或大于当前上限 | 422 | `UPLOAD_INVALID` | `SIZE_OUT_OF_RANGE`（`field`: `size`，另含 `max_size_bytes`） |
+| `sha256` 不是 64 位十六进制字符串 | 422 | `UPLOAD_INVALID` | `SHA256_INVALID`（`field`: `sha256`） |
+| 超过 24 小时确认窗口后首次完成 | 422 | `UPLOAD_INVALID` | `UPLOAD_EXPIRED` |
+| 对象不存在（未直传或传到了其他键） | 422 | `UPLOAD_INVALID` | `OBJECT_MISSING` |
+| 对象实际大小与初始化声明不一致 | 422 | `UPLOAD_INVALID` | `OBJECT_SIZE_MISMATCH` |
+| 对象内容类型与初始化声明不一致 | 422 | `UPLOAD_INVALID` | `OBJECT_TYPE_MISMATCH` |
+| 存储侧校验值与初始化的 `sha256` 不一致 | 422 | `UPLOAD_INVALID` | `CHECKSUM_MISMATCH` |
+| 对象存储配置缺失或不可达（初始化签名或完成确认阶段） | 503 | `SERVICE_UNAVAILABLE` | `details.component`: `storage` |
+| 方法不被路径支持（例如对初始化接口发 `GET`） | 405 | `METHOD_NOT_ALLOWED` | — |
+| 其他未预期错误 | 500 | `INTERNAL_ERROR` | — |
+
+字段级与语义级校验的分界：请求体的结构问题（缺字段、类型错误、未声明字段、显式 `null`、UUID 格式）一律 `VALIDATION_ERROR`；文件类型、MIME、大小、校验和、对象确认与到期等业务规则一律 `UPLOAD_INVALID`。
+
+`UPLOAD_INVALID` 响应示例：
+
+```json
+{
+  "error": {
+    "code": "UPLOAD_INVALID",
+    "message": "文件大小超出当前上限",
+    "details": {
+      "reason": "SIZE_OUT_OF_RANGE",
+      "field": "size",
+      "max_size_bytes": 52428800
+    },
+    "request_id": "uuid"
+  }
 }
 ```
 
 ## 5. 课程资料接口
 
-| 方法 | 路径 | 说明 | 权限 |
-| --- | --- | --- | --- |
-| POST | `/courses/{course_id}/materials/uploads` | 初始化上传 | 课程教师 |
-| POST | `/courses/{course_id}/materials/uploads/{upload_id}/complete` | 完成上传并创建解析任务 | 课程教师 |
-| GET | `/courses/{course_id}/materials` | 资料列表 | 课程成员 |
-| GET | `/materials/{material_id}` | 资料详情与处理状态 | 课程成员 |
-| DELETE | `/materials/{material_id}` | 删除资料 | 课程教师 |
-| POST | `/materials/{material_id}/parse` | 重试解析 | 课程教师 |
-| GET | `/materials/{material_id}/outline` | 大纲和知识点 | 课程成员 |
+| 方法 | 路径 | 说明 | 权限 | 阶段 |
+| --- | --- | --- | --- | --- |
+| POST | `/courses/{course_id}/materials/uploads` | 初始化上传 | 课程教师 | 已冻结，见 4.3 |
+| POST | `/courses/{course_id}/materials/uploads/{upload_id}/complete` | 完成上传并创建解析任务 | 课程教师 | 已冻结，见 4.5 |
+| GET | `/materials/{material_id}` | 资料详情与处理状态 | 课程成员 | 已冻结，见 4.7 |
+| GET | `/courses/{course_id}/materials` | 资料列表 | 课程成员 | 后续阶段 |
+| DELETE | `/materials/{material_id}` | 删除资料 | 课程教师 | 后续阶段 |
+| POST | `/materials/{material_id}/parse` | 重试解析 | 课程教师 | 后续阶段 |
+| GET | `/materials/{material_id}/outline` | 大纲和知识点 | 课程成员 | 后续阶段 |
 
-完成上传响应为 `202`：
-
-```json
-{
-  "material": {
-    "id": "uuid",
-    "filename": "chapter-1.pdf",
-    "status": "PROCESSING"
-  },
-  "job": {
-    "id": "uuid",
-    "type": "MATERIAL_PARSE",
-    "status": "PENDING"
-  }
-}
-```
+本阶段只落地课件上传协议：初始化、完成、资料详情和任务状态 4 个接口，其请求、响应、权限与失败场景以第 4 节为准。资料列表、大纲、删除与重试解析属于后续阶段，定义时不改变第 4 节已冻结的 `MaterialDetail` 与 `JobStatus` 结构。
 
 ## 6. 课程问答接口
 
@@ -586,7 +818,9 @@ Access Token 缺少、格式错误、签名不符或已过期时返回 `401` 与
 }
 ```
 
-前端轮询建议：前 30 秒每 2 秒一次，之后每 5 秒一次；页面离开时停止轮询。`FAILED` 后展示后端返回的安全错误信息和重试入口。
+任务响应结构与第 4.7 节的 `JobStatus` 一致；课件上传产生的任务为 `MATERIAL_PARSE`，`resource_type` 为 `MATERIAL`，`resource_id` 为资料 ID。
+
+前端轮询建议：前 30 秒每 2 秒一次，之后每 5 秒一次；页面离开时停止轮询。`FAILED` 后展示后端返回的安全错误信息和重试入口。第一版未接入解析 Worker，`MATERIAL_PARSE` 任务在完成后保持 `PENDING`，轮询期间状态不推进。
 
 ## 11. Dashboard 接口
 
@@ -610,7 +844,7 @@ Dashboard 只返回页面首屏需要的摘要和最近记录，不返回完整�
 | `COURSE_ARCHIVED` | 409 | 课程已归档，不能执行写入操作 |
 | `RESOURCE_NOT_FOUND` | 404 | 资源不存在或不可见 |
 | `INVITE_CODE_INVALID` | 422 | 邀请码无效 |
-| `UPLOAD_INVALID` | 422 | 上传未完成、类型或校验不符 |
+| `UPLOAD_INVALID` | 422 | 上传参数或对象不符：文件类型、MIME、大小、sha256、对象缺失或大小不符、超过确认窗口；`details.reason` 为稳定原因码 |
 | `RUBRIC_SCORE_MISMATCH` | 422 | 评分项合计与总分不一致 |
 | `MATERIAL_NOT_READY` | 409 | 资料尚未解析完成 |
 | `ASSIGNMENT_NOT_OPEN` | 409 | 任务未发布或已关闭 |
@@ -619,6 +853,6 @@ Dashboard 只返回页面首屏需要的摘要和最近记录，不返回完整�
 | `VALIDATION_ERROR` | 422 | 请求体或查询参数未通过校验，`details.errors` 为字段级说明 |
 | `METHOD_NOT_ALLOWED` | 405 | 请求方法不被该路径支持 |
 | `INTERNAL_ERROR` | 500 | 未预期的服务端错误，响应不含异常堆栈 |
-| `SERVICE_UNAVAILABLE` | 503 | 依赖未就绪（必需配置缺失或数据库不可达），由 `/health/ready` 返回 |
+| `SERVICE_UNAVAILABLE` | 503 | 依赖未就绪（必需配置缺失、数据库或对象存储不可达）；`/health/ready` 与上传接口均可返回，上传场景 `details.component` 为 `storage` |
 
 `details.errors` 的条目只包含 `loc`、`type`、`message`，不回显用户提交的原始值；服务端日志同样不记录密码与令牌。
