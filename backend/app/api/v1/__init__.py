@@ -28,6 +28,8 @@ from fastapi import APIRouter
 
 from app.modules.auth.router import auth_router, me_router
 from app.modules.courses.router import courses_router
+from app.modules.jobs.router import jobs_router
+from app.modules.materials.router import materials_router
 
 #: v1 路由聚合器；业务模块实现后在此 include_router。
 api_router = APIRouter()
@@ -38,5 +40,11 @@ api_router.include_router(me_router)
 
 # ------------------------------ courses ------------------------------
 api_router.include_router(courses_router)
+
+# ----------------------------- materials -----------------------------
+api_router.include_router(materials_router)
+
+# -------------------------------- jobs -------------------------------
+api_router.include_router(jobs_router)
 
 __all__ = ["api_router"]

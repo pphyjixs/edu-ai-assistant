@@ -49,6 +49,13 @@ STORAGE_ENDPOINT
 STORAGE_BUCKET
 STORAGE_ACCESS_KEY
 STORAGE_SECRET_KEY
+STORAGE_REGION
+STORAGE_PATH_STYLE
+STORAGE_CONNECT_TIMEOUT_SECONDS
+STORAGE_READ_TIMEOUT_SECONDS
+STORAGE_UPLOAD_URL_TTL_SECONDS
+MATERIAL_MAX_UPLOAD_BYTES
+MATERIAL_UPLOAD_CONFIRM_TTL_SECONDS
 AI_PROVIDER
 AI_API_KEY
 AI_MODEL
@@ -57,6 +64,34 @@ JOB_CALLBACK_SECRET
 ```
 
 `APP_SECRET_KEY` 是访问令牌的签名密钥，开发环境也必填；长度为 32 字符以上的随机值，三个环境各用一份。`LOGIN_RATE_LIMIT_*` 有默认值（900 秒 / 5 次），不配置时按默认执行。
+
+对象存储：`STORAGE_*` 全部有安全默认值，未配置时上传接口返回 `503 SERVICE_UNAVAILABLE`（`details.component = storage`），不会启动失败。`STORAGE_PATH_STYLE` 默认 `true`（MinIO 与多数自建服务需要），云端 S3 可设为 `false` 使用 virtual-host 寻址；`STORAGE_CONNECT_TIMEOUT_SECONDS` / `STORAGE_READ_TIMEOUT_SECONDS` 默认 3 / 10 秒。`STORAGE_UPLOAD_URL_TTL_SECONDS`（默认 600）与 `MATERIAL_MAX_UPLOAD_BYTES`（默认 52428800）、`MATERIAL_UPLOAD_CONFIRM_TTL_SECONDS`（默认 86400）分别对应契约 4.2 / 4.6 中"可配置"的三项。
+
+SigV4 预签名与 HeadObject 请求都在应用侧完成（`app/storage/s3.py`），不依赖 S3 SDK；桶需预先存在（应用不会在启动期建桶）。本地验收可用 `scripts/verify_storage.py` 一键对 MinIO 运行存储侧用例。
+
+**对象存储 CORS 要求（必配）**：浏览器按预签名地址直传对象存储，跨域预检（`OPTIONS`）会先由存储服务应答。存储服务必须有对目标桶生效的 CORS 规则，否则浏览器 PUT 预检失败、直传无法完成（契约 4.4）。MinIO 可用 `mc cors set ALIAS/BUCKET cors.xml` 设置桶规则；未设置桶规则时，它使用全局 CORS 配置。桶规则示例：
+
+```xml
+<CORSConfiguration>
+  <CORSRule>
+    <AllowedOrigin>https://<前端域名></AllowedOrigin>
+    <AllowedMethod>PUT</AllowedMethod>
+    <AllowedHeader>Content-Type</AllowedHeader>
+    <AllowedHeader>x-amz-checksum-sha256</AllowedHeader>
+    <AllowedHeader>If-None-Match</AllowedHeader>
+    <ExposeHeader>ETag</ExposeHeader>
+    <MaxAgeSeconds>600</MaxAgeSeconds>
+  </CORSRule>
+</CORSConfiguration>
+```
+
+要点：
+
+- `AllowedOrigin` 配置明确的前端来源（与后端 `FRONTEND_ORIGINS` 一致）。预签名 PUT 的凭证在 URL 查询参数中，不使用浏览器发送的 `Authorization` 请求头。
+- 浏览器直传只需放行 `PUT`；后端的 `HeadObject` 是服务端请求，不经过浏览器 CORS。`AllowedHeader` 必须包含直传所需的三个头：`Content-Type`、`x-amz-checksum-sha256`、`If-None-Match`。
+- 预检成功后浏览器才会发起真正的 PUT；未配置 CORS 的桶会以 `403` 或 `CORS error` 拒绝直传，与后端接口无关。
+
+过期上传清理由独立调度任务执行，不能依赖 Vercel 请求进程常驻。建议每 5 分钟在受信任的后端任务环境运行一次 `python scripts/cleanup_expired_uploads.py`；该命令使用该环境的 `DATABASE_URL` 和 `STORAGE_*`，每次最多处理 100 条超过确认窗口且尚未完成的会话。它先删除孤立对象，再将会话标记为 `expired_at`；删除失败的会话留待下次重试，已完成资料不会进入清理范围。调度频率和单次处理量须按实际上传量监控调整。
 
 开发、Preview 和 Production 使用独立配置。任何密钥都不能使用 `VITE_` 前缀，也不能提交到仓库。
 
@@ -138,7 +173,8 @@ npx openapi-typescript contracts/openapi/openapi.json -o contracts/generated/api
 # 执行迁移（在 backend 目录下）
 ..\.venv\Scripts\python.exe -m alembic upgrade head
 
-# 一键验证「全新数据库迁移 + 回滚」：脚本会新建/删除一次性库，不触碰原库数据
+# 一键验证「全新数据库迁移 + 回滚」：以 <名>_test 作为测试库、<名>_migration_check 作为
+# 迁移校验库（两者都由测试夹具建删，受库名后缀守卫保护），不触碰原库数据
 ..\.venv\Scripts\python.exe scripts\verify_local_migration.py
 ```
 

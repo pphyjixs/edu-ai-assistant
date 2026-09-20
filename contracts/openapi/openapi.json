@@ -1146,6 +1146,419 @@
           }
         }
       }
+    },
+    "/api/v1/courses/{course_id}/materials/uploads": {
+      "post": {
+        "tags": [
+          "materials"
+        ],
+        "summary": "初始化课件上传",
+        "description": "仅课程创建教师可调用。校验文件元数据后创建上传会话，返回预签名 PUT 地址。文件字节由浏览器按该地址直传对象存储，不经过后端。expires_at 是 PUT 地址的到期时间（10 分钟），confirm_deadline_at 是完成确认的截止时间（24 小时）。",
+        "operationId": "init_material_upload_api_v1_courses__course_id__materials_uploads_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "course_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Course Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MaterialUploadInitRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "上传会话已创建，返回预签名信息",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaterialUploadInitResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "请求结构不合法（VALIDATION_ERROR）；文件类型、MIME、大小或 sha256 不合规（UPLOAD_INVALID）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "学生调用返回 ROLE_FORBIDDEN；非创建教师返回 COURSE_FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "课程或上传会话不存在（RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "课程已归档，不能新增资料（COURSE_ARCHIVED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "对象存储未配置或不可达（SERVICE_UNAVAILABLE）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/courses/{course_id}/materials/uploads/{upload_id}/complete": {
+      "post": {
+        "tags": [
+          "materials"
+        ],
+        "summary": "完成课件上传",
+        "description": "仅课程创建教师可调用。确认对象存在且大小、类型、SHA-256 与初始化声明一致后，在同一事务中创建资料（PROCESSING）与 MATERIAL_PARSE 任务（PENDING）。重复确认（含并发）返回同一份 202 结果，不产生第二份资料或任务。第一版不实现解析 Worker，资料与任务状态不会自动推进。",
+        "operationId": "complete_material_upload_api_v1_courses__course_id__materials_uploads__upload_id__complete_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "course_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Course Id"
+            }
+          },
+          {
+            "name": "upload_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Upload Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/MaterialUploadCompleteRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": " Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "已受理，返回资料与解析任务",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaterialUploadCompleteResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "请求结构不合法（VALIDATION_ERROR）；对象缺失、大小/类型/校验值不符或确认窗口已过（UPLOAD_INVALID）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "学生调用返回 ROLE_FORBIDDEN；非创建教师返回 COURSE_FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "课程或上传会话不存在（RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "课程已归档，不能新增资料（COURSE_ARCHIVED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "对象存储未配置或不可达（SERVICE_UNAVAILABLE）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/materials/{material_id}": {
+      "get": {
+        "tags": [
+          "materials"
+        ],
+        "summary": "资料详情与处理状态",
+        "description": "资料所属课程的成员（教师或学生）可读；归档课程的资料仍可读。资料不存在，或当前用户不是课程成员时，统一返回 404 RESOURCE_NOT_FOUND，不区分「不存在」与「不可见」。第一版没有解析 Worker，完成确认后资料恒为 PROCESSING，状态不会自动推进。",
+        "operationId": "get_material_api_v1_materials__material_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "material_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Material Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaterialDetail"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资料不存在，或当前用户不是课程成员（RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/jobs/{job_id}": {
+      "get": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "查询任务状态",
+        "description": "任务不存在，或当前用户不是任务关联资源所属课程的成员时，统一返回 404 RESOURCE_NOT_FOUND，不区分「不存在」与「不可见」。第一版只接入 MATERIAL_PARSE（课件解析）任务，其可见性等同于资料所属课程的成员；归档课程的任务仍可读。",
+        "operationId": "get_job_api_v1_jobs__job_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobStatus"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在，或当前用户无权查看（RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1480,6 +1893,19 @@
           }
         }
       },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
       "InviteCodeResponse": {
         "properties": {
           "invite_code": {
@@ -1493,6 +1919,117 @@
         ],
         "title": "InviteCodeResponse",
         "description": "重置邀请码响应（契约 3.4）。"
+      },
+      "JobResourceType": {
+        "type": "string",
+        "enum": [
+          "MATERIAL",
+          "PRACTICE_SET",
+          "SUBMISSION"
+        ],
+        "title": "JobResourceType",
+        "description": "任务关联的资源类型，与 ``JobType`` 一一对应。"
+      },
+      "JobStatus": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "type": {
+            "$ref": "#/components/schemas/JobType"
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatusValue"
+          },
+          "progress": {
+            "type": "integer",
+            "title": "Progress"
+          },
+          "resource_type": {
+            "$ref": "#/components/schemas/JobResourceType"
+          },
+          "resource_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Resource Id"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "status",
+          "progress",
+          "resource_type",
+          "resource_id",
+          "error",
+          "created_at",
+          "started_at",
+          "finished_at"
+        ],
+        "title": "JobStatus",
+        "description": "任务状态（契约 4.7 / 第 10 节）。"
+      },
+      "JobStatusValue": {
+        "type": "string",
+        "enum": [
+          "PENDING",
+          "RUNNING",
+          "SUCCEEDED",
+          "FAILED",
+          "CANCELLED"
+        ],
+        "title": "JobStatusValue",
+        "description": "任务状态的**取值域**。\n\n命名刻意与响应模型 :class:`app.modules.jobs.schemas.JobStatus` 区分开：\n两者同名会让 pydantic 在 OpenAPI 里生成\n``app__modules__jobs__models__JobStatus`` 这类限定组件名，前端生成的类型会很难用。\n\n``PENDING`` 为初始状态，终态为 ``SUCCEEDED`` / ``FAILED`` / ``CANCELLED``。"
+      },
+      "JobType": {
+        "type": "string",
+        "enum": [
+          "MATERIAL_PARSE",
+          "PRACTICE_GENERATE",
+          "SUBMISSION_GRADE"
+        ],
+        "title": "JobType",
+        "description": "任务类型。"
       },
       "LoginRequest": {
         "properties": {
@@ -1562,6 +2099,183 @@
         ],
         "title": "LogoutRequest",
         "description": "注销请求（契约 2.5）：指定要撤销的当前会话。"
+      },
+      "MaterialDetail": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "course_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Course Id"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "content_type": {
+            "type": "string",
+            "title": "Content Type"
+          },
+          "size": {
+            "type": "integer",
+            "title": "Size"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MaterialStatus"
+          },
+          "uploaded_by": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uploaded By"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "course_id",
+          "filename",
+          "content_type",
+          "size",
+          "status",
+          "uploaded_by",
+          "error_message",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "MaterialDetail",
+        "description": "资料详情（契约 4.7）。"
+      },
+      "MaterialStatus": {
+        "type": "string",
+        "enum": [
+          "UPLOADING",
+          "UPLOADED",
+          "PROCESSING",
+          "READY",
+          "FAILED"
+        ],
+        "title": "MaterialStatus",
+        "description": "资料解析状态（``docs/modules.md`` 第 4 节）。\n\n第一版不实现解析 Worker：完成确认后资料即为 ``PROCESSING``，且不会自动推进。"
+      },
+      "MaterialUploadCompleteRequest": {
+        "properties": {},
+        "additionalProperties": false,
+        "type": "object",
+        "title": "MaterialUploadCompleteRequest",
+        "description": "完成上传请求（契约 4.5）：**没有请求字段**。\n\n只接受省略请求体或空对象 ``{}``；带任何未声明字段时返回\n``422 VALIDATION_ERROR``（与全项目\"拒绝未声明字段\"的约定一致）。"
+      },
+      "MaterialUploadCompleteResponse": {
+        "properties": {
+          "material": {
+            "$ref": "#/components/schemas/MaterialDetail"
+          },
+          "job": {
+            "$ref": "#/components/schemas/JobStatus"
+          }
+        },
+        "type": "object",
+        "required": [
+          "material",
+          "job"
+        ],
+        "title": "MaterialUploadCompleteResponse",
+        "description": "完成上传响应（契约 4.5）：202 返回同一份资料与解析任务。"
+      },
+      "MaterialUploadInitRequest": {
+        "properties": {
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "content_type": {
+            "type": "string",
+            "title": "Content Type"
+          },
+          "size": {
+            "type": "integer",
+            "title": "Size"
+          },
+          "sha256": {
+            "type": "string",
+            "title": "Sha256"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "filename",
+          "content_type",
+          "size",
+          "sha256"
+        ],
+        "title": "MaterialUploadInitRequest",
+        "description": "初始化上传请求（契约 4.3）。\n\n只声明类型与必填；长度、白名单、范围等业务规则由 service 判定并返回\n``UPLOAD_INVALID``，避免它们被框架统一降级成 ``VALIDATION_ERROR``。"
+      },
+      "MaterialUploadInitResponse": {
+        "properties": {
+          "upload_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Upload Id"
+          },
+          "upload_url": {
+            "type": "string",
+            "title": "Upload Url"
+          },
+          "method": {
+            "type": "string",
+            "title": "Method"
+          },
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Headers"
+          },
+          "expires_at": {
+            "type": "string",
+            "title": "Expires At"
+          },
+          "confirm_deadline_at": {
+            "type": "string",
+            "title": "Confirm Deadline At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "upload_id",
+          "upload_url",
+          "method",
+          "headers",
+          "expires_at",
+          "confirm_deadline_at"
+        ],
+        "title": "MaterialUploadInitResponse",
+        "description": "初始化上传响应（契约 4.3）。"
       },
       "Page_CourseMemberSummary_": {
         "properties": {
@@ -1764,6 +2478,46 @@
         ],
         "title": "UserSummary",
         "description": "登录响应中的用户概要，字段与契约 2.1 的示例一致。"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
       }
     },
     "securitySchemes": {

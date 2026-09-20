@@ -55,6 +55,13 @@ EXPECTED_OPERATIONS: dict[str, dict[str, set[str]]] = {
     "/api/v1/courses/{course_id}/members": {
         "get": {"200", "401", "403", "404", "422", "500"},
     },
+    # 课件上传：两个写入接口都可能因为对象存储不可用返回 503
+    "/api/v1/courses/{course_id}/materials/uploads": {
+        "post": {"201", "401", "403", "404", "409", "422", "500", "503"},
+    },
+    "/api/v1/courses/{course_id}/materials/uploads/{upload_id}/complete": {
+        "post": {"202", "401", "403", "404", "409", "422", "500", "503"},
+    },
 }
 
 #: 统一错误结构必须出现在组件里

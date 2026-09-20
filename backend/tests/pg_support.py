@@ -316,7 +316,8 @@ def truncate_all_tables(engine: Engine) -> None:
     with engine.begin() as connection:
         connection.execute(
             text(
-                "TRUNCATE TABLE login_attempts, course_members, courses,"
+                "TRUNCATE TABLE jobs, materials, material_upload_sessions,"
+                " login_attempts, course_members, courses,"
                 " auth_sessions, users RESTART IDENTITY CASCADE"
             )
         )

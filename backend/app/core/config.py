@@ -107,10 +107,27 @@ class Settings(BaseSettings):
     db_echo: bool = False
 
     # --------------------- 对象存储（浏览器直传）---------------------
+    #: S3 兼容服务地址，例如 ``http://127.0.0.1:9000``（MinIO）或云厂商 endpoint
     storage_endpoint: str = ""
     storage_bucket: str = ""
     storage_access_key: str = ""
     storage_secret_key: str = ""
+    #: SigV4 签名区域；多数自建/兼容服务不校验取值，但参与签名计算
+    storage_region: str = "us-east-1"
+    #: 使用 path-style 寻址（MinIO 与多数自建服务需要），云端可用 virtual-host
+    storage_path_style: bool = True
+    #: 建立连接的超时（秒）；对象存储不可达时必须快速失败，不能拖住请求
+    storage_connect_timeout_seconds: float = 3.0
+    #: 读取响应的超时（秒）
+    storage_read_timeout_seconds: float = 10.0
+    #: 预签名 PUT 地址有效期（秒），契约 4.6 固定 10 分钟
+    storage_upload_url_ttl_seconds: int = 10 * 60
+
+    # ------------------------ 课件上传（Materials）-------------------
+    #: 单文件大小上限（字节），契约 4.2 默认 50 MiB
+    material_max_upload_bytes: int = 50 * 1024 * 1024
+    #: 上传确认窗口（秒），契约 4.6 固定 24 小时
+    material_upload_confirm_ttl_seconds: int = 24 * 3600
 
     # ------------------------------ AI ------------------------------
     ai_provider: str = ""

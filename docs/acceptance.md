@@ -14,20 +14,20 @@
 
 ## 2. Auth 验收
 
-- [ ] 任何人均可注册教师或学生，无需教师审批或邮箱验证，注册后可通过邮箱和密码登录。
-- [ ] 注册邮箱重复返回 409；两个并发注册请求只会成功一个，不会出现比较值相同的两条账号记录。
-- [ ] 同一规范化邮箱连续登录失败达到阈值后返回 429 并给出可重试秒数，登录成功后计数清零。
-- [ ] 邮箱域名大小写不同视为重复账号，本地部分大小写不同视为不同账号；并发注册不能绕过数据库唯一约束。
-- [ ] 密码允许 8–128 个字符及空格，不强制字符种类组合；少于 8 或多于 128 个字符被拒绝，不自动去除密码首尾空格。
-- [ ] 正确凭证可以登录，错误凭证不会泄露账号是否存在。
-- [ ] Access Token 有效期为 1 小时；不携带有效 Access Token 也可通过 JSON 请求体提交 Refresh Token 刷新。
-- [ ] Refresh Token 自登录签发起有效 7 天，可重复刷新且不轮换、不延长有效期；刷新响应只返回新的 Access Token 及其类型和有效期。
-- [ ] 刷新失败后清除前端保存的两个 Token 并回到登录页；验收不限定前端 Token 存放位置或内部键名。
-- [ ] 注销仅撤销当前用户指定的 Refresh Token 会话，不影响其他会话；已撤销的 Refresh Token 再次刷新返回 401。
-- [ ] 注销后前端清除其保存的两个 Token；单独保存的旧 Access Token 仍可能使用至自身到期。
-- [ ] 未登录访问受保护页面时跳转登录页。
-- [ ] 学生调用教师接口返回 403。
-- [ ] 密码只保存 Argon2id 哈希，Refresh Token 只保存哈希；日志不记录密码或令牌。
+- [x] 任何人均可注册教师或学生，无需教师审批或邮箱验证，注册后可通过邮箱和密码登录。（`POST /auth/register` 无审批/邮箱验证分支，`is_active` 默认启用；`integration/test_auth_flow.py` 注册 201 后立即登录 200）
+- [x] 注册邮箱重复返回 409；两个并发注册请求只会成功一个，不会出现比较值相同的两条账号记录。（注册不做“先查后插”，`uq_users_email_normalized` 唯一约束兜底，`IntegrityError` → 409 `AUTH_EMAIL_TAKEN`；`integration/test_concurrent_registration.py` 8 路真并发断言恰好 1×201 + 7×409 且库中仅 1 行）
+- [x] 同一规范化邮箱连续登录失败达到阈值后返回 429 并给出可重试秒数，登录成功后计数清零。（默认 15 分钟窗口 5 次阈值，`retry_after_seconds` 为最早失败滚出窗口所需秒数；限流按规范化邮箱隔离且对不存在账号同样生效，成功登录物理删除失败记录；`integration/test_auth_login_security.py`。轻微测试缺口：窗口滚过后限流解除未直接断言，由 `retry_after_seconds` 计算逻辑保证）
+- [x] 邮箱域名大小写不同视为重复账号，本地部分大小写不同视为不同账号；并发注册不能绕过数据库唯一约束。（`normalize_email` 仅小写化域名，本地部分原样保留且不移除句点与 `+` 后缀；`integration/test_auth_acceptance.py` 直查库断言 `email_normalized`，`integration/test_concurrent_registration.py` 含 4 种域名大小写变体并发）
+- [x] 密码允许 8–128 个字符及空格，不强制字符种类组合；少于 8 或多于 128 个字符被拒绝，不自动去除密码首尾空格。（`RegisterRequest` 密码 `min_length=8 / max_length=128` 且不 strip，纯小写字母密码可注册；`integration/test_auth_acceptance.py` 边界 8/128 通过、7/129 返回 422，首尾空格差异登录返回 401）
+- [x] 正确凭证可以登录，错误凭证不会泄露账号是否存在。（账号不存在/密码错误/停用统一 401 `AUTH_INVALID_CREDENTIALS`，账号不存在时用哑哈希补齐 Argon2 计算量防计时侧信道；`integration/test_auth_login_security.py` 断言两种错误状态码、错误码与文案一致）
+- [x] Access Token 有效期为 1 小时；不携带有效 Access Token 也可通过 JSON 请求体提交 Refresh Token 刷新。（JWT HS256，登录响应 `expires_in == 3600`；`/auth/refresh` 无 Bearer 依赖、仅 JSON Body 携带 `refresh_token`；`contract/test_token_contract.py`、`integration/test_auth_acceptance.py` 以 2 秒 TTL 真实等待验证到期失效）
+- [x] Refresh Token 自登录签发起有效 7 天，可重复刷新且不轮换、不延长有效期；刷新响应只返回新的 Access Token 及其类型和有效期。（`expires_at = 登录时间 + 7 天`，刷新路径不写会话表即不轮换不延长；`RefreshResponse` 仅 `access_token`/`token_type`/`expires_in` 三字段；`integration/test_auth_flow.py` 同一 Refresh Token 二次刷新成功且直查库断言 7 天，`contract/test_token_contract.py` 断言刷新响应无 `refresh_token` 字段）
+- [ ] 刷新失败后清除前端保存的两个 Token 并回到登录页；验收不限定前端 Token 存放位置或内部键名。（后端已验收：无效/过期/已撤销的 Refresh Token 统一返回 401；`services/http.ts` 已具备清 Token 与跳转回调基础设施。**前端尚未接入**：`features/auth/api` 仍为 mock，无登录页可跳转）
+- [x] 注销仅撤销当前用户指定的 Refresh Token 会话，不影响其他会话；已撤销的 Refresh Token 再次刷新返回 401。（按令牌哈希定位会话，撤销他人会话返回 404 防枚举，仅置 `revoked_at` 幂等；`integration/test_auth_login_security.py` 多会话独立撤销，`integration/test_auth_acceptance.py` 注销后再刷新 401）
+- [ ] 注销后前端清除其保存的两个 Token；单独保存的旧 Access Token 仍可能使用至自身到期。（后端已验收：注销不维护 Access Token 黑名单，旧 Access Token 在自身 `exp` 前仍可访问 `/users/me`，到期后失效。**前端清 Token 尚未接入**：前端无注销功能调用 `/auth/logout`）
+- [ ] 未登录访问受保护页面时跳转登录页。（后端已验收：缺失/格式错误/错误 scheme 的 Bearer 统一 401 `AUTH_TOKEN_EXPIRED`，未认证先于角色判断。**前端尚未接入**：`router.tsx` 无路由守卫与 `/login` 路由）
+- [x] 学生调用教师接口返回 403。（`require_roles` 抛 403 `ROLE_FORBIDDEN`，匿名访问教师接口先返回 401；`integration/test_auth_acceptance.py` 经 `TeacherDep` 探针路由验证守卫本身，课程创建与资料上传初始化/完成等真实业务端点均已接入 `TeacherDep` 并有学生 403 用例：`integration/test_courses_api.py`、`integration/test_materials_upload_api.py`）
+- [x] 密码只保存 Argon2id 哈希，Refresh Token 只保存哈希；日志不记录密码或令牌。（密码 Argon2id 默认参数哈希，Refresh Token 为 192-bit 随机值仅存 sha256；`integration/test_auth_flow.py` 直查库断言哈希形态与明文不落库，`integration/test_log_redaction.py` 真实请求链路日志无密码/令牌，`unit/test_logging_redaction.py` 覆盖出口兜底脱敏规则）
 
 ## 3. Courses 验收
 
@@ -48,13 +48,13 @@
 
 ## 4. Materials 验收
 
-- [ ] 教师可以上传 PDF、PPTX、DOCX，学生不能上传课程资料。
-- [ ] 文件直接进入对象存储，不依赖后端本地磁盘持久化。
-- [ ] 上传后显示处理状态和进度。
-- [ ] 成功解析后显示有顺序的大纲和知识点。
-- [ ] 解析结果保留来源页码或章节定位。
-- [ ] 不支持的类型、超限文件和校验失败有明确错误。
-- [ ] 解析失败可以重试，不产生重复章节和知识点。
+- [x] 教师可以上传 PDF、PPTX、DOCX，学生不能上传课程资料。（初始化与完成接口已实现并验收：学生 `403 ROLE_FORBIDDEN`，其他教师 `403 COURSE_FORBIDDEN`）
+- [x] 文件直接进入对象存储，不依赖后端本地磁盘持久化。（预签名直传：后端只签发地址与读取对象元数据，从不接收文件内容）
+- [x] 不支持的类型、超限文件和校验失败有明确错误。（业务规则为 `422 UPLOAD_INVALID` + 稳定 `details.reason`，结构问题为 `422 VALIDATION_ERROR`）
+- [ ] 上传后显示处理状态和进度。（后端 `GET /materials/{material_id}` 与 `GET /jobs/{job_id}` 已验收：资料为 `PROCESSING`、任务为 `PENDING` 且进度为 0；前端展示尚未验收。课程成员可读，非成员与不存在统一 `404 RESOURCE_NOT_FOUND`，归档课程仍可读）
+- [ ] 成功解析后显示有顺序的大纲和知识点。（**解析任务执行尚未交付**：第一版未接入解析 Worker，资料与任务状态不会自动推进）
+- [ ] 解析结果保留来源页码或章节定位。（**解析任务执行尚未交付**）
+- [ ] 解析失败可以重试，不产生重复章节和知识点。（**解析任务执行尚未交付**）
 
 ## 5. Learning 验收
 
@@ -90,12 +90,12 @@
 
 ## 8. Jobs 验收
 
-- [ ] 创建异步操作后 API 在合理时间内返回 202 和任务 ID。
-- [ ] 任务状态只能按合法路径变化，例如 `PENDING → RUNNING → SUCCEEDED`。
-- [ ] 任务包含 0 到 100 的进度或明确的不确定进度状态。
-- [ ] 同一幂等请求不会并行创建重复任务。
-- [ ] 失败任务包含面向用户的错误说明和内部 request ID。
-- [ ] 前端停止轮询已完成、失败或取消的任务。
+- [x] 创建异步操作后 API 在合理时间内返回 202 和任务 ID。（完成上传返回 `202` 与 `MATERIAL_PARSE` 任务；`GET /jobs/{job_id}` 查询接口已实现，可见性等同于资料所属课程成员）
+- [ ] 任务状态只能按合法路径变化，例如 `PENDING → RUNNING → SUCCEEDED`。（**解析任务执行尚未交付**：本阶段无 Worker，任务恒为 `PENDING`）
+- [x] 任务包含 0 到 100 的进度或明确的不确定进度状态。（`PENDING` 时 `progress` 为 0，符合契约）
+- [x] 同一幂等请求不会并行创建重复任务。（`(type, resource_id)` 唯一约束 + 完成接口行锁，重复/并发完成只产生一个任务）
+- [ ] 失败任务包含面向用户的错误说明和内部 request ID。（**解析任务执行尚未交付**：本阶段任务不会进入 `FAILED`）
+- [ ] 前端停止轮询已完成、失败或取消的任务。（**解析任务执行尚未交付**：本阶段任务不会推进到终态）
 
 ## 9. 前端体验验收
 
@@ -148,10 +148,10 @@ cd backend
 
 | 层 | 数量 | 数据库 |
 | --- | --- | --- |
-| `tests/unit` | 93 | 不接触数据库；外部依赖替换为 fake |
-| `tests/integration` | 97 | **专用测试库**，表结构由 Alembic 迁移创建 |
-| `tests/contract` | 31 | 同上（令牌格式、课程契约与 OpenAPI 一致性） |
-| 合计 | 221 | 本机连真实 PostgreSQL 时：全部通过，0 跳过 |
+| `tests/unit` | 128 | 不接触数据库与网络；外部依赖替换为 fake 或 `MockTransport` |
+| `tests/integration` | 165 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储用例需配置 S3 端点 |
+| `tests/contract` | 41 | 同上（令牌格式、课程与课件上传契约、OpenAPI 一致性） |
+| 合计 | 334 | 连真实 PostgreSQL + 对象存储时：333 通过、1 跳过（语义性，见下） |
 
 测试库规则（见 `backend/tests/pg_support.py`）：
 
@@ -174,10 +174,12 @@ cd backend
 需要数据库的用例在以下条件下跳过（单元测试及不依赖数据库的日志用例仍会执行）：
 
 - `TEST_DATABASE_URL` 与 `DATABASE_URL` 都没有配置，或连接串不是 PostgreSQL；
-- PostgreSQL 实例不可达。
+- PostgreSQL 实例不可达；
+- `tests/integration/test_storage_minio.py` 需要 `TEST_S3_ENDPOINT` / `TEST_S3_BUCKET` /
+  `TEST_S3_ACCESS_KEY` / `TEST_S3_SECRET_KEY`，未配置或端点不可达时整组跳过。
 
 跳过信息会写清原因（例如 `未配置可用的测试数据库（...）`）。
-**提交前请确认没有 skip——只跑单元测试通过不代表验收通过。**
+**提交前请确认没有因数据库或对象存储缺失而跳过的用例**；存储实现不回显可选校验头时，相关用例按“未验证”单独说明。只跑单元测试通过不代表验收通过。
 
 覆盖对照（关键条目 → 用例）：
 
@@ -203,8 +205,55 @@ cd backend
 | 课程请求校验、邀请码生成、教师/成员/归档权限判断 | `unit/test_courses.py` |
 | 课程成功状态码、错误结构、邀请码字段可见性、Bearer 要求 | `contract/test_courses_contract.py` |
 | 新增表、约束、枚举与升级回滚 | `integration/test_migrations.py` |
+| 上传会话、资料与解析任务在“重启”后仍可读取 | `integration/test_materials_persistence.py` |
+| 一次上传只对应一条资料、一个 `MATERIAL_PARSE` 任务 | `integration/test_materials_persistence.py` |
+| SigV4 签名向量、预签名头、对象键不含用户文件名、存储故障 → 503 | `unit/test_storage_signing.py` |
+| MinIO 直传成功、内容与签名哈希不符被拒、重复 PUT 被拒、跨域预检、后端不代传文件 | `integration/test_storage_minio.py` |
+| 初始化：创建教师 201、学生/其他教师/归档/非法类型/超限/结构错误、失败不落库 | `integration/test_materials_upload_api.py` |
+| 完成：未上传/元数据被篡改/过期会话/上传后归档/重复与并发完成，一上传一资料一任务 | `integration/test_materials_upload_api.py` |
+| 课件上传接口的路径、状态码、Bearer、响应组件与枚举、组件名稳定 | `contract/test_materials_contract.py` |
+| 资料详情与任务状态查询：成员可读、非成员/不存在统一 404、归档可读 | `integration/test_materials_query_api.py` |
+| 资料/任务状态查询接口的路径、Bearer、响应组件（`MaterialDetail` / `JobStatus`） | `contract/test_materials_contract.py` |
+| 过期上传清理：删孤立对象并标记过期、幂等、已完成资料不删、与完成请求争锁、存储不可用跳过；维护命令连接隔离测试库与真实测试桶执行两次 | `integration/test_upload_cleanup.py` |
+| 上传会话 `expired_at` 过期清理标记列 | `integration/test_migrations.py` |
 
-本次课程模块交付验证：221 项通过（93 unit / 97 integration / 31 contract），0 跳过。
+本次查询与清理交付验证：334 项（128 unit / 165 integration / 41 contract），
+连真实 PostgreSQL + MinIO（Quay 镜像 `quay.io/minio/minio`，本机以 Docker 启动，
+`MINIO_API_CORS_ALLOW_ORIGIN` 配置前端来源）时 334 通过、0 跳过。
+该次完整运行使用独立的 `edu_ai_material_upload_test` 测试库，结束后测试库及其迁移、
+生命周期检查库均无残留。此前一次使用共享默认测试库的重跑在最后 4 项遇到
+数据库连接中断；独立测试库重跑后这 4 项及全套均通过。
+
+本次 Auth 验收核对运行：本地 PostgreSQL（未配置 `TEST_S3_*`）下 334 项全部收集，
+325 通过、9 跳过（8 项 `test_storage_minio.py` 与 1 项 `test_upload_cleanup.py` 的
+真实存储删除用例，原因均为 `未配置对象存储测试端点`，与 Auth 无关）、0 失败；
+unit 128 / contract 41 / integration 165，Auth 相关用例全部真实执行且通过。
+运行前清理了上次异常退出残留的 `edu_ai_dev_test` 与 `edu_ai_dev_migration_check`
+（无活动连接，符合规则 3 的残留判定），本次会话结束后复查 `pg_database` 无残留。
+
+HeadObject 带 `x-amz-checksum-mode: ENABLED` 后，MinIO 回显已存储的
+`x-amz-checksum-sha256`，校验值读取也由真实存储用例验证。真实 PUT、内容与签名哈希不符被拒、
+重复 PUT 被拒、篡改签名头被拒、跨域预检、后端不代传文件内容等用例在 MinIO 上均完整执行并断言。
+
+**解析任务执行尚未交付**：第一版未接入解析 Worker，资料恒为 `PROCESSING`、
+任务恒为 `PENDING`，二者都不会自动推进；大纲/知识点生成、解析失败重试、
+任务状态推进与失败错误说明均属后续阶段。
+
+对象存储验收怎么跑（`tests/integration/test_storage_minio.py`，用例对服务端不做假设）:
+
+```powershell
+cd backend
+..\.venv\Scripts\python.exe scripts\verify_storage.py `
+    --endpoint http://127.0.0.1:9000 --bucket edu-ai-test `
+    --access-key <access> --secret-key <secret>
+```
+
+脚本会按需创建测试桶、运行用例并返回退出码。**不是所有 S3 兼容实现都强制校验
+签名、校验头与有效期**：遇到不实现该行为的服务端，相关用例会带原因 skip
+（例如 `该 S3 实现未校验 SigV4 签名，需在 MinIO/AWS S3 上验证本项`），
+按"未验证"而不是"通过"对待；本次 MinIO 验收没有此类跳过。
+本地使用 Docker 镜像 `quay.io/minio/minio` 和专用测试桶；
+`MINIO_API_CORS_ALLOW_ORIGIN` 或桶级 CORS 规则须包含测试来源（默认 `http://localhost:5173`，可由 `TEST_S3_CORS_ORIGIN` 覆盖）。
 在本地 PostgreSQL 上执行完整套件，运行后确认测试库、迁移库及生命周期检查库均无残留。
 存在 2 条测试客户端依赖弃用警告。
 Preview 尚未验证；其他教师不能管理他人课程的判断已由课程模块覆盖，

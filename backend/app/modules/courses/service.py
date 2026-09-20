@@ -83,6 +83,18 @@ async def require_course_member(
     return course
 
 
+async def is_course_member(
+    session: AsyncSession, *, user: User, course_id: uuid.UUID
+) -> bool:
+    """判断用户是否为课程成员（不抛异常）。
+
+    供「不存在与不可见统一 404」的查询接口使用（契约 4.7）：
+    资料/任务查询要求非成员与不存在返回同一个 404，而不是 403。
+    """
+    member = await repo.get_member(session, course_id=course_id, user_id=user.id)
+    return member is not None
+
+
 async def require_course_teacher(
     session: AsyncSession, *, user: User, course_id: uuid.UUID
 ) -> Course:

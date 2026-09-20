@@ -29,6 +29,9 @@ EXPECTED_TABLES = {
     "login_attempts",
     "courses",
     "course_members",
+    "jobs",
+    "material_upload_sessions",
+    "materials",
 }
 
 #: 迁移引入的原生枚举类型，回滚时必须全部清理
@@ -36,12 +39,16 @@ EXPECTED_ENUMS: dict[str, list[str]] = {
     "user_role": ["TEACHER", "STUDENT"],
     "course_status": ["ACTIVE", "ARCHIVED"],
     "course_role": ["TEACHER", "STUDENT"],
+    "job_type": ["MATERIAL_PARSE", "PRACTICE_GENERATE", "SUBMISSION_GRADE"],
+    "job_status": ["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"],
+    "job_resource_type": ["MATERIAL", "PRACTICE_SET", "SUBMISSION"],
+    "material_status": ["UPLOADING", "UPLOADED", "PROCESSING", "READY", "FAILED"],
 }
 
 COMPARE_OPTIONS = {"compare_type": True, "compare_server_default": True}
 
 #: head 对应的最新迁移
-REVISION = "0002_courses"
+REVISION = "0004_upload_session_expired_at"
 
 
 @pytest.fixture(scope="module")
@@ -201,6 +208,50 @@ def test_course_unique_constraints_exist(migrated_engine: Engine) -> None:
 
     assert "uq_courses_invite_code" in course_unique
     assert "uq_course_members_course_id_user_id" in member_unique
+
+
+def test_material_unique_constraints_exist(migrated_engine: Engine) -> None:
+    """一次上传只对应一条资料、一个解析任务，靠这两条唯一约束兜底。"""
+    inspector = inspect(migrated_engine)
+
+    material_unique = {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints("materials")
+    }
+    session_unique = {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints("material_upload_sessions")
+    }
+    job_unique = {
+        constraint["name"] for constraint in inspector.get_unique_constraints("jobs")
+    }
+
+    assert "uq_materials_upload_id" in material_unique
+    assert "uq_material_upload_sessions_object_key" in session_unique
+    assert "uq_jobs_type_resource_id" in job_unique
+
+
+def test_upload_session_completion_foreign_key_exists(migrated_engine: Engine) -> None:
+    """会话指向完成结果的循环外键必须在建表后补上（ORM 的 use_alter=True）。"""
+    inspector = inspect(migrated_engine)
+    names = {
+        fk["name"]
+        for fk in inspector.get_foreign_keys("material_upload_sessions")
+    }
+
+    assert "fk_material_upload_sessions_completed_material_id_materials" in names
+    assert "fk_materials_upload_id_material_upload_sessions" in {
+        fk["name"] for fk in inspector.get_foreign_keys("materials")
+    }
+
+
+def test_upload_session_has_expired_at_column(migrated_engine: Engine) -> None:
+    """过期清理标记列存在（契约 4.6 的清理命令据此幂等）。"""
+    columns = {
+        column["name"]
+        for column in inspect(migrated_engine).get_columns("material_upload_sessions")
+    }
+    assert "expired_at" in columns
 
 
 def test_rollback_to_base_removes_every_schema_object(
