@@ -36,6 +36,7 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy import Enum as SAEnum
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import Uuid
 
@@ -148,6 +149,11 @@ class MaterialUploadSession(Base):
 
     #: 完成确认时间；与资料、任务在同一事务中写入
     completed_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+
+    #: 完成响应快照（JSONB）：首次完成时的 ``{material, job}``。
+    #: 重复确认（含资料已删除或解析状态变化后）一律回填该快照，
+    #: 保证「重复完成上传返回首次结果」（契约 4.6 / 5.2）。
+    completion_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     #: 过期清理标记：超过确认窗口仍未完成的会话由清理命令标记为过期，
     #: 其孤立对象已被删除。非 NULL 表示已被清理，清理命令据此幂等跳过。
@@ -375,3 +381,79 @@ class MaterialKnowledgePoint(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - 仅用于调试
         return f"<MaterialKnowledgePoint id={self.id} order={self.order}>"
+
+
+class MaterialDeleteStatus(str, enum.Enum):
+    """对象删除待办的状态。"""
+
+    PENDING = "PENDING"
+    DONE = "DONE"
+
+
+class MaterialDeleteTodo(Base):
+    """对象删除待办（删除资料时写入，由独立维护命令消费）。
+
+    不在删除请求里直接删对象：原 PUT 地址在过期前仍可能被浏览器使用
+    （``If-None-Match: *`` 在对象删除后放行），立即删除会给晚到 PUT 留下
+    重建窗口。维护命令在「PUT 地址过期 + 缓冲期」后删除对象并再次核查
+    晚到 PUT；失败持续重试（``attempts``/``last_error``），核查通过标记
+    ``DONE``。资料行与上传会话都是最小删除记录，保留供审计。
+    """
+
+    __tablename__ = "material_delete_todos"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+
+    material_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "materials.id",
+            ondelete="CASCADE",
+            name="fk_material_delete_todos_material_id_materials",
+        ),
+        nullable=False,
+        unique=True,
+    )
+
+    course_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+
+    #: 待删除对象的键（冗余自资料，资料被级联删除时仍可定位对象）
+    object_key: Mapped[str] = mapped_column(String(OBJECT_KEY_MAX_LENGTH), nullable=False)
+
+    #: 关联 PUT 地址的到期时间：过期 + 缓冲期后才真正删除对象
+    upload_expires_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
+
+    status: Mapped[MaterialDeleteStatus] = mapped_column(
+        SAEnum(
+            MaterialDeleteStatus,
+            name="material_delete_todo_status",
+            native_enum=True,
+        ),
+        nullable=False,
+        default=MaterialDeleteStatus.PENDING,
+    )
+
+    #: 已执行的删除尝试次数（含因存储故障失败的重试）
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
+    last_error: Mapped[str | None] = mapped_column(
+        String(MATERIAL_ERROR_MAX_LENGTH), nullable=True
+    )
+
+    requested_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
+
+    #: 晚到 PUT 核查通过（对象确认不存在）的时间
+    verified_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, nullable=False, default=utc_now, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_material_delete_todos_status", "status"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - 仅用于调试
+        return f"<MaterialDeleteTodo id={self.id} status={self.status.value}>"

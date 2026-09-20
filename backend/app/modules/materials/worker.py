@@ -19,8 +19,9 @@ status='PENDING'`` 的原子领取，因此重复调度（例如幂等完成后�
 from __future__ import annotations
 
 import logging
+import secrets
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -35,7 +36,6 @@ from app.storage import S3Storage, StorageUnavailableError
 
 logger = logging.getLogger("app.materials.worker")
 
-#: 回写前最后一次检查资料是否已被删除；是则放弃（契约 5.5 第 5 步）
 #: 所有写入 ``error`` 列的摘要都在此长度内
 _ERROR_MAX_LENGTH = 500
 
@@ -56,15 +56,21 @@ async def _claim(
     *,
     material_id: uuid.UUID,
     now: datetime,
-) -> bool:
+    lease_seconds: int,
+) -> tuple[bool, str | None]:
     """原子领取 ``PENDING`` 的 ``MATERIAL_PARSE`` 任务并推进资料到 ``PROCESSING``。
 
-    领取不到（任务不存在、已被处理或资料已删除）返回 ``False``。
+    领取动作（契约 5.5）：任务行锁内置 ``RUNNING``、递增 ``attempts``、
+    生成 ``run_token`` 并设置租约——回写必须携带匹配的运行令牌，防止
+    过期 Worker 覆盖新一轮执行。
+
+    领取不到（任务不存在、已被处理或资料已删除）返回 ``(False, None)``。
     """
+    run_token = secrets.token_hex(16)
     async with session_factory() as session:
         material = await repo.get_visible_material_for_update(session, material_id)
         if material is None:
-            return False
+            return False, None
 
         result = await session.execute(
             update(Job)
@@ -73,17 +79,25 @@ async def _claim(
                 Job.resource_id == material_id,
                 Job.status == JobStatusValue.PENDING,
             )
-            .values(status=JobStatusValue.RUNNING, started_at=now, progress=0)
+            .values(
+                status=JobStatusValue.RUNNING,
+                started_at=now,
+                progress=0,
+                attempts=Job.attempts + 1,
+                run_token=run_token,
+                lease_expires_at=now
+                + timedelta(seconds=lease_seconds),
+            )
         )
         if result.rowcount == 0:
             await session.rollback()
-            return False
+            return False, None
 
         material.status = MaterialStatus.PROCESSING
         material.error_message = None
         material.updated_at = now
         await session.commit()
-        return True
+        return True, run_token
 
 
 async def _load_material(
@@ -100,11 +114,13 @@ async def _write_success(
     *,
     material: Material,
     sections: list[parser.ExtractedSection],
+    run_token: str,
     now: datetime,
 ) -> bool:
     """把解析结果与 ``SUCCEEDED``/``READY`` 在同一事务落库。
 
-    资料在执行期间被删除时放弃回写（返回 ``False``，契约 5.5 第 5 步）。
+    资料在执行期间被删除时放弃回写（返回 ``False``，契约 5.5 第 5 步）；
+    运行令牌不匹配（租约已被新一轮执行接管）同样放弃。
     """
     fresh = await repo.get_visible_material_for_update(session, material.id)
     if fresh is None:
@@ -117,13 +133,19 @@ async def _write_success(
         .where(
             Job.type == JobType.MATERIAL_PARSE,
             Job.resource_id == material.id,
+            Job.run_token == run_token,
         )
         .with_for_update()
     )
-    job_row = job.scalar_one()
+    job_row = job.scalar_one_or_none()
+    if job_row is None:
+        # 任务已被重试重置并由新的运行令牌接管：本轮结果作废
+        await session.rollback()
+        logger.info("运行令牌不匹配，放弃回写结果（material_id=%s）", material.id)
+        return False
 
     # 全量重写解析产物：重试场景下清掉上一次（未成功）的残留
-    repo.delete_sections(session, material_id=material.id)
+    await repo.delete_sections(session, material_id=material.id)
     # 两表之间没有 relationship，unit of work 不保证插入顺序：
     # 先写章节并 flush，知识点的外键才有可引用的行
     section_ids: list[uuid.UUID] = []
@@ -170,10 +192,11 @@ async def _write_failure(
     session_factory: async_sessionmaker[AsyncSession],
     *,
     material_id: uuid.UUID,
+    run_token: str,
     message: str,
     now: datetime,
 ) -> None:
-    """把任务与资料置为 ``FAILED``；资料已被删除时整体放弃。"""
+    """把任务与资料置为 ``FAILED``；资料已删除或令牌不匹配时放弃。"""
     async with session_factory() as session:
         fresh = await repo.get_visible_material_for_update(session, material_id)
         if fresh is None:
@@ -183,10 +206,13 @@ async def _write_failure(
             .where(
                 Job.type == JobType.MATERIAL_PARSE,
                 Job.resource_id == material_id,
+                Job.run_token == run_token,
             )
             .with_for_update()
         )
-        job_row = job.scalar_one()
+        job_row = job.scalar_one_or_none()
+        if job_row is None:
+            return
         job_row.status = JobStatusValue.FAILED
         job_row.error = message
         job_row.finished_at = now
@@ -201,6 +227,7 @@ async def run_material_parse(
     *,
     material_id: uuid.UUID,
     storage: S3Storage,
+    lease_seconds: int = 300,
     now: datetime | None = None,
 ) -> None:
     """执行一次资料解析（契约 5.5）。任何异常都不会向外抛出。"""
@@ -213,7 +240,13 @@ async def run_material_parse(
         content_type = material.content_type
         storage_key = material.storage_key
 
-    if not await _claim(session_factory, material_id=material_id, now=started_at):
+    claimed, run_token = await _claim(
+        session_factory,
+        material_id=material_id,
+        now=started_at,
+        lease_seconds=lease_seconds,
+    )
+    if not claimed or run_token is None:
         return
 
     try:
@@ -224,6 +257,7 @@ async def run_material_parse(
         await _write_failure(
             session_factory,
             material_id=material_id,
+            run_token=run_token,
             message="解析服务暂时无法读取文件，请稍后重试",
             now=utc_now(),
         )
@@ -234,6 +268,7 @@ async def run_material_parse(
         await _write_failure(
             session_factory,
             material_id=material_id,
+            run_token=run_token,
             message=message,
             now=utc_now(),
         )
@@ -244,7 +279,11 @@ async def run_material_parse(
         if material is None:  # pragma: no cover - 领取阶段已确认存在
             return
         await _write_success(
-            session, material=material, sections=sections, now=utc_now()
+            session,
+            material=material,
+            sections=sections,
+            run_token=run_token,
+            now=utc_now(),
         )
 
 
@@ -268,4 +307,5 @@ def schedule_material_parse(
         session_factory,
         material_id=material_id,
         storage=storage,
+        lease_seconds=settings.material_parse_lease_seconds,
     )

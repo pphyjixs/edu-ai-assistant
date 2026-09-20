@@ -46,10 +46,12 @@ from app.modules.auth.models import User, UserRole
 from app.modules.courses import service as courses_service
 from app.modules.jobs import service as jobs_service
 from app.modules.jobs.models import Job, JobStatusValue
+from app.modules.jobs.schemas import JobStatus
 from app.modules.materials import repository as repo
 from app.modules.materials.models import (
     FILENAME_MAX_LENGTH,
     Material,
+    MaterialDeleteStatus,
     MaterialKnowledgePoint,
     MaterialSection,
     MaterialStatus,
@@ -59,6 +61,8 @@ from app.modules.materials.schemas import (
     CANONICAL_CONTENT_TYPE_BY_EXTENSION,
     SHA256_HEX_LENGTH,
     SUPPORTED_EXTENSIONS,
+    MaterialDetail,
+    MaterialUploadCompleteResponse,
     MaterialUploadInitRequest,
 )
 from app.storage import (
@@ -94,11 +98,12 @@ class ValidatedUpload(NamedTuple):
 class CompletionResult(NamedTuple):
     """完成上传的结果。
 
+    :param response: 完成响应（首次为新建资料 + 任务；重放为**首次快照**，
+        即使资料此后被删除或解析状态已变化也保持原样，契约 4.6 / 5.2）
     :param created: 本次是否真的创建了资料（``False`` 表示幂等重放）
     """
 
-    material: Material
-    job: Job
+    response: MaterialUploadCompleteResponse
     created: bool
 
 
@@ -281,7 +286,8 @@ async def complete_upload(
         raise ResourceNotFoundError()
 
     if upload.completed_material_id is not None:
-        # 已完成：重复确认返回同一份资料与任务，且不受确认窗口限制（契约 4.6）
+        # 已完成：重复确认返回首次响应快照，且不受确认窗口限制（契约 4.6）。
+        # 快照保证资料此后被删除或解析状态变化时，重复确认仍返回首次结果。
         return await _load_completed(session, upload)
 
     now = utc_now()
@@ -318,6 +324,15 @@ async def complete_upload(
     upload.completed_at = now
     upload.updated_at = now
 
+    # 完成响应快照：重复确认（含资料删除/状态变化后）一律回填首次结果
+    snapshot = MaterialUploadCompleteResponse(
+        material=MaterialDetail.model_validate(material),
+        job=JobStatus.model_validate(job),
+    )
+    repo.save_completion_snapshot(
+        session, upload, snapshot=snapshot.model_dump(mode="json")
+    )
+
     try:
         await session.commit()
     except IntegrityError:
@@ -332,7 +347,7 @@ async def complete_upload(
         logger.warning("并发重复完成上传，返回已创建的资料（upload_id=%s）", upload_id)
         return await _load_completed(session, existing_upload)
 
-    return CompletionResult(material=material, job=job, created=True)
+    return CompletionResult(response=snapshot, created=True)
 
 
 def _verify_stored_object(storage: S3Storage, upload: MaterialUploadSession) -> None:
@@ -385,14 +400,33 @@ def _verify_stored_object(storage: S3Storage, upload: MaterialUploadSession) -> 
 async def _load_completed(
     session: AsyncSession, upload: MaterialUploadSession
 ) -> CompletionResult:
-    """读取已完成上传对应的资料与解析任务。"""
+    """读取已完成上传的响应：优先回填首次快照（契约 4.6 / 5.2）。
+
+    快照是重复确认的唯一事实来源——资料此后被删除或解析状态变化都不影响
+    重复完成的结果。快照缺失（旧数据）时从当前资料与任务构造并补存。
+    """
+    snapshot = await repo.get_completion_snapshot(session, upload.id)
+    if snapshot is not None:
+        return CompletionResult(
+            response=MaterialUploadCompleteResponse.model_validate(snapshot),
+            created=False,
+        )
+
     material = await repo.get_material_by_id(session, upload.completed_material_id)
     if material is None:  # pragma: no cover - 外键保证存在
         raise InternalError()
     job = await jobs_service.get_material_parse_job(session, material_id=material.id)
     if job is None:  # pragma: no cover - 同一事务内创建
         raise InternalError()
-    return CompletionResult(material=material, job=job, created=False)
+    response = MaterialUploadCompleteResponse(
+        material=MaterialDetail.model_validate(material),
+        job=JobStatus.model_validate(job),
+    )
+    repo.save_completion_snapshot(
+        session, upload, snapshot=response.model_dump(mode="json")
+    )
+    await session.commit()
+    return CompletionResult(response=response, created=False)
 
 
 async def get_material_for_member(
@@ -461,15 +495,19 @@ async def delete_material(
     *,
     user: User,
     material_id: uuid.UUID,
-    storage: S3Storage,
 ) -> bool:
-    """删除资料（契约 5.2，标记删除）。
+    """删除资料（契约 5.2，标记删除 + 对象删除待办）。
 
     返回 ``True`` 表示本次真正执行了标记删除；``False`` 表示幂等重放
     （同一创建教师对已删除资料的再次删除）。
 
     处理顺序：资料存在（404）→ 成员（404）→ 已删除幂等/不可见（204/404）
-    → 角色（403）→ 归档（409）→ 标记删除。
+    → 角色（403）→ 归档（409）→ 事务内删除。
+
+    事务内容：标记删除（隐藏资料）→ 取消未完成解析（任务行锁内置
+    ``CANCELLED``）→ 清空章节与知识点 → 写入对象删除待办。对象本身由
+    独立维护命令在 PUT 地址过期 + 缓冲期后删除（避免晚到 PUT 重建窗口）；
+    上传会话与资料行（最小删除记录）保留供审计。
     """
     material = await repo.get_material_by_id(session, material_id)
     if material is None:
@@ -490,27 +528,31 @@ async def delete_material(
     locked = await repo.get_visible_material_for_update(session, material_id)
     if locked is None:  # pragma: no cover - 并发删除的兜底，按幂等处理
         return False
-    repo.mark_material_deleted(session, locked, now=utc_now())
+
+    now = utc_now()
+
+    # 取消未完成解析：锁住关联任务行，与 Worker 领取/回写互斥
+    job = await jobs_service.lock_material_parse_job(session, material_id=locked.id)
+    if job is not None:
+        jobs_service.cancel_material_parse_job(session, job, now=now)
+
+    upload = await repo.get_upload_session(session, locked.upload_id)
+    if upload is None:  # pragma: no cover - 外键保证存在
+        raise ResourceNotFoundError()
+
+    repo.mark_material_deleted(session, locked, now=now)
+    await repo.delete_sections(session, material_id=locked.id)
+    repo.add_delete_todo(
+        session,
+        todo_id=uuid.uuid4(),
+        material_id=locked.id,
+        course_id=locked.course_id,
+        object_key=locked.storage_key,
+        upload_expires_at=upload.upload_url_expires_at,
+        now=now,
+    )
     await session.commit()
-
-    _delete_object_quietly(material=material, storage=storage)
     return True
-
-
-def _delete_object_quietly(*, material: Material, storage: S3Storage) -> None:
-    """尽力删除资料对象（契约 5.2）：失败仅记日志，不影响 204 响应。
-
-    在事务提交后调用：存储操作不参与数据库事务，失败时资料记录
-    已标记删除，残留对象没有任何 API 可达路径。
-    """
-    try:
-        storage.delete_object(material.storage_key)
-    except StorageUnavailableError as exc:
-        logger.warning(
-            "删除资料对象失败，对象已不可达（key=%s）：%s", material.storage_key, exc
-        )
-    except StorageObjectNotFoundError:
-        pass
 
 
 async def retry_parse(
@@ -544,7 +586,8 @@ async def retry_parse(
     if locked.status == MaterialStatus.READY:
         raise MaterialAlreadyReadyError()
 
-    job = await jobs_service.get_material_parse_job(session, material_id=locked.id)
+    # 锁定关联任务行：与删除（取消解析）和 Worker 回写互斥
+    job = await jobs_service.lock_material_parse_job(session, material_id=locked.id)
     if job is None:  # pragma: no cover - 完成事务保证任务存在
         raise InternalError()
 
@@ -569,6 +612,66 @@ async def retry_parse(
     locked.updated_at = now
     await session.commit()
     return job, locked, True
+
+
+async def cleanup_deleted_materials(
+    session: AsyncSession,
+    *,
+    storage: S3Storage,
+    settings: Settings,
+    now: datetime | None = None,
+    limit: int | None = None,
+) -> tuple[int, int]:
+    """处理对象删除待办（契约 5.2 的删除流水线，独立维护命令调用）。
+
+    仅处理「原 PUT 地址过期 + 缓冲期」已过的待办——此前浏览器仍可能
+    拿着原地址直传，立即删除会留下重建窗口（``If-None-Match: *`` 在对象
+    不存在时放行晚到 PUT）。
+
+    每条待办的处理：
+
+    1. 删除对象（不存在则跳过）；
+    2. **再次核查晚到 PUT**：HeadObject 确认对象不再出现，通过后标记
+       ``DONE``；仍存在说明删除与核查之间有晚到 PUT 重建了对象，
+       保持 ``PENDING`` 由下一轮继续清理（失败持续重试）；
+    3. 存储不可用：递增 ``attempts``、记录 ``last_error``，下轮重试。
+
+    :returns: ``(本轮标记 DONE 的数量, 仍处 PENDING 的数量)``。
+    """
+    current = now or utc_now()
+    todos = await repo.list_due_delete_todos(
+        session, now=current, buffer_seconds=settings.material_delete_buffer_seconds
+    )
+
+    done = 0
+    pending = 0
+    for todo in todos[: None if limit is None else limit]:
+        todo.attempts += 1
+        try:
+            try:
+                storage.delete_object(todo.object_key)
+            except StorageObjectNotFoundError:
+                pass
+            # 晚到 PUT 核查：删除之后对象必须不再出现
+            storage.head_object(todo.object_key)
+        except StorageObjectNotFoundError:
+            todo.status = MaterialDeleteStatus.DONE
+            todo.verified_at = current
+            todo.last_error = None
+            done += 1
+        except StorageUnavailableError as exc:
+            todo.last_error = "对象存储暂时不可用，将在下一轮重试"
+            logger.warning(
+                "删除对象失败，待办保留（key=%s）：%s", todo.object_key, exc
+            )
+            pending += 1
+        else:
+            todo.last_error = "检测到晚到写入，将在下一轮继续清理"
+            logger.warning("对象删除后再次出现（晚到 PUT），继续重试（key=%s）", todo.object_key)
+            pending += 1
+
+    await session.commit()
+    return done, pending
 
 
 async def get_material_outline(

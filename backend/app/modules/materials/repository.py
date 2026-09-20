@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
@@ -16,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.materials.models import (
     Material,
+    MaterialDeleteStatus,
+    MaterialDeleteTodo,
     MaterialKnowledgePoint,
     MaterialSection,
     MaterialStatus,
@@ -278,11 +280,11 @@ def add_knowledge_point(
     return point
 
 
-def delete_sections(
+async def delete_sections(
     session: AsyncSession, *, material_id: uuid.UUID
 ) -> None:
     """清空资料的解析产物（重试解析前全量重写）。"""
-    session.execute(
+    await session.execute(
         sa_delete(MaterialSection).where(MaterialSection.material_id == material_id)
     )
 
@@ -326,3 +328,87 @@ def mark_upload_expired(
     """标记上传会话为过期（已清理）。"""
     upload.expired_at = now
     upload.updated_at = now
+
+
+# --------------------------------------------------------------------------- #
+# 完成响应快照（契约 4.6 / 5.2：重复完成返回首次结果）
+# --------------------------------------------------------------------------- #
+def save_completion_snapshot(
+    session: AsyncSession, upload: MaterialUploadSession, *, snapshot: dict
+) -> None:
+    """在会话行上保存完成响应快照（首次完成时调用）。"""
+    upload.completion_snapshot = snapshot
+
+
+async def get_completion_snapshot(
+    session: AsyncSession, upload_id: uuid.UUID
+) -> dict | None:
+    """读取完成响应快照；未保存时返回 ``None``。"""
+    upload = await get_upload_session(session, upload_id)
+    if upload is None:
+        return None
+    return upload.completion_snapshot
+
+
+# --------------------------------------------------------------------------- #
+# 对象删除待办（契约 5.2 的删除流水线）
+# --------------------------------------------------------------------------- #
+def add_delete_todo(
+    session: AsyncSession,
+    *,
+    todo_id: uuid.UUID,
+    material_id: uuid.UUID,
+    course_id: uuid.UUID,
+    object_key: str,
+    upload_expires_at: datetime,
+    now: datetime,
+) -> MaterialDeleteTodo:
+    """写入对象删除待办（删除资料的事务内调用）。"""
+    todo = MaterialDeleteTodo(
+        id=todo_id,
+        material_id=material_id,
+        course_id=course_id,
+        object_key=object_key,
+        upload_expires_at=upload_expires_at,
+        status=MaterialDeleteStatus.PENDING,
+        requested_at=now,
+    )
+    session.add(todo)
+    return todo
+
+
+async def get_delete_todo_by_material(
+    session: AsyncSession, material_id: uuid.UUID
+) -> MaterialDeleteTodo | None:
+    result = await session.execute(
+        select(MaterialDeleteTodo).where(
+            MaterialDeleteTodo.material_id == material_id
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def list_due_delete_todos(
+    session: AsyncSession,
+    *,
+    now: datetime,
+    buffer_seconds: int,
+    limit: int = 100,
+) -> list[MaterialDeleteTodo]:
+    """取出可执行的对象删除待办并锁定行（``SKIP LOCKED`` 防多实例竞争）。
+
+    仅处理 ``PENDING`` 且「PUT 地址过期 + 缓冲期」已过的待办——
+    在此之前浏览器仍可能拿着原地址直传，立即删除会留下重建窗口。
+    """
+    due_before = now - timedelta(seconds=buffer_seconds)
+    result = await session.execute(
+        select(MaterialDeleteTodo)
+        .where(
+            MaterialDeleteTodo.status == MaterialDeleteStatus.PENDING,
+            MaterialDeleteTodo.upload_expires_at <= due_before,
+        )
+        .order_by(MaterialDeleteTodo.requested_at)
+        .limit(limit)
+        .with_for_update(skip_locked=True)
+    )
+    return list(result.scalars().all())

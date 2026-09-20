@@ -60,6 +60,9 @@ class FakeStorage(S3Storage):
         self.unavailable_reason: str | None = None
         #: 设为 True 时 HeadObject 不返回校验值（模拟不实现该头的服务端）
         self.hide_checksum = False
+        #: 设为 True 时模拟「晚到 PUT」：删除成功后对象立即被重建
+        #: （契约 5.2：维护命令必须核查并继续清理）
+        self.recreate_after_delete = False
 
     # ---------------------------- 测试辅助 ---------------------------- #
     def store_object(
@@ -137,7 +140,12 @@ class FakeStorage(S3Storage):
 
     def delete_object(self, object_key: str) -> bool:
         self._guard()
-        return self.objects.pop(object_key, None) is not None
+        removed = self.objects.pop(object_key, None)
+        if removed is not None and self.recreate_after_delete:
+            # 模拟晚到 PUT 在 DELETE 之后到达并重建对象
+            self.objects[object_key] = removed
+            return True
+        return removed is not None
 
     def get_object(self, object_key: str) -> bytes:
         """返回对象内容（与真实适配器的解析 Worker 读取路径一致）。"""

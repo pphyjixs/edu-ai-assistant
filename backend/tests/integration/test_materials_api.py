@@ -366,8 +366,8 @@ def test_delete_by_creator_is_idempotent_and_hides_material(
     )
     assert repeat.status_code == 204
 
-    # 对象存储中的文件被尽力删除
-    assert fake_storage.objects == {}
+    # 对象不立即删除（PUT 地址过期前可能有晚到 PUT），等待办清理
+    assert len(fake_storage.objects) == 1
 
     # 详情、任务、大纲、重试全部 404
     assert (
@@ -716,3 +716,278 @@ def test_worker_failure_marks_material_and_job_failed(
     # 失败不落库：没有部分章节
     assert _count(pg_sync_engine, "material_sections") == 0
     assert _count(pg_sync_engine, "material_knowledge_points") == 0
+
+
+# --------------------------------------------------------------------------- #
+# 删除流水线：对象删除待办 + 维护命令（契约 5.2）
+# --------------------------------------------------------------------------- #
+def _expire_put_urls(pg_sync_engine: Engine) -> None:
+    """把 PUT 地址过期时间拨到过去（越过缓冲期）。
+
+    上传会话与删除待办各自冗余保存该时间，两处都要更新。
+    """
+    with pg_sync_engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE material_upload_sessions"
+                " SET upload_url_expires_at = now() - interval '2 hours'"
+            )
+        )
+        connection.execute(
+            text(
+                "UPDATE material_delete_todos"
+                " SET upload_expires_at = now() - interval '2 hours'"
+            )
+        )
+
+
+def _run_cleanup(make_settings, pg_test_url: str, fake_storage: FakeStorage) -> tuple[int, int]:
+    """在测试库上执行一次对象删除待办维护命令（同步包装）。
+
+    每次调用自建独立引擎（NullPool）：``asyncio.run`` 的循环每次新建，
+    不能复用全局缓存的引擎（其连接绑定在旧循环上）。
+    """
+    import asyncio
+
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    from app.db.session import normalize_database_url
+    from app.modules.materials import service as materials_service
+
+    settings = make_settings(database_url=pg_test_url)
+
+    async def run() -> tuple[int, int]:
+        engine = create_async_engine(
+            normalize_database_url(pg_test_url).url, poolclass=NullPool
+        )
+        try:
+            factory = async_sessionmaker(
+                engine, class_=AsyncSession, expire_on_commit=False
+            )
+            async with factory() as session:
+                return await materials_service.cleanup_deleted_materials(
+                    session, storage=fake_storage, settings=settings
+                )
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(run())
+
+
+def test_cleanup_command_deletes_object_and_verifies(
+    client: TestClient,
+    fake_storage: FakeStorage,
+    pg_sync_engine: Engine,
+    pg_test_url: str,
+    make_settings,
+) -> None:
+    _register(client, "teacher@example.com", "TEACHER")
+    teacher = _login(client, "teacher@example.com")
+    course_id = _create_course(client, teacher)
+    uploaded = _upload(client, fake_storage, teacher, course_id)
+    material_id = uploaded["material"]["id"]
+
+    deleted = client.delete(
+        DELETE_URL.format(material_id=material_id), headers=_auth(teacher)
+    )
+    assert deleted.status_code == 204
+    assert len(fake_storage.objects) == 1  # 对象尚未删除
+
+    with pg_sync_engine.connect() as connection:
+        todo_rows = connection.execute(
+            text("SELECT status FROM material_delete_todos")
+        ).scalars().all()
+    assert todo_rows == ["PENDING"], "删除后应写入 PENDING 状态的对象删除待办"
+
+    # 缓冲期内（PUT 地址未过期）：维护命令不处理
+    assert _run_cleanup(make_settings, pg_test_url, fake_storage) == (0, 0)
+    assert len(fake_storage.objects) == 1
+
+    # PUT 地址过期：维护命令删除对象并核查通过 → DONE
+    _expire_put_urls(pg_sync_engine)
+    done, pending = _run_cleanup(make_settings, pg_test_url, fake_storage)
+    assert (done, pending) == (1, 0)
+    assert fake_storage.objects == {}
+
+    # 幂等：已完成的待办不再处理
+    assert _run_cleanup(make_settings, pg_test_url, fake_storage) == (0, 0)
+
+
+def test_cleanup_retries_late_put_until_verified(
+    client: TestClient,
+    fake_storage: FakeStorage,
+    pg_sync_engine: Engine,
+    pg_test_url: str,
+    make_settings,
+) -> None:
+    _register(client, "teacher@example.com", "TEACHER")
+    teacher = _login(client, "teacher@example.com")
+    course_id = _create_course(client, teacher)
+    uploaded = _upload(client, fake_storage, teacher, course_id)
+    material_id = uploaded["material"]["id"]
+    client.delete(DELETE_URL.format(material_id=material_id), headers=_auth(teacher))
+    _expire_put_urls(pg_sync_engine)
+
+    # 晚到 PUT：删除后对象立即被重建 → 本轮保持 PENDING，继续重试
+    fake_storage.recreate_after_delete = True
+    done, pending = _run_cleanup(make_settings, pg_test_url, fake_storage)
+    assert (done, pending) == (0, 1)
+    assert len(fake_storage.objects) == 1  # 重建的对象仍在
+
+    # 下一轮（晚到 PUT 不再发生）：删除并核查通过 → DONE，不留孤立对象
+    fake_storage.recreate_after_delete = False
+    done, pending = _run_cleanup(make_settings, pg_test_url, fake_storage)
+    assert (done, pending) == (1, 0)
+    assert fake_storage.objects == {}
+
+
+def test_cleanup_survives_storage_outage_and_retries(
+    client: TestClient,
+    fake_storage: FakeStorage,
+    pg_sync_engine: Engine,
+    pg_test_url: str,
+    make_settings,
+) -> None:
+    _register(client, "teacher@example.com", "TEACHER")
+    teacher = _login(client, "teacher@example.com")
+    course_id = _create_course(client, teacher)
+    uploaded = _upload(client, fake_storage, teacher, course_id)
+    material_id = uploaded["material"]["id"]
+    client.delete(DELETE_URL.format(material_id=material_id), headers=_auth(teacher))
+    _expire_put_urls(pg_sync_engine)
+
+    # 存储故障：待办保留、记录错误，对象未被删除
+    fake_storage.as_unavailable()
+    done, pending = _run_cleanup(make_settings, pg_test_url, fake_storage)
+    assert (done, pending) == (0, 1)
+    assert len(fake_storage.objects) == 1
+
+    # 恢复后重试成功
+    fake_storage.as_available()
+    done, pending = _run_cleanup(make_settings, pg_test_url, fake_storage)
+    assert (done, pending) == (1, 0)
+    assert fake_storage.objects == {}
+
+
+def test_repeat_complete_returns_first_snapshot_after_deletion(
+    worker_client: TestClient, fake_storage: FakeStorage
+) -> None:
+    """删除或状态变化后重复完成上传，仍返回首次响应快照（契约 4.6 / 5.2）。"""
+    client = worker_client
+    _register(client, "teacher@example.com", "TEACHER")
+    teacher = _login(client, "teacher@example.com")
+    course_id = _create_course(client, teacher)
+
+    sha256 = hashlib.sha256(PARSEABLE_DOCX).hexdigest()
+    init = client.post(
+        MATERIALS_URL.format(course_id=course_id) + "/uploads",
+        json={
+            "filename": "chapter-1.docx",
+            "content_type": DOCX_MIME,
+            "size": len(PARSEABLE_DOCX),
+            "sha256": sha256,
+        },
+        headers=_auth(teacher),
+    )
+    assert init.status_code == 201
+    presigned = init.json()
+    fake_storage.store_object(
+        _object_key_of(fake_storage, presigned["upload_url"]),
+        size=len(PARSEABLE_DOCX),
+        content_type=DOCX_MIME,
+        sha256_hex=sha256,
+        content=PARSEABLE_DOCX,
+    )
+    upload_id = presigned["upload_id"]
+    complete_url = (
+        MATERIALS_URL.format(course_id=course_id) + f"/uploads/{upload_id}/complete"
+    )
+    first = client.post(complete_url, headers=_auth(teacher))
+    assert first.status_code == 202
+    first_body = first.json()
+    # 快照记录首次完成时刻的状态（PROCESSING）——Worker 随后才把它推进到 READY
+    assert first_body["material"]["status"] == "PROCESSING"
+    material_id = first_body["material"]["id"]
+
+    current = client.get(f"/api/v1/materials/{material_id}", headers=_auth(teacher))
+    assert current.json()["status"] == "READY"
+
+    # 删除资料后重复确认：仍返回首次快照（PROCESSING 那份），202 不变
+    assert (
+        client.delete(
+            DELETE_URL.format(material_id=material_id), headers=_auth(teacher)
+        ).status_code
+        == 204
+    )
+    replay_after_delete = client.post(complete_url, headers=_auth(teacher))
+    assert replay_after_delete.status_code == 202
+    assert replay_after_delete.json() == first_body
+
+
+def test_repeat_complete_returns_first_snapshot_after_status_change(
+    client: TestClient, fake_storage: FakeStorage
+) -> None:
+    """解析状态变化（Worker 关闭 → 资料停在 PROCESSING）不改变重复确认结果。
+
+    本用例在 Worker 关闭下验证快照回填路径本身：重复确认返回与首次
+    相同的 material/job，而不是重新读取当前状态。
+    """
+    _register(client, "teacher@example.com", "TEACHER")
+    teacher = _login(client, "teacher@example.com")
+    course_id = _create_course(client, teacher)
+    sha256 = hashlib.sha256(PARSEABLE_DOCX).hexdigest()
+    init = client.post(
+        MATERIALS_URL.format(course_id=course_id) + "/uploads",
+        json={
+            "filename": "chapter-1.docx",
+            "content_type": DOCX_MIME,
+            "size": len(PARSEABLE_DOCX),
+            "sha256": sha256,
+        },
+        headers=_auth(teacher),
+    )
+    presigned = init.json()
+    fake_storage.store_object(
+        _object_key_of(fake_storage, presigned["upload_url"]),
+        size=len(PARSEABLE_DOCX),
+        content_type=DOCX_MIME,
+        sha256_hex=sha256,
+        content=PARSEABLE_DOCX,
+    )
+    complete_url = (
+        MATERIALS_URL.format(course_id=course_id)
+        + f"/uploads/{presigned['upload_id']}/complete"
+    )
+    first = client.post(complete_url, headers=_auth(teacher))
+    assert first.status_code == 202
+
+    # Worker 关闭下资料停留 PROCESSING；重复确认返回首次响应快照，
+    # 而不是重新读取当前资料与任务状态（快照回填路径）
+    replay = client.post(complete_url, headers=_auth(teacher))
+    assert replay.status_code == 202
+    assert replay.json() == first.json()
+
+
+def test_delete_cancels_pending_parse_job(
+    client: TestClient, fake_storage: FakeStorage, pg_sync_engine: Engine
+) -> None:
+    """删除资料时取消未完成的解析任务（PENDING → CANCELLED）。"""
+    _register(client, "teacher@example.com", "TEACHER")
+    teacher = _login(client, "teacher@example.com")
+    course_id = _create_course(client, teacher)
+    uploaded = _upload(client, fake_storage, teacher, course_id)
+    material_id = uploaded["material"]["id"]
+    job_id = uploaded["job"]["id"]
+
+    response = client.delete(
+        DELETE_URL.format(material_id=material_id), headers=_auth(teacher)
+    )
+    assert response.status_code == 204
+
+    with pg_sync_engine.connect() as connection:
+        status = connection.execute(
+            text("SELECT status FROM jobs WHERE id = CAST(:id AS uuid)"),
+            {"id": job_id},
+        ).scalar_one()
+    assert status == "CANCELLED"

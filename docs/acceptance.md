@@ -149,9 +149,9 @@ cd backend
 | 层 | 数量 | 数据库 |
 | --- | --- | --- |
 | `tests/unit` | 141 | 不接触数据库与网络；外部依赖替换为 fake 或 `MockTransport` |
-| `tests/integration` | 179 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储用例需配置 S3 端点 |
+| `tests/integration` | 185 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储用例需配置 S3 端点 |
 | `tests/contract` | 47 | 同上（令牌格式、课程与课件上传契约、OpenAPI 一致性） |
-| 合计 | 367 | 连真实 PostgreSQL + 对象存储时全部通过（解析 Worker 用例以内联模式执行） |
+| 合计 | 373 | 连真实 PostgreSQL + 对象存储时全部通过（解析 Worker 用例以内联模式执行） |
 
 测试库规则（见 `backend/tests/pg_support.py`）：
 
@@ -220,6 +220,8 @@ cd backend
 | 大纲查询：READY 200 含定位与摘录、PROCESSING 409、FAILED 502 带 job_id | `integration/test_materials_api.py` |
 | 解析 Worker：`PENDING → RUNNING → SUCCEEDED`/`FAILED`、产物落库、失败不落库 | `integration/test_materials_api.py` |
 | 解析器：DOCX/PPTX 章节与知识点抽取、损坏与空文本失败、来源类型推导 | `unit/test_materials_parser.py` |
+| 删除流水线：删除事务取消解析并写待办、维护命令延迟删除、晚到 PUT 核查、存储故障重试 | `integration/test_materials_api.py` |
+| 完成响应快照：重复确认（含资料删除/状态变化后）返回首次结果 | `integration/test_materials_api.py` |
 | 列表/删除/重试/大纲的路径、状态码、响应组件（`MaterialOutline` 等）与错误码 | `contract/test_materials_contract.py` |
 | 过期上传清理：删孤立对象并标记过期、幂等、已完成资料不删、与完成请求争锁、存储不可用跳过；维护命令连接隔离测试库与真实测试桶执行两次 | `integration/test_upload_cleanup.py` |
 | 上传会话 `expired_at` 过期清理标记列 | `integration/test_migrations.py` |
@@ -239,9 +241,13 @@ unit 128 / contract 41 / integration 165，Auth 相关用例全部真实执行�
 （无活动连接，符合规则 3 的残留判定），本次会话结束后复查 `pg_database` 无残留。
 
 资料接口与解析 Worker 交付验证：独立测试库 `edu_ai_pr_verify_test` + MinIO
-测试桶 `edu-ai-test` 下 367 项全部通过、0 失败、0 跳过
-（unit 141 / contract 47 / integration 179）；资料列表、删除、重试解析、
+测试桶 `edu-ai-test` 下 373 项全部通过、0 失败、0 跳过
+（unit 141 / contract 47 / integration 185）；资料列表、删除、重试解析、
 大纲查询及 Worker 状态推进用例均真实执行，运行后 `pg_database` 无残留。
+删除流水线专项：删除事务取消未完成解析并写入对象删除待办；维护命令在
+PUT 地址过期 + 缓冲期后删除对象、失败持续重试、删除后核查晚到 PUT；
+存储故障期间待办保留并在恢复后重试成功；完成响应快照保证重复确认
+（含资料删除后）返回首次结果；迁移 0006 升级/回退均通过。
 
 HeadObject 带 `x-amz-checksum-mode: ENABLED` 后，MinIO 回显已存储的
 `x-amz-checksum-sha256`，校验值读取也由真实存储用例验证。真实 PUT、内容与签名哈希不符被拒、

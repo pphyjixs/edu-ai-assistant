@@ -131,6 +131,12 @@ class Settings(BaseSettings):
     #: 解析 Worker（契约 5.5）：完成上传/重试解析后内联执行解析；
     #: 测试默认关闭（conftest 的 make_settings），由 Worker 专项用例显式开启
     material_parse_worker_enabled: bool = True
+    #: Worker 租约时长（秒）：RUNNING 超过租约视为执行者失联，
+    #: 回写须携带匹配的运行令牌
+    material_parse_lease_seconds: int = 300
+    #: 对象删除待办的缓冲期（秒）：原 PUT 地址过期后再等该时长才真正删除对象，
+    #: 覆盖晚到 PUT 的重建窗口（契约 5.2）
+    material_delete_buffer_seconds: int = 3600
 
     # ------------------------------ AI ------------------------------
     ai_provider: str = ""

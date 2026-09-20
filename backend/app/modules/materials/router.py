@@ -154,17 +154,16 @@ async def complete_material_upload(
         upload_id=upload_id,
         storage=storage,
     )
-    # 契约 5.5：完成确认后调度解析 Worker（响应返回后执行）
-    worker.schedule_material_parse(
-        background_tasks,
-        settings=settings,
-        material_id=result.material.id,
-        storage=storage,
-    )
-    return MaterialUploadCompleteResponse(
-        material=MaterialDetail.model_validate(result.material),
-        job=JobStatus.model_validate(result.job),
-    )
+    # 契约 5.5：完成确认后调度解析 Worker（响应返回后执行）。
+    # 仅在真正创建资料时调度：重复确认返回的是首次快照，不再重复解析。
+    if result.created:
+        worker.schedule_material_parse(
+            background_tasks,
+            settings=settings,
+            material_id=result.response.material.id,
+            storage=storage,
+        )
+    return result.response
 
 
 @materials_router.get(
@@ -268,11 +267,8 @@ async def delete_material(
     material_id: uuid.UUID,
     user: CurrentUserDep,
     session: SessionDep,
-    storage: StorageDep,
 ) -> Response:
-    await service.delete_material(
-        session, user=user, material_id=material_id, storage=storage
-    )
+    await service.delete_material(session, user=user, material_id=material_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
