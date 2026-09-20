@@ -14,20 +14,20 @@
 
 ## 2. Auth 验收
 
-- [ ] 任何人均可注册教师或学生，无需教师审批或邮箱验证，注册后可通过邮箱和密码登录。
-- [ ] 注册邮箱重复返回 409；两个并发注册请求只会成功一个，不会出现比较值相同的两条账号记录。
-- [ ] 同一规范化邮箱连续登录失败达到阈值后返回 429 并给出可重试秒数，登录成功后计数清零。
-- [ ] 邮箱域名大小写不同视为重复账号，本地部分大小写不同视为不同账号；并发注册不能绕过数据库唯一约束。
-- [ ] 密码允许 8–128 个字符及空格，不强制字符种类组合；少于 8 或多于 128 个字符被拒绝，不自动去除密码首尾空格。
-- [ ] 正确凭证可以登录，错误凭证不会泄露账号是否存在。
-- [ ] Access Token 有效期为 1 小时；不携带有效 Access Token 也可通过 JSON 请求体提交 Refresh Token 刷新。
-- [ ] Refresh Token 自登录签发起有效 7 天，可重复刷新且不轮换、不延长有效期；刷新响应只返回新的 Access Token 及其类型和有效期。
-- [ ] 刷新失败后清除前端保存的两个 Token 并回到登录页；验收不限定前端 Token 存放位置或内部键名。
-- [ ] 注销仅撤销当前用户指定的 Refresh Token 会话，不影响其他会话；已撤销的 Refresh Token 再次刷新返回 401。
-- [ ] 注销后前端清除其保存的两个 Token；单独保存的旧 Access Token 仍可能使用至自身到期。
-- [ ] 未登录访问受保护页面时跳转登录页。
-- [ ] 学生调用教师接口返回 403。
-- [ ] 密码只保存 Argon2id 哈希，Refresh Token 只保存哈希；日志不记录密码或令牌。
+- [x] 任何人均可注册教师或学生，无需教师审批或邮箱验证，注册后可通过邮箱和密码登录。（`POST /auth/register` 无审批/邮箱验证分支，`is_active` 默认启用；`integration/test_auth_flow.py` 注册 201 后立即登录 200）
+- [x] 注册邮箱重复返回 409；两个并发注册请求只会成功一个，不会出现比较值相同的两条账号记录。（注册不做“先查后插”，`uq_users_email_normalized` 唯一约束兜底，`IntegrityError` → 409 `AUTH_EMAIL_TAKEN`；`integration/test_concurrent_registration.py` 8 路真并发断言恰好 1×201 + 7×409 且库中仅 1 行）
+- [x] 同一规范化邮箱连续登录失败达到阈值后返回 429 并给出可重试秒数，登录成功后计数清零。（默认 15 分钟窗口 5 次阈值，`retry_after_seconds` 为最早失败滚出窗口所需秒数；限流按规范化邮箱隔离且对不存在账号同样生效，成功登录物理删除失败记录；`integration/test_auth_login_security.py`。轻微测试缺口：窗口滚过后限流解除未直接断言，由 `retry_after_seconds` 计算逻辑保证）
+- [x] 邮箱域名大小写不同视为重复账号，本地部分大小写不同视为不同账号；并发注册不能绕过数据库唯一约束。（`normalize_email` 仅小写化域名，本地部分原样保留且不移除句点与 `+` 后缀；`integration/test_auth_acceptance.py` 直查库断言 `email_normalized`，`integration/test_concurrent_registration.py` 含 4 种域名大小写变体并发）
+- [x] 密码允许 8–128 个字符及空格，不强制字符种类组合；少于 8 或多于 128 个字符被拒绝，不自动去除密码首尾空格。（`RegisterRequest` 密码 `min_length=8 / max_length=128` 且不 strip，纯小写字母密码可注册；`integration/test_auth_acceptance.py` 边界 8/128 通过、7/129 返回 422，首尾空格差异登录返回 401）
+- [x] 正确凭证可以登录，错误凭证不会泄露账号是否存在。（账号不存在/密码错误/停用统一 401 `AUTH_INVALID_CREDENTIALS`，账号不存在时用哑哈希补齐 Argon2 计算量防计时侧信道；`integration/test_auth_login_security.py` 断言两种错误状态码、错误码与文案一致）
+- [x] Access Token 有效期为 1 小时；不携带有效 Access Token 也可通过 JSON 请求体提交 Refresh Token 刷新。（JWT HS256，登录响应 `expires_in == 3600`；`/auth/refresh` 无 Bearer 依赖、仅 JSON Body 携带 `refresh_token`；`contract/test_token_contract.py`、`integration/test_auth_acceptance.py` 以 2 秒 TTL 真实等待验证到期失效）
+- [x] Refresh Token 自登录签发起有效 7 天，可重复刷新且不轮换、不延长有效期；刷新响应只返回新的 Access Token 及其类型和有效期。（`expires_at = 登录时间 + 7 天`，刷新路径不写会话表即不轮换不延长；`RefreshResponse` 仅 `access_token`/`token_type`/`expires_in` 三字段；`integration/test_auth_flow.py` 同一 Refresh Token 二次刷新成功且直查库断言 7 天，`contract/test_token_contract.py` 断言刷新响应无 `refresh_token` 字段）
+- [ ] 刷新失败后清除前端保存的两个 Token 并回到登录页；验收不限定前端 Token 存放位置或内部键名。（后端已验收：无效/过期/已撤销的 Refresh Token 统一返回 401；`services/http.ts` 已具备清 Token 与跳转回调基础设施。**前端尚未接入**：`features/auth/api` 仍为 mock，无登录页可跳转）
+- [x] 注销仅撤销当前用户指定的 Refresh Token 会话，不影响其他会话；已撤销的 Refresh Token 再次刷新返回 401。（按令牌哈希定位会话，撤销他人会话返回 404 防枚举，仅置 `revoked_at` 幂等；`integration/test_auth_login_security.py` 多会话独立撤销，`integration/test_auth_acceptance.py` 注销后再刷新 401）
+- [ ] 注销后前端清除其保存的两个 Token；单独保存的旧 Access Token 仍可能使用至自身到期。（后端已验收：注销不维护 Access Token 黑名单，旧 Access Token 在自身 `exp` 前仍可访问 `/users/me`，到期后失效。**前端清 Token 尚未接入**：前端无注销功能调用 `/auth/logout`）
+- [ ] 未登录访问受保护页面时跳转登录页。（后端已验收：缺失/格式错误/错误 scheme 的 Bearer 统一 401 `AUTH_TOKEN_EXPIRED`，未认证先于角色判断。**前端尚未接入**：`router.tsx` 无路由守卫与 `/login` 路由）
+- [x] 学生调用教师接口返回 403。（`require_roles` 抛 403 `ROLE_FORBIDDEN`，匿名访问教师接口先返回 401；`integration/test_auth_acceptance.py` 经 `TeacherDep` 探针路由验证守卫本身，课程创建与资料上传初始化/完成等真实业务端点均已接入 `TeacherDep` 并有学生 403 用例：`integration/test_courses_api.py`、`integration/test_materials_upload_api.py`）
+- [x] 密码只保存 Argon2id 哈希，Refresh Token 只保存哈希；日志不记录密码或令牌。（密码 Argon2id 默认参数哈希，Refresh Token 为 192-bit 随机值仅存 sha256；`integration/test_auth_flow.py` 直查库断言哈希形态与明文不落库，`integration/test_log_redaction.py` 真实请求链路日志无密码/令牌，`unit/test_logging_redaction.py` 覆盖出口兜底脱敏规则）
 
 ## 3. Courses 验收
 
@@ -223,6 +223,13 @@ cd backend
 该次完整运行使用独立的 `edu_ai_material_upload_test` 测试库，结束后测试库及其迁移、
 生命周期检查库均无残留。此前一次使用共享默认测试库的重跑在最后 4 项遇到
 数据库连接中断；独立测试库重跑后这 4 项及全套均通过。
+
+本次 Auth 验收核对运行：本地 PostgreSQL（未配置 `TEST_S3_*`）下 334 项全部收集，
+325 通过、9 跳过（8 项 `test_storage_minio.py` 与 1 项 `test_upload_cleanup.py` 的
+真实存储删除用例，原因均为 `未配置对象存储测试端点`，与 Auth 无关）、0 失败；
+unit 128 / contract 41 / integration 165，Auth 相关用例全部真实执行且通过。
+运行前清理了上次异常退出残留的 `edu_ai_dev_test` 与 `edu_ai_dev_migration_check`
+（无活动连接，符合规则 3 的残留判定），本次会话结束后复查 `pg_database` 无残留。
 
 HeadObject 带 `x-amz-checksum-mode: ENABLED` 后，MinIO 回显已存储的
 `x-amz-checksum-sha256`，校验值读取也由真实存储用例验证。真实 PUT、内容与签名哈希不符被拒、
