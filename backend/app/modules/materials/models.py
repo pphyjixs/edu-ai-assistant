@@ -1,6 +1,6 @@
 """Materials 模块 ORM 模型。
 
-两张表加一条唯一约束，承载 ``docs/api-contract.md`` 第 4 节的课件上传协议：
+四张表承载 ``docs/api-contract.md`` 第 4、5 节的课件上传协议与解析产物：
 
 - ``material_upload_sessions``：上传会话。保存课程、发起教师、**随机对象键**、
   预期大小、类型、哈希、两个期限（PUT 地址到期 / 确认截止）与完成结果
@@ -8,6 +8,9 @@
   客户端无法猜测或覆盖别人的对象。
 - ``materials``：资料。``upload_id`` **唯一外键**指向上传会话——重复完成同一
   上传会话会被这条约束拦住，是「幂等完成」的第二道防线（第一道是会话行锁）。
+  ``deleted_at`` 是契约 5.2 的标记删除列。
+- ``material_sections`` / ``material_knowledge_points``：解析产物（契约 5.4），
+  由 Worker 在解析成功时一次性写入。
 - 解析任务不在本模块建表：统一落在 ``jobs`` 表（``app.modules.jobs``），
   由 ``(type, resource_id)`` 唯一约束保证一条资料只有一个 ``MATERIAL_PARSE`` 任务。
 
@@ -23,8 +26,17 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, ForeignKey, Index, String, UniqueConstraint, func
+from sqlalchemy import (
+    BigInteger,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy import Enum as SAEnum
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import Uuid
 
@@ -46,6 +58,12 @@ OBJECT_KEY_MAX_LENGTH = 512
 
 #: 失败原因列长度：只保存可安全展示的摘要，不保存堆栈
 MATERIAL_ERROR_MAX_LENGTH = 500
+
+#: 章节标题列长度
+SECTION_TITLE_MAX_LENGTH = 255
+
+#: 知识点说明与原文摘录列长度
+KNOWLEDGE_TEXT_MAX_LENGTH = 2000
 
 
 class MaterialStatus(str, enum.Enum):
@@ -131,6 +149,11 @@ class MaterialUploadSession(Base):
 
     #: 完成确认时间；与资料、任务在同一事务中写入
     completed_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+
+    #: 完成响应快照（JSONB）：首次完成时的 ``{material, job}``。
+    #: 重复确认（含资料已删除或解析状态变化后）一律回填该快照，
+    #: 保证「重复完成上传返回首次结果」（契约 4.6 / 5.2）。
+    completion_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     #: 过期清理标记：超过确认窗口仍未完成的会话由清理命令标记为过期，
     #: 其孤立对象已被删除。非 NULL 表示已被清理，清理命令据此幂等跳过。
@@ -230,6 +253,10 @@ class Material(Base):
         String(MATERIAL_ERROR_MAX_LENGTH), nullable=True
     )
 
+    #: 标记删除时间（契约 5.2）。NULL 表示未删除；非 NULL 的资料从所有读接口中
+    #: 消失（列表、详情、大纲、重试解析统一 404），记录本身保留供上传会话与审计引用。
+    deleted_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         UtcDateTime, nullable=False, default=utc_now, server_default=func.now()
     )
@@ -248,7 +275,185 @@ class Material(Base):
         UniqueConstraint("storage_key", name="uq_materials_storage_key"),
         Index("ix_materials_course_id", "course_id"),
         Index("ix_materials_uploaded_by", "uploaded_by"),
+        # 资料列表（契约 5.1）按课程过滤并排除已删除，按 created_at/id 倒序分页
+        # （PostgreSQL 对 B-tree 可反向扫描，升序索引同样覆盖倒序排序）
+        Index(
+            "ix_materials_course_id_created_at_id",
+            "course_id",
+            "created_at",
+            "id",
+        ),
     )
 
     def __repr__(self) -> str:  # pragma: no cover - 仅用于调试
         return f"<Material id={self.id} status={self.status.value}>"
+
+
+class MaterialSection(Base):
+    """解析产物：资料章节（契约 5.4 的 ``MaterialSection``）。
+
+    只在解析成功时由 Worker 一次性写入；``order`` 由服务端按解析顺序赋值，
+    从 1 开始且在同一资料内连续。定位（``location_start``/``location_end``）
+    的单位由资料的 ``content_type`` 决定：PDF 页码、PPTX 幻灯片号、DOCX 段落
+    序号，均从 1 开始——不在本表冗余存储来源类型，避免与资料状态漂移。
+    """
+
+    __tablename__ = "material_sections"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+
+    material_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "materials.id",
+            ondelete="CASCADE",
+            name="fk_material_sections_material_id_materials",
+        ),
+        nullable=False,
+    )
+
+    order: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    title: Mapped[str] = mapped_column(String(SECTION_TITLE_MAX_LENGTH), nullable=False)
+
+    location_start: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    location_end: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, nullable=False, default=utc_now, server_default=func.now()
+    )
+
+    __table_args__ = (
+        # 同一资料内章节顺序唯一：解析落库是全量重写，唯一约束兜住并发与重复写入
+        UniqueConstraint("material_id", "order", name="uq_material_sections_material_order"),
+        Index("ix_material_sections_material_id", "material_id"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - 仅用于调试
+        return f"<MaterialSection id={self.id} order={self.order}>"
+
+
+class MaterialKnowledgePoint(Base):
+    """解析产物：章节内的知识点（契约 5.4 的 ``MaterialKnowledgePoint``）。
+
+    ``quote`` 是解析时从资料对应位置抽取的原文摘录，供前端做可核对引用。
+    """
+
+    __tablename__ = "material_knowledge_points"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+
+    section_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "material_sections.id",
+            ondelete="CASCADE",
+            name="fk_material_knowledge_points_section_id_material_sections",
+        ),
+        nullable=False,
+    )
+
+    order: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    title: Mapped[str] = mapped_column(String(SECTION_TITLE_MAX_LENGTH), nullable=False)
+
+    description: Mapped[str] = mapped_column(
+        String(KNOWLEDGE_TEXT_MAX_LENGTH), nullable=False
+    )
+
+    quote: Mapped[str] = mapped_column(String(KNOWLEDGE_TEXT_MAX_LENGTH), nullable=False)
+
+    location_start: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    location_end: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, nullable=False, default=utc_now, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "section_id", "order", name="uq_material_knowledge_points_section_order"
+        ),
+        Index("ix_material_knowledge_points_section_id", "section_id"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - 仅用于调试
+        return f"<MaterialKnowledgePoint id={self.id} order={self.order}>"
+
+
+class MaterialDeleteStatus(str, enum.Enum):
+    """对象删除待办的状态。"""
+
+    PENDING = "PENDING"
+    DONE = "DONE"
+
+
+class MaterialDeleteTodo(Base):
+    """对象删除待办（删除资料时写入，由独立维护命令消费）。
+
+    不在删除请求里直接删对象：原 PUT 地址在过期前仍可能被浏览器使用
+    （``If-None-Match: *`` 在对象删除后放行），立即删除会给晚到 PUT 留下
+    重建窗口。维护命令在「PUT 地址过期 + 缓冲期」后删除对象并再次核查
+    晚到 PUT；失败持续重试（``attempts``/``last_error``），核查通过标记
+    ``DONE``。资料行与上传会话都是最小删除记录，保留供审计。
+    """
+
+    __tablename__ = "material_delete_todos"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+
+    material_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "materials.id",
+            ondelete="CASCADE",
+            name="fk_material_delete_todos_material_id_materials",
+        ),
+        nullable=False,
+        unique=True,
+    )
+
+    course_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+
+    #: 待删除对象的键（冗余自资料，资料被级联删除时仍可定位对象）
+    object_key: Mapped[str] = mapped_column(String(OBJECT_KEY_MAX_LENGTH), nullable=False)
+
+    #: 关联 PUT 地址的到期时间：过期 + 缓冲期后才真正删除对象
+    upload_expires_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
+
+    status: Mapped[MaterialDeleteStatus] = mapped_column(
+        SAEnum(
+            MaterialDeleteStatus,
+            name="material_delete_todo_status",
+            native_enum=True,
+        ),
+        nullable=False,
+        default=MaterialDeleteStatus.PENDING,
+    )
+
+    #: 已执行的删除尝试次数（含因存储故障失败的重试）
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
+    last_error: Mapped[str | None] = mapped_column(
+        String(MATERIAL_ERROR_MAX_LENGTH), nullable=True
+    )
+
+    requested_at: Mapped[datetime] = mapped_column(UtcDateTime, nullable=False)
+
+    #: 晚到 PUT 核查通过（对象确认不存在）的时间
+    verified_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, nullable=False, default=utc_now, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_material_delete_todos_status", "status"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - 仅用于调试
+        return f"<MaterialDeleteTodo id={self.id} status={self.status.value}>"

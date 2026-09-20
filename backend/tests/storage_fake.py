@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -36,6 +37,8 @@ class FakeObject:
     size: int
     content_type: str
     checksum_sha256_base64: str | None
+    #: 对象内容（解析 Worker 测试用；生产适配器从真实存储拉取）
+    content: bytes = b""
 
 
 class FakeStorage(S3Storage):
@@ -58,6 +61,9 @@ class FakeStorage(S3Storage):
         self.unavailable_reason: str | None = None
         #: 设为 True 时 HeadObject 不返回校验值（模拟不实现该头的服务端）
         self.hide_checksum = False
+        #: 设为 True 时模拟「晚到 PUT」：删除成功后对象立即被重建
+        #: （契约 5.2：维护命令必须核查并继续清理）
+        self.recreate_after_delete = False
 
     # ---------------------------- 测试辅助 ---------------------------- #
     def store_object(
@@ -67,6 +73,7 @@ class FakeStorage(S3Storage):
         size: int,
         content_type: str,
         sha256_hex: str | None,
+        content: bytes = b"",
     ) -> None:
         """放入一份对象；``sha256_hex`` 为 ``None`` 时不带校验值。"""
         self.objects[object_key] = FakeObject(
@@ -75,6 +82,7 @@ class FakeStorage(S3Storage):
             checksum_sha256_base64=(
                 sha256_base64(sha256_hex) if sha256_hex is not None else None
             ),
+            content=content,
         )
 
     def as_unavailable(self, reason: str = "connection") -> None:
@@ -133,7 +141,47 @@ class FakeStorage(S3Storage):
 
     def delete_object(self, object_key: str) -> bool:
         self._guard()
-        return self.objects.pop(object_key, None) is not None
+        removed = self.objects.pop(object_key, None)
+        if removed is not None and self.recreate_after_delete:
+            # 模拟晚到 PUT 在 DELETE 之后到达并重建对象
+            self.objects[object_key] = removed
+            return True
+        return removed is not None
+
+    def get_object(self, object_key: str) -> bytes:
+        """返回对象内容（与真实适配器的解析 Worker 读取路径一致）。"""
+        self._guard()
+        stored = self.objects.get(object_key)
+        if stored is None:
+            raise StorageObjectNotFoundError(object_key)
+        return stored.content
+
+    def get_object_verified(
+        self,
+        object_key: str,
+        *,
+        expected_size: int,
+        expected_sha256_hex: str,
+    ) -> bytes:
+        """返回对象内容并复核大小与 SHA-256（与真实适配器语义一致）。"""
+        from app.storage.errors import StorageVerificationError
+
+        self._guard()
+        stored = self.objects.get(object_key)
+        if stored is None:
+            raise StorageObjectNotFoundError(object_key)
+        if stored.size != expected_size:
+            raise StorageVerificationError(
+                f"对象实际大小（{stored.size}）与资料声明（{expected_size}）不一致",
+                reason="size_mismatch",
+            )
+        actual = hashlib.sha256(stored.content).hexdigest()
+        if actual != expected_sha256_hex.lower():
+            raise StorageVerificationError(
+                "对象内容的 SHA-256 与资料声明不一致，已拒绝解析",
+                reason="checksum_mismatch",
+            )
+        return stored.content
 
     def purged(self) -> bool:
         """测试断言用：后端从未接收过文件内容，因此也不该缓存对象。"""

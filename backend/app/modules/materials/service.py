@@ -1,16 +1,20 @@
 """Materials 业务规则与事务边界。
 
-对应 ``docs/api-contract.md`` 第 4 节的初始化（4.3）与完成（4.5）两个写入接口。
+对应 ``docs/api-contract.md`` 第 4 节的初始化（4.3）与完成（4.5）、第 5 节的
+列表（5.1）、删除（5.2）、重试解析（5.3）与大纲查询（5.4）。
 
 关键约定：
 
 - **检查顺序固定**：认证 → 课程存在（404）→ 创建教师（403）→ 课程未归档（409）
   → 上传会话存在且属于本课程（404）→ 已完成则幂等返回 → 会话未过期（422）
   → 对象确认（422/503）→ 创建。同时违反多条规则时以该顺序为准。
+- **读路径统一 404**：资料不存在、已删除或当前用户不是课程成员时返回同一个
+  ``RESOURCE_NOT_FOUND``，不区分「不存在」与「不可见」。
 - **校验分层**：请求的结构问题由 pydantic 转成 ``VALIDATION_ERROR``；
   文件类型、MIME、大小、sha256、对象一致性与到期等业务规则抛
   ``UPLOAD_INVALID`` + ``details.reason``。
-- **不接收文件内容**：只签发预签名地址与读取对象元数据，字节流由浏览器直传。
+- **不接收文件内容**：只签发预签名地址与读取对象元数据，字节流由浏览器直传；
+  解析 Worker 是唯一的服务端读对象方（契约 5.5）。
 - **事务边界在本层**：初始化提交成功后才下发预签名地址；完成时资料、任务与
   会话完成标记在同一事务内落库，重复完成（含并发）返回同一份结果。
 """
@@ -27,16 +31,29 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
-from app.core.errors import InternalError, ResourceNotFoundError, UploadInvalidError
+from app.core.errors import (
+    AiJobFailedError,
+    InternalError,
+    MaterialAlreadyReadyError,
+    MaterialNotReadyError,
+    ResourceNotFoundError,
+    RoleForbiddenError,
+    UploadInvalidError,
+)
+from app.core.pagination import PaginationParams
 from app.core.time import isoformat_z, utc_now
-from app.modules.auth.models import User
+from app.modules.auth.models import User, UserRole
 from app.modules.courses import service as courses_service
 from app.modules.jobs import service as jobs_service
-from app.modules.jobs.models import Job
+from app.modules.jobs.models import Job, JobStatusValue
+from app.modules.jobs.schemas import JobStatus
 from app.modules.materials import repository as repo
 from app.modules.materials.models import (
     FILENAME_MAX_LENGTH,
     Material,
+    MaterialDeleteStatus,
+    MaterialKnowledgePoint,
+    MaterialSection,
     MaterialStatus,
     MaterialUploadSession,
 )
@@ -44,6 +61,8 @@ from app.modules.materials.schemas import (
     CANONICAL_CONTENT_TYPE_BY_EXTENSION,
     SHA256_HEX_LENGTH,
     SUPPORTED_EXTENSIONS,
+    MaterialDetail,
+    MaterialUploadCompleteResponse,
     MaterialUploadInitRequest,
 )
 from app.storage import (
@@ -79,11 +98,12 @@ class ValidatedUpload(NamedTuple):
 class CompletionResult(NamedTuple):
     """完成上传的结果。
 
+    :param response: 完成响应（首次为新建资料 + 任务；重放为**首次快照**，
+        即使资料此后被删除或解析状态已变化也保持原样，契约 4.6 / 5.2）
     :param created: 本次是否真的创建了资料（``False`` 表示幂等重放）
     """
 
-    material: Material
-    job: Job
+    response: MaterialUploadCompleteResponse
     created: bool
 
 
@@ -266,7 +286,8 @@ async def complete_upload(
         raise ResourceNotFoundError()
 
     if upload.completed_material_id is not None:
-        # 已完成：重复确认返回同一份资料与任务，且不受确认窗口限制（契约 4.6）
+        # 已完成：重复确认返回首次响应快照，且不受确认窗口限制（契约 4.6）。
+        # 快照保证资料此后被删除或解析状态变化时，重复确认仍返回首次结果。
         return await _load_completed(session, upload)
 
     now = utc_now()
@@ -303,6 +324,15 @@ async def complete_upload(
     upload.completed_at = now
     upload.updated_at = now
 
+    # 完成响应快照：重复确认（含资料删除/状态变化后）一律回填首次结果
+    snapshot = MaterialUploadCompleteResponse(
+        material=MaterialDetail.model_validate(material),
+        job=JobStatus.model_validate(job),
+    )
+    repo.save_completion_snapshot(
+        session, upload, snapshot=snapshot.model_dump(mode="json")
+    )
+
     try:
         await session.commit()
     except IntegrityError:
@@ -317,7 +347,7 @@ async def complete_upload(
         logger.warning("并发重复完成上传，返回已创建的资料（upload_id=%s）", upload_id)
         return await _load_completed(session, existing_upload)
 
-    return CompletionResult(material=material, job=job, created=True)
+    return CompletionResult(response=snapshot, created=True)
 
 
 def _verify_stored_object(storage: S3Storage, upload: MaterialUploadSession) -> None:
@@ -370,14 +400,33 @@ def _verify_stored_object(storage: S3Storage, upload: MaterialUploadSession) -> 
 async def _load_completed(
     session: AsyncSession, upload: MaterialUploadSession
 ) -> CompletionResult:
-    """读取已完成上传对应的资料与解析任务。"""
+    """读取已完成上传的响应：优先回填首次快照（契约 4.6 / 5.2）。
+
+    快照是重复确认的唯一事实来源——资料此后被删除或解析状态变化都不影响
+    重复完成的结果。快照缺失（旧数据）时从当前资料与任务构造并补存。
+    """
+    snapshot = await repo.get_completion_snapshot(session, upload.id)
+    if snapshot is not None:
+        return CompletionResult(
+            response=MaterialUploadCompleteResponse.model_validate(snapshot),
+            created=False,
+        )
+
     material = await repo.get_material_by_id(session, upload.completed_material_id)
     if material is None:  # pragma: no cover - 外键保证存在
         raise InternalError()
     job = await jobs_service.get_material_parse_job(session, material_id=material.id)
     if job is None:  # pragma: no cover - 同一事务内创建
         raise InternalError()
-    return CompletionResult(material=material, job=job, created=False)
+    response = MaterialUploadCompleteResponse(
+        material=MaterialDetail.model_validate(material),
+        job=JobStatus.model_validate(job),
+    )
+    repo.save_completion_snapshot(
+        session, upload, snapshot=response.model_dump(mode="json")
+    )
+    await session.commit()
+    return CompletionResult(response=response, created=False)
 
 
 async def get_material_for_member(
@@ -385,9 +434,80 @@ async def get_material_for_member(
 ) -> Material:
     """读取资料详情（契约 4.7）。
 
-    资料不存在，或当前用户不是资料所属课程的成员时，统一抛
-    ``ResourceNotFoundError``（404），不区分「不存在」与「不可见」，
+    资料不存在（**含已删除**，契约 5.2），或当前用户不是资料所属课程的成员时，
+    统一抛 ``ResourceNotFoundError``（404），不区分「不存在」与「不可见」，
     避免用于枚举资源。归档课程的资料仍可读。
+    """
+    material = await repo.get_visible_material_by_id(session, material_id)
+    if material is None:
+        raise ResourceNotFoundError()
+    if not await courses_service.is_course_member(
+        session, user=user, course_id=material.course_id
+    ):
+        raise ResourceNotFoundError()
+    return material
+
+
+# --------------------------------------------------------------------------- #
+# 契约 5.1–5.4：列表、删除、重试解析、大纲查询
+# --------------------------------------------------------------------------- #
+async def list_course_materials(
+    session: AsyncSession,
+    *,
+    user: User,
+    course_id: uuid.UUID,
+    pagination: PaginationParams,
+) -> tuple[list[Material], int]:
+    """课程资料列表（契约 5.1）。
+
+    课程不存在或当前用户不是成员时统一 404（与 4.7 的读路径一致）；
+    含归档课程；已删除资料由 repository 层排除。
+    """
+    if not await courses_service.is_course_member(
+        session, user=user, course_id=course_id
+    ):
+        raise ResourceNotFoundError()
+    return await repo.list_course_materials(
+        session,
+        course_id=course_id,
+        offset=pagination.offset,
+        limit=pagination.limit,
+    )
+
+
+async def _require_material_manager(
+    session: AsyncSession, *, user: User, material: Material
+) -> None:
+    """删除/重试解析共用的角色检查（契约 5.2、5.3）：仅创建教师。
+
+    调用前提：资料存在、当前用户是资料所属课程成员（否则先抛 404）。
+    """
+    if user.role == UserRole.STUDENT:
+        raise RoleForbiddenError()
+    course = await courses_service.require_course_teacher(
+        session, user=user, course_id=material.course_id
+    )
+    courses_service.require_course_active(course)
+
+
+async def delete_material(
+    session: AsyncSession,
+    *,
+    user: User,
+    material_id: uuid.UUID,
+) -> bool:
+    """删除资料（契约 5.2，标记删除 + 对象删除待办）。
+
+    返回 ``True`` 表示本次真正执行了标记删除；``False`` 表示幂等重放
+    （同一创建教师对已删除资料的再次删除）。
+
+    处理顺序：资料存在（404）→ 成员（404）→ 已删除幂等/不可见（204/404）
+    → 角色（403）→ 归档（409）→ 事务内删除。
+
+    事务内容：标记删除（隐藏资料）→ 取消未完成解析（任务行锁内置
+    ``CANCELLED``）→ 清空章节与知识点 → 写入对象删除待办。对象本身由
+    独立维护命令在 PUT 地址过期 + 缓冲期后删除（避免晚到 PUT 重建窗口）；
+    上传会话与资料行（最小删除记录）保留供审计。
     """
     material = await repo.get_material_by_id(session, material_id)
     if material is None:
@@ -396,7 +516,199 @@ async def get_material_for_member(
         session, user=user, course_id=material.course_id
     ):
         raise ResourceNotFoundError()
-    return material
+
+    if material.deleted_at is not None:
+        # 已删除：仅创建教师可见幂等 204；其余用户视同不存在
+        if material.uploaded_by != user.id:
+            raise ResourceNotFoundError()
+        return False
+
+    await _require_material_manager(session, user=user, material=material)
+
+    locked = await repo.get_visible_material_for_update(session, material_id)
+    if locked is None:  # pragma: no cover - 并发删除的兜底，按幂等处理
+        return False
+
+    now = utc_now()
+
+    # 取消未完成解析：锁住关联任务行，与 Worker 领取/回写互斥
+    job = await jobs_service.lock_material_parse_job(session, material_id=locked.id)
+    if job is not None:
+        jobs_service.cancel_material_parse_job(session, job, now=now)
+
+    upload = await repo.get_upload_session(session, locked.upload_id)
+    if upload is None:  # pragma: no cover - 外键保证存在
+        raise ResourceNotFoundError()
+
+    repo.mark_material_deleted(session, locked, now=now)
+    await repo.delete_sections(session, material_id=locked.id)
+    repo.add_delete_todo(
+        session,
+        todo_id=uuid.uuid4(),
+        material_id=locked.id,
+        course_id=locked.course_id,
+        object_key=locked.storage_key,
+        upload_expires_at=upload.upload_url_expires_at,
+        now=now,
+    )
+    await session.commit()
+    return True
+
+
+async def retry_parse(
+    session: AsyncSession,
+    *,
+    user: User,
+    material_id: uuid.UUID,
+) -> tuple[Job, Material, bool]:
+    """重试解析（契约 5.3）。
+
+    返回 ``(任务, 资料, 是否重置)``；重置后由调用方调度 Worker。
+
+    分流（契约 5.3 表格）：``READY`` → 409；``PROCESSING`` 且任务
+    ``PENDING``/``RUNNING`` → 幂等原样返回；其余（任务 ``FAILED``、
+    任务 ``SUCCEEDED`` 但资料未 ``READY`` 的异常窗口）→ 行锁内重置。
+    """
+    material = await repo.get_visible_material_by_id(session, material_id)
+    if material is None:
+        raise ResourceNotFoundError()
+    if not await courses_service.is_course_member(
+        session, user=user, course_id=material.course_id
+    ):
+        raise ResourceNotFoundError()
+
+    await _require_material_manager(session, user=user, material=material)
+
+    locked = await repo.get_visible_material_for_update(session, material_id)
+    if locked is None:  # pragma: no cover - 并发删除后按 404 处理
+        raise ResourceNotFoundError()
+
+    if locked.status == MaterialStatus.READY:
+        raise MaterialAlreadyReadyError()
+
+    # 锁定关联任务行：与删除（取消解析）和 Worker 回写互斥
+    job = await jobs_service.lock_material_parse_job(session, material_id=locked.id)
+    if job is None:  # pragma: no cover - 完成事务保证任务存在
+        raise InternalError()
+
+    now = utc_now()
+
+    def _lease_still_valid() -> bool:
+        """RUNNING 任务是否仍在租约内（执行者还活着）。"""
+        return (
+            job.lease_expires_at is not None and job.lease_expires_at > now
+        )
+
+    if (
+        locked.status == MaterialStatus.PROCESSING
+        and job.status == JobStatusValue.PENDING
+    ) or (
+        locked.status == MaterialStatus.PROCESSING
+        and job.status == JobStatusValue.RUNNING
+        and _lease_still_valid()
+    ):
+        return job, locked, False
+
+    # 重试：复用原任务 ID，清空全部执行痕迹并**撤销旧执行者的运行令牌**
+    # （契约 5.3）：清空 ``run_token`` 与租约后，任何携带旧令牌的回写都会
+    # 因令牌/状态不匹配被拒绝，旧执行者不能再改变任务、资料或解析产物。
+    # 覆盖：FAILED 任务、崩溃后的 RUNNING 租约过期（执行者失联）等。
+    job.status = JobStatusValue.PENDING
+    job.progress = 0
+    job.error = None
+    job.started_at = None
+    job.finished_at = None
+    job.run_token = None
+    job.lease_expires_at = None
+    locked.status = MaterialStatus.PROCESSING
+    locked.error_message = None
+    locked.updated_at = now
+    await session.commit()
+    return job, locked, True
+
+
+async def cleanup_deleted_materials(
+    session: AsyncSession,
+    *,
+    storage: S3Storage,
+    settings: Settings,
+    now: datetime | None = None,
+    limit: int | None = None,
+) -> tuple[int, int]:
+    """处理对象删除待办（契约 5.2 的删除流水线，独立维护命令调用）。
+
+    仅处理「原 PUT 地址过期 + 缓冲期」已过的待办——此前浏览器仍可能
+    拿着原地址直传，立即删除会留下重建窗口（``If-None-Match: *`` 在对象
+    不存在时放行晚到 PUT）。
+
+    每条待办的处理：
+
+    1. 删除对象（不存在则跳过）；
+    2. **再次核查晚到 PUT**：HeadObject 确认对象不再出现，通过后标记
+       ``DONE``；仍存在说明删除与核查之间有晚到 PUT 重建了对象，
+       保持 ``PENDING`` 由下一轮继续清理（失败持续重试）；
+    3. 存储不可用：递增 ``attempts``、记录 ``last_error``，下轮重试。
+
+    :returns: ``(本轮标记 DONE 的数量, 仍处 PENDING 的数量)``。
+    """
+    current = now or utc_now()
+    todos = await repo.list_due_delete_todos(
+        session, now=current, buffer_seconds=settings.material_delete_buffer_seconds
+    )
+
+    done = 0
+    pending = 0
+    for todo in todos[: None if limit is None else limit]:
+        todo.attempts += 1
+        try:
+            try:
+                storage.delete_object(todo.object_key)
+            except StorageObjectNotFoundError:
+                pass
+            # 晚到 PUT 核查：删除之后对象必须不再出现
+            storage.head_object(todo.object_key)
+        except StorageObjectNotFoundError:
+            todo.status = MaterialDeleteStatus.DONE
+            todo.verified_at = current
+            todo.last_error = None
+            done += 1
+        except StorageUnavailableError as exc:
+            todo.last_error = "对象存储暂时不可用，将在下一轮重试"
+            logger.warning(
+                "删除对象失败，待办保留（key=%s）：%s", todo.object_key, exc
+            )
+            pending += 1
+        else:
+            todo.last_error = "检测到晚到写入，将在下一轮继续清理"
+            logger.warning("对象删除后再次出现（晚到 PUT），继续重试（key=%s）", todo.object_key)
+            pending += 1
+
+    await session.commit()
+    return done, pending
+
+
+async def get_material_outline(
+    session: AsyncSession, *, user: User, material_id: uuid.UUID
+) -> tuple[Material, list[tuple[MaterialSection, list[MaterialKnowledgePoint]]]]:
+    """大纲查询（契约 5.4）：只对 ``READY`` 资料返回解析产物。
+
+    ``PROCESSING``（含排队）→ 409 ``MATERIAL_NOT_READY``；
+    ``FAILED`` → 502 ``AI_JOB_FAILED``（``details.job_id`` 指向解析任务）。
+    """
+    material = await get_material_for_member(session, user=user, material_id=material_id)
+
+    if material.status == MaterialStatus.FAILED:
+        job = await jobs_service.get_material_parse_job(session, material_id=material.id)
+        details = {"job_id": str(job.id)} if job is not None else {}
+        raise AiJobFailedError(
+            "资料解析失败，无法查看大纲",
+            details=details,
+        )
+    if material.status != MaterialStatus.READY:
+        raise MaterialNotReadyError()
+
+    sections = await repo.list_sections_with_points(session, material_id=material.id)
+    return material, sections
 
 
 async def cleanup_expired_uploads(
@@ -456,9 +768,13 @@ __all__ = [
     "ValidatedUpload",
     "cleanup_expired_uploads",
     "complete_upload",
+    "delete_material",
     "get_material_for_member",
+    "get_material_outline",
     "init_upload",
+    "list_course_materials",
     "require_upload_teacher",
+    "retry_parse",
     "split_extension",
     "validate_upload_request",
 ]

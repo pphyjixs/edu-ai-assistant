@@ -100,6 +100,19 @@ class Job(Base):
         String(JOB_ERROR_MAX_LENGTH), nullable=True
     )
 
+    #: 执行尝试次数：Worker 每次原子领取 +1（契约 5.5 的重试语义）
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
+    #: 运行令牌：领取时生成，回写必须携带匹配值，
+    #: 防止超出租约的过期 Worker 覆盖新一轮执行
+    run_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    #: 租约到期时间：RUNNING 状态超过租约即视为执行者失联，
+    #: 状态推进由重试解析接口兜底（契约 5.5 第 6 步）
+    lease_expires_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         UtcDateTime, nullable=False, default=utc_now, server_default=func.now()
     )

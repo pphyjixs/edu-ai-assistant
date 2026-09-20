@@ -1272,7 +1272,7 @@
           "materials"
         ],
         "summary": "完成课件上传",
-        "description": "仅课程创建教师可调用。确认对象存在且大小、类型、SHA-256 与初始化声明一致后，在同一事务中创建资料（PROCESSING）与 MATERIAL_PARSE 任务（PENDING）。重复确认（含并发）返回同一份 202 结果，不产生第二份资料或任务。第一版不实现解析 Worker，资料与任务状态不会自动推进。",
+        "description": "仅课程创建教师可调用。确认对象存在且大小、类型、SHA-256 与初始化声明一致后，在同一事务中创建资料（PROCESSING）与 MATERIAL_PARSE 任务（PENDING）。重复确认（含并发）返回首次完成响应快照，不产生第二份资料或任务。解析由独立 Worker 进程领取执行（契约 5.5），状态通过轮询获取。",
         "operationId": "complete_material_upload_api_v1_courses__course_id__materials_uploads__upload_id__complete_post",
         "security": [
           {
@@ -1408,7 +1408,7 @@
           "materials"
         ],
         "summary": "资料详情与处理状态",
-        "description": "资料所属课程的成员（教师或学生）可读；归档课程的资料仍可读。资料不存在，或当前用户不是课程成员时，统一返回 404 RESOURCE_NOT_FOUND，不区分「不存在」与「不可见」。第一版没有解析 Worker，完成确认后资料恒为 PROCESSING，状态不会自动推进。",
+        "description": "资料所属课程的成员（教师或学生）可读；归档课程的资料仍可读。资料不存在、已删除，或当前用户不是课程成员时，统一返回 404 RESOURCE_NOT_FOUND，不区分「不存在」与「不可见」。状态由解析 Worker 推进（契约 5.5）。",
         "operationId": "get_material_api_v1_materials__material_id__get",
         "security": [
           {
@@ -1459,7 +1459,401 @@
             }
           },
           "404": {
-            "description": "资料不存在，或当前用户不是课程成员（RESOURCE_NOT_FOUND）",
+            "description": "资料不存在、已删除，或当前用户不是课程成员（RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "materials"
+        ],
+        "summary": "删除资料",
+        "description": "仅课程创建教师可调用，标记删除：资料从列表、详情、大纲与重试解析中消失。首次删除归档课程返回 409 COURSE_ARCHIVED；同一教师重复删除幂等返回 204。其他用户对已删除资料视同不存在，统一 404。",
+        "operationId": "delete_material_api_v1_materials__material_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "material_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Material Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "删除成功（含幂等重放）"
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "学生调用返回 ROLE_FORBIDDEN；非创建教师返回 COURSE_FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资料不存在、已删除或当前用户不是课程成员（RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "课程已归档，不能删除资料（COURSE_ARCHIVED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/courses/{course_id}/materials": {
+      "get": {
+        "tags": [
+          "materials"
+        ],
+        "summary": "课程资料列表",
+        "description": "课程成员（教师或学生）可读，含归档课程；不含已删除资料。按创建时间倒序、ID 倒序分页返回。课程不存在或非成员统一 404。",
+        "operationId": "list_materials_api_v1_courses__course_id__materials_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "course_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Course Id"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "页码，从 1 开始",
+              "default": 1,
+              "title": "Page"
+            },
+            "description": "页码，从 1 开始"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "每页条数，最大 100",
+              "default": 20,
+              "title": "Page Size"
+            },
+            "description": "每页条数，最大 100"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "查询成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_MaterialDetail_"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "课程不存在，或当前用户不是课程成员（RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "分页参数不合法（VALIDATION_ERROR）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/materials/{material_id}/parse": {
+      "post": {
+        "tags": [
+          "materials"
+        ],
+        "summary": "重试解析",
+        "description": "仅课程创建教师可调用。失败任务复用原 job ID 重置为 PENDING 并由解析 Worker 重新处理；处理中重复调用幂等返回同一任务；已就绪资料返回 409 MATERIAL_ALREADY_READY；归档课程返回 409 COURSE_ARCHIVED。",
+        "operationId": "retry_material_parse_api_v1_materials__material_id__parse_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "material_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Material Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "已受理，返回解析任务",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobStatus"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "学生调用返回 ROLE_FORBIDDEN；非创建教师返回 COURSE_FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资料不存在、已删除或当前用户不是课程成员（RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "课程已归档（COURSE_ARCHIVED）或资料已解析完成（MATERIAL_ALREADY_READY）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/materials/{material_id}/outline": {
+      "get": {
+        "tags": [
+          "materials"
+        ],
+        "summary": "资料大纲与知识点",
+        "description": "课程成员（教师或学生）可读，含归档课程。资料未就绪返回 409 MATERIAL_NOT_READY，解析失败返回 502 AI_JOB_FAILED（details.job_id 指向解析任务）。",
+        "operationId": "get_material_outline_api_v1_materials__material_id__outline_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "material_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Material Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "查询成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaterialOutline"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资料不存在、已删除或当前用户不是课程成员（RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "资料尚未解析完成（MATERIAL_NOT_READY）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "解析任务失败（AI_JOB_FAILED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
             "content": {
               "application/json": {
                 "schema": {
@@ -1861,6 +2255,7 @@
           "UPLOAD_INVALID",
           "RUBRIC_SCORE_MISMATCH",
           "MATERIAL_NOT_READY",
+          "MATERIAL_ALREADY_READY",
           "ASSIGNMENT_NOT_OPEN",
           "GRADE_NOT_REVIEWED",
           "AI_JOB_FAILED",
@@ -2168,6 +2563,131 @@
         "title": "MaterialDetail",
         "description": "资料详情（契约 4.7）。"
       },
+      "MaterialKnowledgePoint": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "quote": {
+            "type": "string",
+            "title": "Quote"
+          },
+          "location_start": {
+            "type": "integer",
+            "title": "Location Start"
+          },
+          "location_end": {
+            "type": "integer",
+            "title": "Location End"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "order",
+          "title",
+          "description",
+          "quote",
+          "location_start",
+          "location_end"
+        ],
+        "title": "MaterialKnowledgePoint",
+        "description": "知识点（契约 5.4）：含可核对的原文摘录与定位。"
+      },
+      "MaterialOutline": {
+        "properties": {
+          "material_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Material Id"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/MaterialSection"
+            },
+            "type": "array",
+            "title": "Sections"
+          }
+        },
+        "type": "object",
+        "required": [
+          "material_id",
+          "sections"
+        ],
+        "title": "MaterialOutline",
+        "description": "大纲查询响应（契约 5.4）。"
+      },
+      "MaterialSection": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "source_type": {
+            "$ref": "#/components/schemas/MaterialSectionSourceType"
+          },
+          "location_start": {
+            "type": "integer",
+            "title": "Location Start"
+          },
+          "location_end": {
+            "type": "integer",
+            "title": "Location End"
+          },
+          "knowledge_points": {
+            "items": {
+              "$ref": "#/components/schemas/MaterialKnowledgePoint"
+            },
+            "type": "array",
+            "title": "Knowledge Points"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "order",
+          "title",
+          "source_type",
+          "location_start",
+          "location_end",
+          "knowledge_points"
+        ],
+        "title": "MaterialSection",
+        "description": "章节（契约 5.4）：按 order 升序，含知识点列表。"
+      },
+      "MaterialSectionSourceType": {
+        "type": "string",
+        "enum": [
+          "PDF_PAGE",
+          "PPTX_SLIDE",
+          "DOCX_PARAGRAPH"
+        ],
+        "title": "MaterialSectionSourceType",
+        "description": "章节定位的来源类型（契约 5.4），由资料的 MIME 推导。\n\n定位单位：PDF 页码、PPTX 幻灯片号、DOCX 段落序号，均从 1 开始。"
+      },
       "MaterialStatus": {
         "type": "string",
         "enum": [
@@ -2338,6 +2858,37 @@
           "total"
         ],
         "title": "Page[CourseSummary]"
+      },
+      "Page_MaterialDetail_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MaterialDetail"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "page",
+          "page_size",
+          "total"
+        ],
+        "title": "Page[MaterialDetail]"
       },
       "RefreshRequest": {
         "properties": {

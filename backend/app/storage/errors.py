@@ -47,6 +47,17 @@ class StorageUnavailableError(StorageError):
         self.reason = reason
 
 
+class StorageVerificationError(StorageError):
+    """对象内容与声明不符（解析 Worker 下载后的复核失败）。
+
+    :param reason: 稳定原因（``size_mismatch`` / ``checksum_mismatch``）。
+    """
+
+    def __init__(self, message: str, *, reason: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
 def as_service_unavailable(exc: StorageUnavailableError) -> ServiceUnavailableError:
     """把存储故障转换为统一的对外 503 错误。
 

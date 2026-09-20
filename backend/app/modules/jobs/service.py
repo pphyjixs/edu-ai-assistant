@@ -46,6 +46,28 @@ async def get_material_parse_job(
     )
 
 
+async def lock_material_parse_job(
+    session: AsyncSession, *, material_id: uuid.UUID
+) -> Job | None:
+    """锁住某资料的解析任务行（删除/重试与 Worker 互斥的临界区入口）。"""
+    return await repo.get_job_for_resource_for_update(
+        session, job_type=JobType.MATERIAL_PARSE, resource_id=material_id
+    )
+
+
+def cancel_material_parse_job(
+    session: AsyncSession, job: Job, *, now: datetime
+) -> None:
+    """取消未完成的解析任务（删除资料的事务内调用）。
+
+    仅 ``PENDING``/``RUNNING`` 会被取消；终态任务保持原样，
+    回写端会因资料已删除而放弃（契约 5.5 第 5 步）。
+    """
+    if job.status in (JobStatusValue.PENDING, JobStatusValue.RUNNING):
+        job.status = JobStatusValue.CANCELLED
+        job.finished_at = now
+
+
 async def get_job_for_viewer(
     session: AsyncSession, *, user: User, job_id: uuid.UUID
 ) -> Job:

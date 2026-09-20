@@ -394,7 +394,7 @@ Access Token 缺少、格式错误、签名不符或已过期时返回 `401` 与
 4. 教师调用完成接口；服务端确认对象存在且大小与声明一致，创建资料记录与 `MATERIAL_PARSE` 任务，返回 `202`。
 5. 前端用 `GET /materials/{material_id}` 与 `GET /jobs/{job_id}` 轮询状态。
 
-第一版**不实现解析 Worker**：完成确认后资料状态为 `PROCESSING`、任务状态为 `PENDING`，二者都不会自动变化，直到后续阶段接入 Worker。因此状态查询接口在本阶段的稳定返回就是 `PROCESSING` + `PENDING`。
+完成确认后资料状态为 `PROCESSING`、任务状态为 `PENDING`，由解析 Worker 推进（见 5.5）；状态查询接口返回的 `PROCESSING` + `PENDING` 表示排队或处理中，不是失败。
 
 ### 4.2 文件类型与大小
 
@@ -542,8 +542,8 @@ Authorization: Bearer <access_token>
 
 重复完成语义：
 
-- 首次完成：返回 `202`，创建一条资料与一个 `MATERIAL_PARSE` 任务。
-- 同一 `upload_id` 的**重复完成（含并发）一律返回 `202`**，响应中的 `material` 与 `job` 与首次完全相同；不创建第二条资料，也不创建第二个任务。
+- 首次完成：返回 `202`，创建一条资料与一个 `MATERIAL_PARSE` 任务，并把该响应保存为**完成响应快照**（附着在上传会话上）。
+- 同一 `upload_id` 的**重复完成（含并发）一律返回 `202`**，响应回填首次快照：即使资料此后被删除（5.2）或解析状态已变化，返回的 `material` 与 `job` 也与首次完全相同；不创建第二条资料，也不创建第二个任务。
 - 实现要求：完成操作先对上传会话行加锁（`SELECT ... FOR UPDATE`），并以该会话上的完成标记或已创建资料 ID 判定，保证并发下唯一。
 - 已完成会话的重复确认**不受 24 小时确认窗口限制**；窗口只约束首次确认。
 - 该接口不是“重试解析”：资料已存在时的重试解析属于第 5 节的 `POST /materials/{material_id}/parse`。
@@ -572,7 +572,7 @@ Authorization: Bearer <access_token>
 | `filename` | string | 原始文件名 |
 | `content_type` | string | 规范 MIME |
 | `size` | integer | 字节数 |
-| `status` | `UPLOADING` / `UPLOADED` / `PROCESSING` / `READY` / `FAILED` | 解析状态；本阶段完成确认后即为 `PROCESSING` |
+| `status` | `UPLOADING` / `UPLOADED` / `PROCESSING` / `READY` / `FAILED` | 解析状态；完成确认后即为 `PROCESSING`，由解析 Worker 推进（见 5.5） |
 | `uploaded_by` | UUID string | 上传教师的用户 ID |
 | `error_message` | string 或 `null` | 失败原因的安全描述；非 `FAILED` 时为 `null` |
 | `created_at` | ISO 8601 UTC string | 创建时间 |
@@ -584,7 +584,7 @@ Authorization: Bearer <access_token>
 | --- | --- | --- |
 | `id` | UUID string | 任务 ID |
 | `type` | `MATERIAL_PARSE` / `PRACTICE_GENERATE` / `SUBMISSION_GRADE` | 任务类型；课件上传只会产生 `MATERIAL_PARSE` |
-| `status` | `PENDING` / `RUNNING` / `SUCCEEDED` / `FAILED` / `CANCELLED` | 任务状态；本阶段恒为 `PENDING` |
+| `status` | `PENDING` / `RUNNING` / `SUCCEEDED` / `FAILED` / `CANCELLED` | 任务状态；由解析 Worker 推进（见 5.5） |
 | `progress` | integer | 0–100；`PENDING` 为 `0` |
 | `resource_type` | `MATERIAL` / `PRACTICE_SET` / `SUBMISSION` | 关联资源类型 |
 | `resource_id` | UUID string | 关联资源 ID（资料 ID） |
@@ -604,7 +604,7 @@ Authorization: Bearer <access_token>
 - 归档课程的资料与任务**仍可读**，返回 `200`；归档只禁止写入。
 - 资料或任务不存在，或当前用户不是对应课程成员时，统一返回 `404 RESOURCE_NOT_FOUND`，不区分“不存在”与“不可见”，避免用于枚举资源。
 - 这两个接口不适用 `ROLE_FORBIDDEN`：访问权完全由课程成员身份决定，教师与学生同等可读。
-- 轮询建议沿用第 10 节；本阶段状态不会推进，前端应展示“排队中/处理中”并按固定间隔刷新，不得把 `PROCESSING`/`PENDING` 判定为失败。
+- 轮询建议沿用第 10 节；状态由解析 Worker 推进（见 5.5），前端应把 `PROCESSING`/`PENDING` 展示为“排队中/处理中”，不得判定为失败。
 
 ### 4.8 上传与状态查询的错误响应
 
@@ -659,12 +659,215 @@ Authorization: Bearer <access_token>
 | POST | `/courses/{course_id}/materials/uploads` | 初始化上传 | 课程教师 | 已冻结，见 4.3 |
 | POST | `/courses/{course_id}/materials/uploads/{upload_id}/complete` | 完成上传并创建解析任务 | 课程教师 | 已冻结，见 4.5 |
 | GET | `/materials/{material_id}` | 资料详情与处理状态 | 课程成员 | 已冻结，见 4.7 |
-| GET | `/courses/{course_id}/materials` | 资料列表 | 课程成员 | 后续阶段 |
-| DELETE | `/materials/{material_id}` | 删除资料 | 课程教师 | 后续阶段 |
-| POST | `/materials/{material_id}/parse` | 重试解析 | 课程教师 | 后续阶段 |
-| GET | `/materials/{material_id}/outline` | 大纲和知识点 | 课程成员 | 后续阶段 |
+| GET | `/courses/{course_id}/materials` | 资料列表 | 课程成员 | 已冻结，见 5.1 |
+| DELETE | `/materials/{material_id}` | 删除资料 | 课程创建教师 | 已冻结，见 5.2 |
+| POST | `/materials/{material_id}/parse` | 重试解析 | 课程创建教师 | 已冻结，见 5.3 |
+| GET | `/materials/{material_id}/outline` | 大纲和知识点 | 课程成员 | 已冻结，见 5.4 |
+| — | 解析 Worker | 独立进程，推进资料与任务状态 | 服务端内部 | 已冻结，见 5.5 |
 
-本阶段只落地课件上传协议：初始化、完成、资料详情和任务状态 4 个接口，其请求、响应、权限与失败场景以第 4 节为准。资料列表、大纲、删除与重试解析属于后续阶段，定义时不改变第 4 节已冻结的 `MaterialDetail` 与 `JobStatus` 结构。
+本节接口不改变第 4 节已冻结的 `MaterialDetail` 与 `JobStatus` 结构；新增的 `MaterialOutline` 见 5.4。删除采用标记删除：已删除资料不改变 `MaterialDetail` 的字段与取值域，而是从所有读接口中消失（见 5.2）。
+
+### 5.1 资料列表
+
+```http
+GET /api/v1/courses/{course_id}/materials?page=1&page_size=20
+Authorization: Bearer <access_token>
+```
+
+查询参数：
+
+| 参数 | 类型 | 默认 | 规则 |
+| --- | --- | --- | --- |
+| `page` | integer | 1 | ≥ 1 |
+| `page_size` | integer | 20 | 1 – 100 |
+
+越界（`page` < 1 或 `page_size` 不在 1–100）返回 `422 VALIDATION_ERROR`，不做静默截断。未声明字段与重复参数同样 `422 VALIDATION_ERROR`。
+
+成功响应为 `200`，Schema `MaterialPage`（即第 1 节的分页包装，`items` 为 `MaterialDetail` 数组）：
+
+```json
+{
+  "items": [
+    {
+      "id": "9c2f1e77-5b3a-4d18-9c1e-6f1a2b3c4d5e",
+      "course_id": "70d1bdfa-bb1a-4b22-9f13-9f1398aeb53c",
+      "filename": "chapter-1.pdf",
+      "content_type": "application/pdf",
+      "size": 1048576,
+      "status": "READY",
+      "uploaded_by": "a5e675f0-696c-4970-a453-e05c85d4a9e9",
+      "error_message": null,
+      "created_at": "2026-09-20T08:31:00Z",
+      "updated_at": "2026-09-20T08:35:00Z"
+    }
+  ],
+  "page": 1,
+  "page_size": 20,
+  "total": 1
+}
+```
+
+规则：
+
+- 课程成员（教师或学生）均可读，含**归档课程**；归档只禁止写入。
+- 按 `created_at` 倒序、同时间的按 `id` 倒序（保证同秒创建的顺序稳定）。
+- **不含已删除资料**（5.2 的标记删除在查询层统一排除）。
+- 课程不存在，或当前用户不是该课程成员时，统一返回 `404 RESOURCE_NOT_FOUND`，不区分“不存在”与“不可见”；本接口不适用 `ROLE_FORBIDDEN`，教师与学生同等可读。
+- 不含章节、大纲或知识点；单条资料的解析状态以 `GET /materials/{material_id}` 为准。
+
+### 5.2 删除资料
+
+```http
+DELETE /api/v1/materials/{material_id}
+Authorization: Bearer <access_token>
+```
+
+无请求体；带任何请求体或查询参数不属于本契约约束（服务端忽略查询参数）。
+
+处理顺序固定为：认证（401）→ 资料存在且未被删除（404）→ 当前用户是资料所属课程的成员（404）→ 角色（403）→ 归档（409）→ 标记删除（204）。该顺序决定同时违反多条规则时的响应。
+
+成功响应为 `204 No Content`，无响应体。
+
+语义：
+
+- **仅课程的创建教师可以删除**。学生返回 `403 ROLE_FORBIDDEN`；课程的其他教师返回 `403 COURSE_FORBIDDEN`；不是课程成员的教师与学生统一 `404`（先判成员资格，后判角色）。
+- **归档课程的资料不能删除**：首次删除返回 `409 COURSE_ARCHIVED`；与上传接口不同，删除没有“已归档仍可读”的例外。
+- **幂等**：同一创建教师对已删除资料的再次删除返回 `204`，不报错、不重复处理。其他用户（含其他教师）对已删除资料视同不存在，统一 `404`。
+- 删除是**标记删除**：记录保留（上传会话与审计依赖它），`deleted_at` 被置为当前时间；此后该资料从资料列表（5.1）、资料详情（4.7）、重试解析（5.3）与大纲查询（5.4）中消失，其 `MATERIAL_PARSE` 任务也不可再通过 `GET /jobs/{job_id}` 读取（可见性等同已删除资料 → `404`）。
+- **同一事务**内完成四件事：标记 `deleted_at`（隐藏资料）→ 取消未完成解析（任务行锁内置 `CANCELLED`）→ 清空章节与知识点 → 写入**对象删除待办**。上传会话与资料行作为最小删除记录保留。
+- **对象删除走独立维护命令**：待办记录关联对象的 PUT 地址过期时间；维护命令在「PUT 地址过期 + 缓冲期（`MATERIAL_DELETE_BUFFER_SECONDS`，默认 1 小时）」后删除对象并**再次核查晚到 PUT**——`If-None-Match: *` 在对象删除后放行晚到写入，因此删除后必须复查，仍有对象时保持待办继续重试，直到确认对象不再出现。删除失败（存储故障等）持续重试，不会留下永久孤立对象。
+- 删除与解析互斥：`PROCESSING` 中的资料同样可以删除；Worker 回写前发现资料已删除则放弃其结果（见 5.5），运行令牌校验同时防止过期 Worker 覆盖新一轮执行。
+
+### 5.3 重试解析
+
+```http
+POST /api/v1/materials/{material_id}/parse
+Authorization: Bearer <access_token>
+```
+
+无请求字段：请求体可省略或传空对象 `{}`；带未声明字段返回 `422 VALIDATION_ERROR`。
+
+处理顺序固定为：认证（401）→ 资料存在且未被删除（404）→ 当前用户是资料所属课程的成员（404）→ 角色（403）→ 归档（409）→ 按资料状态分流（409/202）。
+
+成功响应为 `202 Accepted`，Schema `JobStatus`（与 4.7 同一结构，`type` 恒为 `MATERIAL_PARSE`、`resource_id` 为该资料 ID）。
+
+按资料状态分流：
+
+| 资料状态 | 对应任务状态 | 结果 |
+| --- | --- | --- |
+| `READY` | `SUCCEEDED` | `409 MATERIAL_ALREADY_READY`，不做任何修改 |
+| `PROCESSING` | `PENDING` | 幂等返回 `202` 与当前任务的**原样** `JobStatus`，不重置进度与时间戳 |
+| `PROCESSING` | `RUNNING` 且租约未过期 | 幂等返回 `202` 与当前任务原样 `JobStatus` |
+| `PROCESSING` | `RUNNING` 但租约已过期（执行者崩溃失联） | **回收**：复用原 job ID 重置为 `PENDING` 并返回 `202`（同 `FAILED` 分支） |
+| `PROCESSING` | `SUCCEEDED`（资料未 READY 的异常窗口，如 Worker 中断） | 重置后返回 `202`（同 `FAILED` 分支） |
+| `FAILED` | `FAILED` | **重试**：复用原 job ID，任务重置为 `PENDING`（`progress=0`、`error=null`、`started_at=null`、`finished_at=null`、租约清除），资料状态回到 `PROCESSING` 并清空 `error_message`，返回 `202` |
+| `UPLOADING` / `UPLOADED` | — | 不会通过公开接口出现（完成确认后即为 `PROCESSING`）；出现时按 `FAILED` 分支处理 |
+
+规则：
+
+- **仅课程的创建教师可以重试**。学生返回 `403 ROLE_FORBIDDEN`；课程的其他教师返回 `403 COURSE_FORBIDDEN`；非成员统一 `404`（顺序同 5.2）。
+- **归档课程**的重试解析返回 `409 COURSE_ARCHIVED`。
+- 重试**复用原任务 ID**且不创建新任务：`(type, resource_id)` 唯一约束是最终防线；应用层在任务行锁（`SELECT ... FOR UPDATE`）内完成判定与重置，并发重复调用（含 `FAILED` 资料的并发重试）只产生一次重置，其余调用按上述分流幂等返回。
+- 重试**撤销旧执行者的运行令牌**：任一重置分支都把 `run_token` 与租约一并清空。旧 Worker 即使随后恢复，其成功/失败回写也会因「令牌不匹配且任务不再为 `RUNNING`」被拒绝——不能再改变任务、资料或解析产物；只有新领取的执行者（新令牌）能发布结果。
+- 重试不删除也不重新上传对象；Worker 从对象的 `storage_key` 重新解析。
+
+### 5.4 大纲查询
+
+```http
+GET /api/v1/materials/{material_id}/outline
+Authorization: Bearer <access_token>
+```
+
+无请求体、无查询参数。
+
+成功响应为 `200`，Schema `MaterialOutline`：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `material_id` | UUID string | 资料 ID |
+| `sections` | `MaterialSection[]` | 按 `order` **升序**排列的章节 |
+
+`MaterialSection`：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `id` | UUID string | 章节 ID |
+| `order` | integer | 从 1 开始的顺序号，连续且无重复 |
+| `title` | string | 章节标题（解析产物，去除首尾空白后非空） |
+| `source_type` | `PDF_PAGE` / `PPTX_SLIDE` / `DOCX_PARAGRAPH` | 来源类型，与资料的 `content_type` 对应 |
+| `location_start` | integer | 起始位置：PDF 页码 / PPTX 幻灯片号 / DOCX 段落序号，**从 1 开始** |
+| `location_end` | integer | 结束位置，≥ `location_start`；单页章节两者相等 |
+| `knowledge_points` | `MaterialKnowledgePoint[]` | 按 `order` 升序排列的知识点 |
+
+`MaterialKnowledgePoint`：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `id` | UUID string | 知识点 ID |
+| `order` | integer | 章节内从 1 开始的顺序号 |
+| `title` | string | 知识点标题 |
+| `description` | string | 知识点说明 |
+| `quote` | string | **可核对的原文摘录**：解析时从资料对应位置抽取的原文片段 |
+| `location_start` | integer | 知识点起始位置（同章节定位规则），**从 1 开始** |
+| `location_end` | integer | 知识点结束位置，≥ `location_start` |
+
+响应示例：
+
+```json
+{
+  "material_id": "9c2f1e77-5b3a-4d18-9c1e-6f1a2b3c4d5e",
+  "sections": [
+    {
+      "id": "1d3a9c11-8f2b-4c17-9d5e-2a7b6c8d1e02",
+      "order": 1,
+      "title": "1.1 软件工程的定义",
+      "source_type": "PDF_PAGE",
+      "location_start": 3,
+      "location_end": 5,
+      "knowledge_points": [
+        {
+          "id": "6b8e2f40-1c5d-4a9b-8e7f-3d2a5c6b7e11",
+          "order": 1,
+          "title": "软件工程的三大要素",
+          "description": "过程、方法与工具如何协同构成软件工程实践。",
+          "quote": "软件工程是应用系统化、规范化的方法……",
+          "location_start": 3,
+          "location_end": 3
+        }
+      ]
+    }
+  ]
+}
+```
+
+按资料状态分流：
+
+| 资料状态 | 结果 |
+| --- | --- |
+| `READY` | `200 MaterialOutline` |
+| `PROCESSING`（任务 `PENDING` / `RUNNING`） | `409 MATERIAL_NOT_READY` |
+| `FAILED` | `502 AI_JOB_FAILED` |
+| 不存在、已删除或当前用户不是课程成员 | `404 RESOURCE_NOT_FOUND`（统一不区分，顺序同 5.2 的读路径） |
+
+规则：
+
+- 课程成员（教师或学生）均可读，含**归档课程**；归档只禁止写入。
+- 大纲为解析产物的持久化结果，不因重复请求重新解析；章节与知识点在解析成功时一次性落库，`order` 由服务端按解析顺序赋值。
+- `502 AI_JOB_FAILED` 的 `details` 包含 `job_id`（该资料的 `MATERIAL_PARSE` 任务 ID），便于前端引导到重试入口（5.3）。
+
+### 5.5 解析 Worker
+
+解析 Worker 是独立于 API 进程的后台组件（独立进程/独立部署单元，通过同一数据库与对象存储协作），不对外暴露接口。职责与行为：
+
+1. **领取**：以原子方式领取一个 `PENDING` 的 `MATERIAL_PARSE` 任务（`UPDATE ... WHERE status='PENDING' ... RETURNING` 或等价的行锁方案），置为 `RUNNING`、记录 `started_at`、`progress` 从 0 开始；同时递增执行**尝试次数**（`attempts`）、生成**运行令牌**（`run_token`）并设置**租约**（`lease_expires_at`，配置 `MATERIAL_PARSE_LEASE_SECONDS`）。
+2. **解析**：按资料的 `content_type` 流式下载对象并复核大小与 SHA-256（与资料声明比对，不符即拒绝）；用 `pypdf` / `python-pptx` / `python-docx` 提取带来源位置的文本并按来源顺序分块（默认全文 120,000 字符上限、每块 8,000 字符，由 `MATERIAL_PARSE_MAX_CHARS` / `MATERIAL_PARSE_CHUNK_CHARS` 配置；超限直接进入 `FAILED`，不截断后宣称成功；扫描版 PDF 无可提取文本时明确失败，不提供 OCR）；把分块全文送入 Chat Completions 兼容端点（`AI_BASE_URL` / `AI_MODEL`），生成**同原文主要语言**的章节标题与知识点；模型输出经 Pydantic 校验，原文摘录必须能在对应来源文本中找到（找不到视为幻觉、整体无效）。
+3. **成功**：章节与知识点在**同一事务**中落库并把任务置为 `SUCCEEDED`（`progress=100`、`finished_at`），资料状态置为 `READY`。资料状态与任务状态在成功路径上**允许短暂不一致**（先任务后资料或反之），读接口以资料状态为准（5.4 的分流表），不因此返回错误。
+4. **失败**：任务置为 `FAILED`、资料状态置为 `FAILED`，`error` / `error_message` 写入**安全摘要**（不含堆栈、不含对象键、不含内部地址）；解析结果不落库，不产生部分章节。
+5. **回写校验**：成功与失败的回写都必须**同时满足**「运行令牌匹配」且「任务仍为 `RUNNING`」——二者任一不满足（任务已被 5.3 重置并清空令牌、被删除事务取消，或资料已被删除）即放弃回写，仅记日志。
+6. **崩溃安全**：Worker 中断后任务停留于 `RUNNING` 直到租约到期；5.3 的重试对“任务 `SUCCEEDED` 但资料未 `READY`”等异常窗口同样可重置（见 5.3 分流表），不要求 Worker 自身实现租约续期。
+7. **独立进程部署**：Worker 由独立进程运行（``scripts/parse_worker.py``），直接轮询数据库领取任务，不依赖 API 请求进程或内存队列；API 进程只创建 ``PENDING`` 任务。轮询间隔与批大小由部署配置决定（``WORKER_POLL_SECONDS`` / ``WORKER_BATCH_SIZE``）。
+
+第一版不实现：扫描版 PDF 的 OCR（图片型页面按空章节处理或解析失败，失败原因写入安全摘要）；通用 `POST /jobs/{job_id}/retry`（重试一律经由 5.3，按资源类型收口）。
 
 ## 6. 课程问答接口
 
@@ -820,7 +1023,7 @@ Authorization: Bearer <access_token>
 
 任务响应结构与第 4.7 节的 `JobStatus` 一致；课件上传产生的任务为 `MATERIAL_PARSE`，`resource_type` 为 `MATERIAL`，`resource_id` 为资料 ID。
 
-前端轮询建议：前 30 秒每 2 秒一次，之后每 5 秒一次；页面离开时停止轮询。`FAILED` 后展示后端返回的安全错误信息和重试入口。第一版未接入解析 Worker，`MATERIAL_PARSE` 任务在完成后保持 `PENDING`，轮询期间状态不推进。
+前端轮询建议：前 30 秒每 2 秒一次，之后每 5 秒一次；页面离开时停止轮询。`FAILED` 后展示后端返回的安全错误信息和重试入口（`MATERIAL_PARSE` 任务的失败重试经由 `POST /materials/{material_id}/parse`，见 5.3）。解析 Worker 的状态推进行为见 5.5。
 
 ## 11. Dashboard 接口
 
@@ -847,6 +1050,7 @@ Dashboard 只返回页面首屏需要的摘要和最近记录，不返回完整�
 | `UPLOAD_INVALID` | 422 | 上传参数或对象不符：文件类型、MIME、大小、sha256、对象缺失或大小不符、超过确认窗口；`details.reason` 为稳定原因码 |
 | `RUBRIC_SCORE_MISMATCH` | 422 | 评分项合计与总分不一致 |
 | `MATERIAL_NOT_READY` | 409 | 资料尚未解析完成 |
+| `MATERIAL_ALREADY_READY` | 409 | 资料已解析完成，无需再次解析（见 5.3） |
 | `ASSIGNMENT_NOT_OPEN` | 409 | 任务未发布或已关闭 |
 | `GRADE_NOT_REVIEWED` | 409 | 未完成教师复核，不能发布 |
 | `AI_JOB_FAILED` | 502 | AI 或解析任务失败 |
