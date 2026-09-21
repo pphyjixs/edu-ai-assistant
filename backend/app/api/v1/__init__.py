@@ -12,14 +12,16 @@
 auth            ``/auth``、``/users/me``
 courses         ``/courses``
 materials       ``/courses/{id}/materials``、``/materials``
-learning        ``/chat-sessions``、``/practice-sets``
+chat            ``/courses/{id}/chat-sessions``、``/chat-sessions``
+learning        ``/practice-sets``
 assignments     ``/assignments``
 grading         ``/submissions``、``/grade-reviews``
 jobs            ``/jobs``
 dashboard       ``/dashboard``
 ==============  ==================
 
-当前已接入：``auth``（含 ``/users/me``）、``courses``。其余模块由各自负责人实现后在此登记。
+当前已接入：``auth``（含 ``/users/me``）、``courses``、``materials``、
+``chat``（课程问答，契约第 6 节）、``jobs``。其余模块由各自负责人实现后在此登记。
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.modules.auth.router import auth_router, me_router
+from app.modules.chat.router import chat_router
 from app.modules.courses.router import courses_router
 from app.modules.jobs.router import jobs_router
 from app.modules.materials.router import materials_router
@@ -43,6 +46,9 @@ api_router.include_router(courses_router)
 
 # ----------------------------- materials -----------------------------
 api_router.include_router(materials_router)
+
+# -------------------------------- chat --------------------------------
+api_router.include_router(chat_router)
 
 # -------------------------------- jobs -------------------------------
 api_router.include_router(jobs_router)

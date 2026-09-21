@@ -95,6 +95,23 @@ async def is_course_member(
     return member is not None
 
 
+async def require_member_course(
+    session: AsyncSession, *, user: User, course_id: uuid.UUID
+) -> Course:
+    """成员检查并返回课程；课程不存在或非成员统一 404（契约 6.1）。
+
+    与 :func:`require_course_member` 的区别：后者对非成员返回 403，用于
+    「课程存在但不允许操作」的场景；问答接口按「不可见」处理，统一 404，
+    不暴露课程是否存在。
+    """
+    course = await repo.get_course_by_id(session, course_id)
+    if course is None:
+        raise ResourceNotFoundError()
+    if not await is_course_member(session, user=user, course_id=course.id):
+        raise ResourceNotFoundError()
+    return course
+
+
 async def require_course_teacher(
     session: AsyncSession, *, user: User, course_id: uuid.UUID
 ) -> Course:

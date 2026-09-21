@@ -34,6 +34,8 @@ class ErrorCode(str, Enum):
     ASSIGNMENT_NOT_OPEN = "ASSIGNMENT_NOT_OPEN"
     GRADE_NOT_REVIEWED = "GRADE_NOT_REVIEWED"
     AI_JOB_FAILED = "AI_JOB_FAILED"
+    #: 会话在回答生成期间被并发修改，本次发送未写入（问答接口，契约 6.1）
+    CHAT_CONFLICT = "CHAT_CONFLICT"
 
     # ---------------------------- 框架层错误码 ----------------------------
     #: 请求体或查询参数未通过 Pydantic 校验
@@ -42,7 +44,7 @@ class ErrorCode(str, Enum):
     METHOD_NOT_ALLOWED = "METHOD_NOT_ALLOWED"
     #: 未预期的服务端异常，响应与日志都不包含堆栈
     INTERNAL_ERROR = "INTERNAL_ERROR"
-    #: 依赖未就绪（配置缺失或数据库不可达），仅由 /health/ready 返回
+    #: 依赖未就绪：``/health/ready`` 探测失败，或问答接口的模型配置缺失（契约 6.7）
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
 
 
@@ -64,6 +66,7 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.ASSIGNMENT_NOT_OPEN: "任务未发布或已关闭",
     ErrorCode.GRADE_NOT_REVIEWED: "尚未完成教师复核，不能发布",
     ErrorCode.AI_JOB_FAILED: "AI 或解析任务执行失败",
+    ErrorCode.CHAT_CONFLICT: "会话已被更新，请重新发送",
     ErrorCode.VALIDATION_ERROR: "请求参数不合法",
     ErrorCode.METHOD_NOT_ALLOWED: "请求方法不被支持",
     ErrorCode.INTERNAL_ERROR: "服务内部错误，请稍后重试",
@@ -89,6 +92,7 @@ DEFAULT_STATUS_CODES: dict[ErrorCode, int] = {
     ErrorCode.ASSIGNMENT_NOT_OPEN: 409,
     ErrorCode.GRADE_NOT_REVIEWED: 409,
     ErrorCode.AI_JOB_FAILED: 502,
+    ErrorCode.CHAT_CONFLICT: 409,
     ErrorCode.VALIDATION_ERROR: 422,
     ErrorCode.METHOD_NOT_ALLOWED: 405,
     ErrorCode.INTERNAL_ERROR: 500,
