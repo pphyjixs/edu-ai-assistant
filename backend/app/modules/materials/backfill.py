@@ -260,9 +260,17 @@ async def backfill_material_chunks(
     """回填 ``READY`` 资料的检索片段；游标分页遍历**全部**候选。
 
     :param force: 连已有片段的资料也重做（默认只补没有片段的）。
-    :param batch_size: 每页批量大小；不是总处理上限，所有页都会被处理。
+    :param batch_size: 每页批量大小（**正整数**）；不是总处理上限，
+        所有页都会被处理。
     :param material_id: 只回填指定资料（排障用）。
+
+    :raises ValueError: ``batch_size`` 不是正整数。``LIMIT 0`` 会让每一页
+        都为空、把"没有候选"与"批量大小非法"混为一谈并误报成功，
+        因此在入口直接拒绝。
     """
+    if batch_size <= 0:
+        raise ValueError("batch_size 必须是正整数（每页批量大小）")
+
     report = BackfillReport()
     after: tuple[datetime, uuid.UUID] | None = None
 

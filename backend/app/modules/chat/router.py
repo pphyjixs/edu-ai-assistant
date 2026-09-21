@@ -82,10 +82,16 @@ async def _validate_empty_object_body(request: Request) -> None:
 
     try:
         payload = json.loads(raw)
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        # 非 UTF-8 字节序列在解码阶段就失败（UnicodeDecodeError），
+        # 与语法错误一样属于请求体问题，必须转 422 而不是落到 500。
         raise ValidationError(
             "请求体不是合法 JSON",
-            details={"errors": [{"field": "body", "message": "不是合法 JSON"}]},
+            details={
+                "errors": [
+                    {"field": "body", "message": "不是合法 JSON 或不是 UTF-8 编码"}
+                ]
+            },
         ) from exc
 
     if payload is None:

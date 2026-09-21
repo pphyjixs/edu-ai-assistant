@@ -50,16 +50,27 @@ from app.modules.materials import backfill  # noqa: E402
 from app.storage.s3 import S3Storage, S3StorageConfig  # noqa: E402
 
 
+def _positive_int(value: str) -> int:
+    """``--batch-size`` 必须是正整数：0 会产生 ``LIMIT 0``，漏处理全部资料。"""
+    try:
+        number = int(value)
+    except ValueError as exc:  # pragma: no cover - argparse 已处理非数字
+        raise argparse.ArgumentTypeError(f"必须是正整数，收到 {value!r}") from exc
+    if number <= 0:
+        raise argparse.ArgumentTypeError(f"必须是正整数，收到 {number}")
+    return number
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="回填 READY 资料的检索片段（开放问答前执行）"
     )
     parser.add_argument(
         "--batch-size",
-        type=int,
+        type=_positive_int,
         default=backfill.DEFAULT_BATCH_SIZE,
         help=(
-            "每页批量大小（默认 "
+            "每页批量大小（正整数，默认 "
             f"{backfill.DEFAULT_BATCH_SIZE}）；命令会按游标遍历全部候选，"
             "不是只处理这么多条"
         ),
