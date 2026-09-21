@@ -681,6 +681,57 @@ def test_stale_run_token_cannot_write_after_retry(
     assert _set_status(pg_sync_engine, set_id) == "GENERATING"
 
 
+def test_expired_lease_failure_writeback_is_abandoned(
+    client: TestClient,
+    fake_storage,
+    pg_session_factory,
+    make_settings,
+    pg_sync_engine,
+) -> None:
+    """租约已过期的旧执行者做**失败**回写也必须放弃（与成功回写一致）。"""
+    suffix = uuid.uuid4().hex[:8]
+    course_id, teacher, material_id = _ready_course(
+        client, fake_storage, pg_session_factory, make_settings,
+        email=f"race-expired-fail-{suffix}@example.com",
+    )
+    generated = _generate(client, teacher, course_id, [material_id])
+    set_id = generated.json()["resource_id"]
+    job_id = generated.json()["id"]
+
+    settings, claimed, _validated = _claimed_with_validated_questions(
+        teacher, material_id, pg_session_factory, make_settings
+    )
+    _expire_lease(pg_sync_engine, job_id)
+    attempts_before = _job_row(pg_sync_engine, job_id)["attempts"]
+
+    asyncio.run(
+        practice_worker._write_failure(
+            pg_session_factory,
+            claimed=claimed,
+            message="模型调用失败",
+            settings=settings,
+            duration_ms=3,
+            cancelled=False,
+            now=utc_now(),
+        )
+    )
+
+    # 旧执行者不得改变任何状态、不得删题目、不得写尝试记录
+    assert _job_row(pg_sync_engine, job_id)["status"] == "RUNNING"
+    assert _job_row(pg_sync_engine, job_id)["attempts"] == attempts_before
+    assert _set_status(pg_sync_engine, set_id) == "GENERATING"
+    assert _question_count(pg_sync_engine, set_id) == 0
+    with pg_sync_engine.connect() as connection:
+        generation_attempts = connection.execute(
+            text(
+                "SELECT count(*) FROM practice_generation_attempts"
+                " WHERE practice_set_id = CAST(:id AS uuid)"
+            ),
+            {"id": set_id},
+        ).scalar_one()
+    assert int(generation_attempts) == 0
+
+
 # --------------------------------------------------------------------------- #
 # 锁序：领取任务不得反向锁练习行；回写必须等资料锁
 # --------------------------------------------------------------------------- #

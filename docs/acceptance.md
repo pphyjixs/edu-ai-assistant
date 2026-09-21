@@ -149,9 +149,9 @@ cd backend
 | 层 | 数量 | 数据库 |
 | --- | --- | --- |
 | `tests/unit` | 257 | 不接触数据库与网络；外部依赖替换为 fake 或 `MockTransport` |
-| `tests/integration` | 288 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储与解析 Worker 端到端用例需配置 S3 端点 |
+| `tests/integration` | 293 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储与解析 Worker 端到端用例需配置 S3 端点 |
 | `tests/contract` | 69 | 同上（令牌格式、课程、课件上传、课程问答与课程练习契约、OpenAPI 一致性） |
-| 合计 | 614 | 连真实 PostgreSQL + 对象存储时**全部通过，0 跳过**（模型为本地假 HTTP 服务） |
+| 合计 | 619 | 连真实 PostgreSQL + 对象存储（配置 `TEST_S3_*`）时**全部通过，0 跳过**（模型为本地假 HTTP 服务） |
 
 测试库规则（见 `backend/tests/pg_support.py`）：
 
@@ -254,6 +254,7 @@ cd backend
 | 归档 vs 生成/发布/提交/重试的双向并发、回写与重试、令牌与资料锁 | `integration/test_practice_races.py` |
 | 错误优先级、严格类型、空对象请求体边界、三处一致 | `integration/test_practice_validation.py` |
 | 出题上下文的预算与逐资料覆盖 | `unit/test_practice_context_budget.py` |
+| 任务重试的关联资源可见性与权限优先级（`MATERIAL_PARSE` 不泄露存在性） | `integration/test_practice_retry_visibility.py` |
 | `pg_trgm` 扩展、chat 四表、片段 GIN 索引的升级与回退 | `integration/test_migrations.py` |
 
 本次查询与清理交付验证：334 项（128 unit / 165 integration / 41 contract），
@@ -532,6 +533,38 @@ Worker 领取任务时改为**只写任务行**（练习状态用普通读校验
 **运行环境提示**：本机跑套件时**不要**设置 `PYTHONIOENCODING=utf-8`——
 该变量会被 `test_upload_cleanup.py` 的子进程继承，改变其输出编码导致断言失败
 （与代码无关；已在 `origin/main` 基线复核）。
+
+### 重试可见性与失败回写租约修复验收（`fix/practice-retry-visibility`）
+
+上一轮合并后发现并修复两个 P1 缺陷（均带永久回归，**不新增接口、不新增迁移**）：
+
+**P1-1 任务重试的关联资源可见性**：`lock_retryable_job` 原本对 `MATERIAL_PARSE`
+任务在可见性/角色/归档检查之前就返回 `409 JOB_NOT_RETRYABLE`，使非成员可借
+`POST /jobs/{job_id}/retry` 探测任务是否存在及其类型。现在 `MATERIAL_PARSE`
+先按关联资料做成员可见性（404）→ 创建教师（403）→ 未归档（409），最后才
+返回 `409 JOB_NOT_RETRYABLE`。回归（`integration/test_practice_retry_visibility.py`）：
+
+| 场景 | 期望 |
+| --- | --- |
+| 非成员 + `MATERIAL_PARSE` 任务 | `404 RESOURCE_NOT_FOUND` |
+| 学生课程成员 | `403 ROLE_FORBIDDEN` |
+| 活动课程的创建教师 | `409 JOB_NOT_RETRYABLE` |
+| 归档课程的创建教师 | `409 COURSE_ARCHIVED` |
+
+**P1-2 失败回写的过期租约**：`_write_failure` 原本只检查令牌与 `RUNNING`，
+未检查 `lease_expires_at`，导致租约已过期的旧执行者仍能删除题目、改变任务与
+练习状态并写尝试记录。现在与 `_write_success` 一致：租约过期即放弃回写。
+回归（`integration/test_practice_races.py::test_expired_lease_failure_writeback_is_abandoned`）
+断言：过期租约的失败回写后，任务仍为 `RUNNING`、练习仍为 `GENERATING`、
+无题目、无新增生成尝试记录。
+
+**关于完整套件的 `TEST_S3_*` 依赖**：对象存储相关用例（`test_storage_minio.py`、
+`test_parse_worker_minio.py`、`test_upload_cleanup.py` 的真实删除用例）必须配置
+`TEST_S3_ENDPOINT` / `TEST_S3_BUCKET` / `TEST_S3_ACCESS_KEY` / `TEST_S3_SECRET_KEY`
+才会真实执行。未配置时这些用例会跳过（约 13 项），**按本计划约定该跳过视为
+验收失败**，不能算"通过"。本机验收在配置了上述环境变量（本地 MinIO）后运行，
+结果为 **619 项收集，619 通过、0 失败、0 错误、0 跳过**（unit 257 / contract 69 /
+integration 293），真实 PUT、校验和、CORS 预检与真实对象清理均已执行。
 
 ### 环境验收（本地开发库升级 + 端到端问答 + 回填）
 

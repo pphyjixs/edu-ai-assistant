@@ -426,6 +426,12 @@ async def _write_failure(
         ):
             await session.rollback()
             return
+        if job.lease_expires_at is not None and job.lease_expires_at <= now:
+            # 与成功回写一致：租约已过期的旧执行者不再拥有任务，
+            # 不得删除题目、改变状态或写尝试记录（交给重试后的新执行）。
+            await session.rollback()
+            logger.info("租约已过期，放弃失败回写（set=%s）", practice_set_id)
+            return
 
         archived = course is None or course.status is not CourseStatus.ACTIVE
         final_cancelled = cancelled or archived
