@@ -57,10 +57,8 @@ class ChatSessionSchema(BaseModel):
     last_message_at: UtcTimestamp
 
 
-class ChatSessionCreateRequest(BaseModel):
-    """创建会话（契约 6.2）：没有请求字段，只接受省略请求体或空对象。"""
-
-    model_config = ConfigDict(extra="forbid")
+# 创建会话（契约 6.2）没有请求字段：请求体在路由层手工校验，
+# 以便区分「省略请求体」与「显式 null」（后者必须 422）。
 
 
 class Citation(BaseModel):

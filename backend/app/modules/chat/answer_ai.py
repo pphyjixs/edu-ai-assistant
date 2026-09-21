@@ -176,13 +176,14 @@ def generate_answer(
     :raises AnswerModelNotConfiguredError: 未配置模型端点或模型名称。
     :raises AnswerGenerationError: 请求失败、超时或输出无效。
     """
+    if not chunks:
+        # 没有可引用的片段时不调用模型，也**不要求模型配置**：
+        # 直接按无依据处理（契约 6.1 的「无证据返回 201」优先于部署说明中的 503）。
+        return ValidatedAnswer(content=NO_EVIDENCE_ANSWER, grounded=False, citations=[])
     if not base_url.strip():
         raise AnswerModelNotConfiguredError("问答服务未配置模型端点（AI_BASE_URL）")
     if not model.strip():
         raise AnswerModelNotConfiguredError("问答服务未配置模型名称（AI_MODEL）")
-    if not chunks:
-        # 没有可引用的片段时不调用模型：直接按无依据处理（契约 6.1）
-        return ValidatedAnswer(content=NO_EVIDENCE_ANSWER, grounded=False, citations=[])
 
     url = base_url.rstrip("/") + "/chat/completions"
     payload = {

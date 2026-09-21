@@ -139,6 +139,35 @@ async def get_visible_material_by_id(
     return result.scalar_one_or_none()
 
 
+async def lock_live_materials(
+    session: AsyncSession, *, material_ids: list[uuid.UUID]
+) -> set[uuid.UUID]:
+    """按 ID 升序对资料加**共享锁**，返回仍为 ``READY`` 且未删除的资料 ID。
+
+    问答写入事务在落库引用前调用（契约 6.1）：共享锁与删除资料的排他锁
+    互斥，因此这些资料在本次事务提交前不会被并发删除——不会出现"引用指向
+    刚被删除的资料"。查询按 ID 升序加锁，多个并发事务取锁顺序一致，避免死锁。
+
+    返回的 ID 是**锁后**读到的状态：生成期间已失效的资料不在集合中，
+    调用方据此丢弃对应引用（全部失效则按无依据回答处理）。
+    """
+    if not material_ids:
+        return set()
+    ordered_ids = sorted(set(material_ids))
+    result = await session.execute(
+        select(Material.id)
+        .where(
+            Material.id.in_(ordered_ids),
+            Material.status == MaterialStatus.READY,
+            Material.deleted_at.is_(None),
+        )
+        .order_by(Material.id)
+        .with_for_update(read=True)
+        .execution_options(populate_existing=True)
+    )
+    return set(result.scalars().all())
+
+
 async def get_visible_material_for_update(
     session: AsyncSession, material_id: uuid.UUID
 ) -> Material | None:

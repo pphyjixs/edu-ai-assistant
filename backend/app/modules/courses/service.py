@@ -112,6 +112,26 @@ async def require_member_course(
     return course
 
 
+async def lock_member_course(
+    session: AsyncSession, *, user_id: uuid.UUID, course_id: uuid.UUID
+) -> Course:
+    """**锁定课程行**并检查成员资格（问答写入路径的临界区入口）。
+
+    锁定与 :func:`archive_course` 使用同一把行锁，因此「检查归档 → 写入」
+    与并发归档严格按事务顺序生效：任何一方先拿到锁，另一方都会看到
+    已提交的结果（归档后写入返回 ``409``，写入完成后归档正常生效）。
+
+    课程不存在或非成员统一 404（契约 6.1）。只接收标量 ``user_id``，
+    便于调用方在结束只读事务后重新开启写入事务。
+    """
+    course = await repo.get_course_for_update(session, course_id)
+    if course is None:
+        raise ResourceNotFoundError()
+    if await repo.get_member(session, course_id=course.id, user_id=user_id) is None:
+        raise ResourceNotFoundError()
+    return course
+
+
 async def require_course_teacher(
     session: AsyncSession, *, user: User, course_id: uuid.UUID
 ) -> Course:

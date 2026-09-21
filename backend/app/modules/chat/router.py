@@ -9,13 +9,15 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import Callable
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 
 from app.core.deps import SettingsDep
+from app.core.errors import ValidationError
 from app.core.pagination import Page, PaginationDep
 from app.core.schemas import ErrorResponse
 from app.db.session import SessionDep
@@ -25,7 +27,6 @@ from app.modules.chat.schemas import (
     Citation,
     ChatMessageSchema,
     ChatQuestionRequest,
-    ChatSessionCreateRequest,
     ChatSessionSchema,
 )
 
@@ -51,6 +52,63 @@ _NOT_FOUND_SESSION = {
     "description": "会话不存在，或当前用户不是会话所有者（RESOURCE_NOT_FOUND）",
 }
 
+#: 创建会话没有请求字段：OpenAPI 声明为**可选对象**（省略或 `{}` 合法、
+#: 显式 `null` 不合法）。手写声明是因为参数侧用手工校验区分「省略」与「null」。
+_EMPTY_OBJECT_REQUEST_BODY: dict = {
+    "requestBody": {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "description": "没有请求字段：可省略请求体或传空对象 {}",
+                }
+            }
+        },
+    }
+}
+
+
+async def _validate_empty_object_body(request: Request) -> None:
+    """校验「没有请求字段」的请求体（契约 6.2）。
+
+    省略请求体与 ``{}`` 都合法；显式 JSON ``null``、非对象、非法 JSON
+    或任何未声明字段统一返回 ``422 VALIDATION_ERROR``。
+    """
+    raw = await request.body()
+    if not raw.strip():
+        return
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValidationError(
+            "请求体不是合法 JSON",
+            details={"errors": [{"field": "body", "message": "不是合法 JSON"}]},
+        ) from exc
+
+    if payload is None:
+        raise ValidationError(
+            "请求体不能为 null：请省略请求体或传空对象 {}",
+            details={"errors": [{"field": "body", "message": "不接受 null"}]},
+        )
+    if not isinstance(payload, dict):
+        raise ValidationError(
+            "请求体必须是 JSON 对象",
+            details={"errors": [{"field": "body", "message": "必须是 JSON 对象"}]},
+        )
+    if payload:
+        raise ValidationError(
+            "该接口没有请求字段",
+            details={
+                "errors": [
+                    {"field": key, "message": "未声明字段"}
+                    for key in sorted(payload)
+                ]
+            },
+        )
+
 
 def get_ai_client_factory() -> AiClientFactory | None:
     """返回用于构造模型 HTTP 客户端的工厂（默认 ``None`` = 适配层自建）。"""
@@ -70,6 +128,7 @@ AiClientFactoryDep = Annotated[
     description=(
         "课程成员（教师或学生）均可创建；创建者即会话所有者。"
         "归档课程返回 409 COURSE_ARCHIVED。课程不存在或非成员统一 404。"
+        "请求体可省略、也可传空对象 {}；显式 null 或含未声明字段返回 422。"
     ),
     responses={
         201: {"description": "创建成功"},
@@ -80,18 +139,22 @@ AiClientFactoryDep = Annotated[
         },
         422: {
             "model": ErrorResponse,
-            "description": "请求体含未声明字段（VALIDATION_ERROR）",
+            "description": (
+                "请求体为显式 null，或含未声明字段（VALIDATION_ERROR）"
+            ),
         },
         **_AUTH_ERRORS,
     },
+    # 没有请求字段：手工校验区分「省略请求体」与「显式 null」
+    openapi_extra=_EMPTY_OBJECT_REQUEST_BODY,
 )
 async def create_chat_session(
     course_id: uuid.UUID,
+    request: Request,
     user: CurrentUserDep,
     session: SessionDep,
-    # 没有请求字段：只接受省略请求体或空对象 {}，多余字段返回 422
-    _payload: ChatSessionCreateRequest | None = None,
 ) -> ChatSessionSchema:
+    await _validate_empty_object_body(request)
     chat_session = await service.create_session(
         session, user=user, course_id=course_id
     )

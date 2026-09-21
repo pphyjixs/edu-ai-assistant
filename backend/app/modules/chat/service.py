@@ -32,6 +32,7 @@ from app.core.config import Settings
 from app.core.errors import (
     AiJobFailedError,
     ChatConflictError,
+    CourseArchivedError,
     ResourceNotFoundError,
     ServiceUnavailableError,
 )
@@ -49,7 +50,7 @@ from app.modules.chat.models import (
 )
 from app.modules.chat.schemas import NO_EVIDENCE_ANSWER, Citation
 from app.modules.courses import service as courses_service
-from app.modules.materials.models import Material, MaterialStatus
+from app.modules.materials import repository as materials_repo
 from app.modules.materials.schemas import source_type_for_content_type
 
 logger = logging.getLogger("app.chat.service")
@@ -68,13 +69,22 @@ async def create_session(
     course_id: uuid.UUID,
     now: datetime | None = None,
 ) -> ChatSession:
-    """创建会话（契约 6.2）：课程成员均可，归档课程 409。"""
-    course = await courses_service.require_member_course(
-        session, user=user, course_id=course_id
-    )
-    courses_service.require_course_active(course)
+    """创建会话（契约 6.2）：课程成员均可，归档课程 409。
 
+    成员检查与归档检查都在**课程行锁**内完成，写入与检查处于同一事务：
+    与并发归档按事务顺序得到一致结果（先归档则 409；先创建则会话存在且
+    归档随后生效），不会出现"读到 ACTIVE 后归档已提交仍写入"的窗口。
+    """
     created_at = now or utc_now()
+    course = await courses_service.lock_member_course(
+        session, user_id=user.id, course_id=course_id
+    )
+    try:
+        courses_service.require_course_active(course)
+    except CourseArchivedError:
+        await session.rollback()
+        raise
+
     chat_session = repo.create_session(
         session,
         session_id=uuid.uuid4(),
@@ -139,30 +149,19 @@ async def list_messages(
     return [(message, citations.get(message.id, [])) for message in messages], total
 
 
-async def _live_material_ids(
-    session: AsyncSession, material_ids: list[uuid.UUID]
-) -> set[uuid.UUID]:
-    """复查引用资料状态：仅返回仍为 ``READY`` 且未删除的资料 ID（契约 6.1）。"""
-    if not material_ids:
-        return set()
-    result = await session.execute(
-        select(Material.id).where(
-            Material.id.in_(material_ids),
-            Material.status == MaterialStatus.READY,
-            Material.deleted_at.is_(None),
-        )
-    )
-    return set(result.scalars().all())
-
-
 async def _build_citations(
     session: AsyncSession,
     *,
     validated: answer_ai.ValidatedAnswer,
 ) -> list[tuple[answer_ai.ValidatedCitation, Citation]]:
-    """把校验后的引用转成待落库的引用记录（含章节匹配与来源类型）。"""
-    live_ids = await _live_material_ids(
-        session, [item.chunk.material_id for item in validated.citations]
+    """把校验后的引用转成待落库的引用记录（含章节匹配与来源类型）。
+
+    先按 ID 升序对引用资料加**共享锁**（契约 6.1）：这些资料在本次事务提交前
+    不会被并发删除，因此落库的引用一定指向仍然存在且 ``READY`` 的资料；
+    生成期间已失效的资料会被排除，全部失效时按无依据处理。
+    """
+    live_ids = await materials_repo.lock_live_materials(
+        session, material_ids=[item.chunk.material_id for item in validated.citations]
     )
     built: list[tuple[answer_ai.ValidatedCitation, Citation]] = []
     for item in validated.citations:
@@ -204,8 +203,8 @@ async def _build_citations(
 def _record_attempt(
     session: AsyncSession,
     *,
-    chat_session: ChatSession,
-    user: User,
+    session_id: uuid.UUID,
+    user_id: uuid.UUID,
     status: ChatAttemptStatus,
     settings: Settings,
     retrieved_count: int,
@@ -214,12 +213,16 @@ def _record_attempt(
     error: str | None,
     now: datetime,
 ) -> ChatGenerationAttempt:
-    """写一条生成尝试记录（成功与失败都留痕）。"""
+    """写一条生成尝试记录（成功与失败都留痕）。
+
+    只接收**标量 ID**：失败路径在只读事务已结束、模型调用失败之后执行，
+    若在这里访问 ORM 对象会因对象过期触发同步懒加载（``MissingGreenlet``）。
+    """
     return repo.add_attempt(
         session,
         attempt_id=uuid.uuid4(),
-        session_id=chat_session.id,
-        user_id=user.id,
+        session_id=session_id,
+        user_id=user_id,
         status=status,
         model=settings.ai_model.strip() or None,
         prompt_version=answer_ai.PROMPT_VERSION,
@@ -229,6 +232,61 @@ def _record_attempt(
         error=error,
         now=now,
     )
+
+
+async def _record_failed_attempt(
+    session: AsyncSession,
+    *,
+    session_id: uuid.UUID,
+    user_id: uuid.UUID,
+    settings: Settings,
+    retrieved_count: int,
+    duration_ms: int,
+    error: str,
+    now: datetime | None,
+) -> None:
+    """失败路径的尝试记录：**新事务**写入，只用标量 ID（不碰过期 ORM 对象）。"""
+    _record_attempt(
+        session,
+        session_id=session_id,
+        user_id=user_id,
+        status=ChatAttemptStatus.FAILED,
+        settings=settings,
+        retrieved_count=retrieved_count,
+        grounded=None,
+        duration_ms=duration_ms,
+        error=error[:500],
+        now=now or utc_now(),
+    )
+    await session.commit()
+
+
+async def _generate_validated(
+    *,
+    content: str,
+    chunks: list[retrieval.RetrievedChunk],
+    settings: Settings,
+    ai_client_factory: AiClientFactory | None,
+) -> answer_ai.ValidatedAnswer:
+    """在线程池中调用模型适配层；客户端由工厂提供（测试注入假模型服务）。"""
+    ai_client: object | None = None
+    try:
+        if ai_client_factory is not None:
+            ai_client = ai_client_factory()
+        return await asyncio.to_thread(
+            answer_ai.generate_answer,
+            chunks,
+            question=content,
+            base_url=settings.ai_base_url,
+            api_key=settings.ai_api_key,
+            model=settings.ai_model,
+            timeout_seconds=settings.ai_timeout_seconds,
+            client=ai_client,
+        )
+    finally:
+        close = getattr(ai_client, "close", None)
+        if close is not None:
+            close()
 
 
 async def send_question(
@@ -251,106 +309,106 @@ async def send_question(
     :raises ServiceUnavailableError: 模型端点/模型名未配置（503）。
     :raises AiJobFailedError: 模型调用或输出失败（502，不落库消息）。
     """
-    # ---- 阶段一：只读检查 + 检索（不持有写事务）----
+    # ---- 阶段一：只读检查 + 检索；随后**结束只读事务** ----
+    user_id = user.id
     chat_session = await _require_owned_session(
         session, user=user, session_id=session_id
     )
-    course = await courses_service.require_member_course(
-        session, user=user, course_id=chat_session.course_id
-    )
-    courses_service.require_course_active(course)
-
-    expected_version = chat_session.version
     course_id = chat_session.course_id
+    expected_version = chat_session.version
 
-    chunks = await retrieval.search_chunks(
-        session, course_id=course_id, question=content
-    )
-    logger.info(
-        "问答检索完成（session=%s 片段=%d）", chat_session.id, len(chunks)
-    )
-
-    # ---- 阶段二：事务外调用模型 ----
-    started = time.monotonic()
-    ai_client: object | None = None
-    try:
-        if ai_client_factory is not None:
-            ai_client = ai_client_factory()
-        validated = await asyncio.to_thread(
-            answer_ai.generate_answer,
-            chunks,
-            question=content,
-            base_url=settings.ai_base_url,
-            api_key=settings.ai_api_key,
-            model=settings.ai_model,
-            timeout_seconds=settings.ai_timeout_seconds,
-            client=ai_client,
-        )
-    except answer_ai.AnswerModelNotConfiguredError as exc:
-        duration_ms = int((time.monotonic() - started) * 1000)
-        _record_attempt(
-            session,
-            chat_session=chat_session,
-            user=user,
-            status=ChatAttemptStatus.FAILED,
-            settings=settings,
-            retrieved_count=len(chunks),
-            grounded=None,
-            duration_ms=duration_ms,
-            error="模型服务未配置",
-            now=now or utc_now(),
-        )
-        await session.commit()
-        logger.warning("问答模型未配置：%s", exc)
-        raise ServiceUnavailableError(
-            "问答服务暂不可用，请稍后重试",
-            details={"component": "ai"},
-        ) from exc
-    except answer_ai.AnswerGenerationError as exc:
-        duration_ms = int((time.monotonic() - started) * 1000)
-        _record_attempt(
-            session,
-            chat_session=chat_session,
-            user=user,
-            status=ChatAttemptStatus.FAILED,
-            settings=settings,
-            retrieved_count=len(chunks),
-            grounded=None,
-            duration_ms=duration_ms,
-            error=str(exc)[:500],
-            now=now or utc_now(),
-        )
-        await session.commit()
-        logger.warning("问答生成失败（session=%s）：%s", chat_session.id, exc)
-        raise AiJobFailedError(_MODEL_FAILED_MESSAGE) from exc
-    finally:
-        close = getattr(ai_client, "close", None)
-        if close is not None:
-            close()
-
-    duration_ms = int((time.monotonic() - started) * 1000)
-
-    # ---- 阶段三：写入事务（并发保护 + 状态复查 + 一问一答）----
-    written_at = now or utc_now()
-
-    # 归档状态复查：生成期间课程可能被归档
     course = await courses_service.require_member_course(
         session, user=user, course_id=course_id
     )
     courses_service.require_course_active(course)
 
+    chunks = await retrieval.search_chunks(
+        session, course_id=course_id, question=content
+    )
+    # 只保留标量与会话无关的片段数据，然后结束只读事务：
+    # 模型调用（可能数十秒）期间不持有任何数据库事务与连接。
+    await session.rollback()
+    logger.info("问答检索完成（session=%s 片段=%d）", session_id, len(chunks))
+
+    # ---- 阶段二：事务外调用模型（只在真正需要模型时才检查模型配置）----
+    started = time.monotonic()
+    if not chunks:
+        # 没有可引用的片段：按契约 6.1 直接给出"无依据"结果，
+        # 不调用模型，也不因模型未配置而返回 503。
+        validated = answer_ai.ValidatedAnswer(
+            content=NO_EVIDENCE_ANSWER, grounded=False, citations=[]
+        )
+        duration_ms = int((time.monotonic() - started) * 1000)
+    else:
+        try:
+            validated = await _generate_validated(
+                content=content,
+                chunks=chunks,
+                settings=settings,
+                ai_client_factory=ai_client_factory,
+            )
+        except answer_ai.AnswerModelNotConfiguredError as exc:
+            await _record_failed_attempt(
+                session,
+                session_id=session_id,
+                user_id=user_id,
+                settings=settings,
+                retrieved_count=len(chunks),
+                duration_ms=int((time.monotonic() - started) * 1000),
+                error="模型服务未配置",
+                now=now,
+            )
+            logger.warning("问答模型未配置：%s", exc)
+            raise ServiceUnavailableError(
+                "问答服务暂不可用，请稍后重试",
+                details={"component": "ai"},
+            ) from exc
+        except answer_ai.AnswerGenerationError as exc:
+            await _record_failed_attempt(
+                session,
+                session_id=session_id,
+                user_id=user_id,
+                settings=settings,
+                retrieved_count=len(chunks),
+                duration_ms=int((time.monotonic() - started) * 1000),
+                error=str(exc)[:500],
+                now=now,
+            )
+            logger.warning("问答生成失败（session=%s）：%s", session_id, exc)
+            raise AiJobFailedError(_MODEL_FAILED_MESSAGE) from exc
+        duration_ms = int((time.monotonic() - started) * 1000)
+
+    # ---- 阶段三：写入事务（固定顺序：课程行锁 → 版本 → 引用资料锁）----
+    written_at = now or utc_now()
+    # 助手消息晚 1 毫秒：同一事务写入的一问一答在 created_at 升序排序下顺序稳定
+    # （同值会退化为 id 排序，而 id 是随机 UUID）；会话的 last_message_at 取
+    # 助手消息的实际时间（契约 6.6：最近一条消息的时间）。
+    assistant_at = written_at + timedelta(milliseconds=1)
+
+    # 1) 锁定课程行后检查成员与归档状态：与并发归档按事务顺序得到一致结果。
+    #    生成期间先完成归档 → 这里读到 ARCHIVED → 409 且不写消息。
+    course = await courses_service.lock_member_course(
+        session, user_id=user_id, course_id=course_id
+    )
+    try:
+        courses_service.require_course_active(course)
+    except CourseArchivedError:
+        await session.rollback()
+        logger.info("课程在生成期间被归档，放弃写入（session=%s）", session_id)
+        raise
+
+    # 2) 校验会话版本：生成期间有并发写入则本次不落库任何消息。
     if not await repo.bump_session_version(
         session,
-        session_id=chat_session.id,
+        session_id=session_id,
         expected_version=expected_version,
-        now=written_at,
+        now=assistant_at,
     ):
-        # 回滚会 expire ORM 对象：此后不能再访问 chat_session 的属性，
-        # 否则会触发同步懒加载（MissingGreenlet）。日志用入参 session_id。
         await session.rollback()
         logger.warning("会话并发冲突，已放弃写入（session=%s）", session_id)
         raise ChatConflictError()
 
+    # 3) 引用资料按 ID 升序加共享锁：提交前不会被并发删除；已失效的按无依据处理。
     citations = await _build_citations(session, validated=validated)
     grounded = bool(citations)
     assistant_content = validated.content if grounded else NO_EVIDENCE_ANSWER
@@ -358,22 +416,20 @@ async def send_question(
     repo.add_message(
         session,
         message_id=uuid.uuid4(),
-        session_id=chat_session.id,
+        session_id=session_id,
         role=ChatMessageRole.USER,
         content=content,
         grounded=None,
         now=written_at,
     )
-    # 助手消息晚 1 毫秒：同一事务写入的一问一答在 created_at 升序排序下
-    # 顺序稳定（同值会退化为 id 排序，而 id 是随机 UUID）
     assistant_message = repo.add_message(
         session,
         message_id=uuid.uuid4(),
-        session_id=chat_session.id,
+        session_id=session_id,
         role=ChatMessageRole.ASSISTANT,
         content=assistant_content,
         grounded=grounded,
-        now=written_at + timedelta(milliseconds=1),
+        now=assistant_at,
     )
     await session.flush()
     for order, (_, citation) in enumerate(citations, start=1):
@@ -395,8 +451,8 @@ async def send_question(
         )
     _record_attempt(
         session,
-        chat_session=chat_session,
-        user=user,
+        session_id=session_id,
+        user_id=user_id,
         status=ChatAttemptStatus.SUCCEEDED,
         settings=settings,
         retrieved_count=len(chunks),
