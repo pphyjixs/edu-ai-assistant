@@ -40,6 +40,12 @@ EXPECTED_TABLES = {
     "chat_messages",
     "chat_message_citations",
     "chat_generation_attempts",
+    "practice_sets",
+    "practice_set_materials",
+    "practice_questions",
+    "practice_attempts",
+    "practice_attempt_answers",
+    "practice_generation_attempts",
 }
 
 #: 迁移引入的原生枚举类型，回滚时必须全部清理
@@ -54,12 +60,16 @@ EXPECTED_ENUMS: dict[str, list[str]] = {
     "material_delete_todo_status": ["PENDING", "DONE"],
     "chat_message_role": ["USER", "ASSISTANT"],
     "chat_attempt_status": ["SUCCEEDED", "FAILED"],
+    "practice_status": ["GENERATING", "DRAFT", "PUBLISHED", "FAILED", "CANCELLED"],
+    "practice_difficulty": ["EASY", "MEDIUM", "HARD"],
+    "practice_question_type": ["SINGLE_CHOICE", "TRUE_FALSE", "SHORT_ANSWER"],
+    "practice_generation_status": ["SUCCEEDED", "FAILED"],
 }
 
 COMPARE_OPTIONS = {"compare_type": True, "compare_server_default": True}
 
 #: head 对应的最新迁移
-REVISION = "0008_chat_qa"
+REVISION = "0009_practice_sets"
 
 
 @pytest.fixture(scope="module")
