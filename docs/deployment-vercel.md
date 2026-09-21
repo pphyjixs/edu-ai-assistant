@@ -130,6 +130,29 @@ python scripts/backfill_material_chunks.py --batch-size 500  # 每页批量大�
 
 问答复用 Worker 的模型配置（`AI_BASE_URL` / `AI_MODEL` / `AI_API_KEY`）。**模型配置只在真正需要调用模型时检查**：检索不到片段时问答按“无依据”返回 `201`，不受模型配置影响；只有检索到片段而模型端点或模型名缺失才返回 `503 SERVICE_UNAVAILABLE`（契约 6.1 / 6.5 / 6.7）。
 
+**课程练习（Practice）配套**：练习题目由**另一个独立常驻进程**生成，
+同样不在 Vercel 请求进程内调用模型：
+
+```bash
+python scripts/practice_worker.py
+```
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `PRACTICE_GENERATE_LEASE_SECONDS` | `300` | 生成任务租约（秒）；崩溃后超过租约的 `RUNNING` 任务可由重试接口回收 |
+| `PRACTICE_GENERATE_MAX_CHARS` | `60000` | 送入模型的片段上下文上限（字符），按资料顺序轮询截断，并保证每份资料至少一个片段 |
+| `PRACTICE_WORKER_POLL_SECONDS` | `5` | 队列空时的轮询间隔 |
+| `PRACTICE_WORKER_BATCH_SIZE` | `5` | 单批最多领取的任务数 |
+
+练习 Worker **不需要对象存储**：出题上下文来自 PostgreSQL 中已落库的检索片段
+（因此该模块不新增 `STORAGE_*` 依赖）。模型仍复用 `AI_BASE_URL` / `AI_MODEL` /
+`AI_API_KEY` / `AI_TIMEOUT_SECONDS`；未配置时领取到的任务会以「模型服务未配置」
+写入 `FAILED`，配置完成后可通过 `POST /jobs/{job_id}/retry` 重新生成。
+
+发布顺序：**先执行数据库迁移，再启动两个 Worker，最后开放前端入口**。
+`0009_practice_sets` 只新增表与原生枚举，不与 `0008_chat_qa` 冲突，
+可与其在同一发布中按序执行。
+
 开发、Preview 和 Production 使用独立配置。任何密钥都不能使用 `VITE_` 前缀，也不能提交到仓库。
 
 ### 数据库环境与责任分工
