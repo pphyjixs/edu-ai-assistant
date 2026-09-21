@@ -148,10 +148,10 @@ cd backend
 
 | 层 | 数量 | 数据库 |
 | --- | --- | --- |
-| `tests/unit` | 219 | 不接触数据库与网络；外部依赖替换为 fake 或 `MockTransport` |
-| `tests/integration` | 246 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储与解析 Worker 端到端用例需配置 S3 端点 |
+| `tests/unit` | 257 | 不接触数据库与网络；外部依赖替换为 fake 或 `MockTransport` |
+| `tests/integration` | 288 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储与解析 Worker 端到端用例需配置 S3 端点 |
 | `tests/contract` | 69 | 同上（令牌格式、课程、课件上传、课程问答与课程练习契约、OpenAPI 一致性） |
-| 合计 | 534 | 连真实 PostgreSQL + 对象存储时除 1 项契约允许分支外全部通过（模型为本地假 HTTP 服务） |
+| 合计 | 614 | 连真实 PostgreSQL + 对象存储时**全部通过，0 跳过**（模型为本地假 HTTP 服务） |
 
 测试库规则（见 `backend/tests/pg_support.py`）：
 
@@ -251,6 +251,9 @@ cd backend
 | 练习生成→发布→提交→结果的权限、可见性、归档与竞态 | `integration/test_practice_api.py` |
 | 练习 Worker 领取互斥、并发提交唯一性、无活动事务模型调用 | `integration/test_practice_api.py` |
 | 练习六表与四个原生枚举的升级与回退 | `integration/test_migrations.py` |
+| 归档 vs 生成/发布/提交/重试的双向并发、回写与重试、令牌与资料锁 | `integration/test_practice_races.py` |
+| 错误优先级、严格类型、空对象请求体边界、三处一致 | `integration/test_practice_validation.py` |
+| 出题上下文的预算与逐资料覆盖 | `unit/test_practice_context_budget.py` |
 | `pg_trgm` 扩展、chat 四表、片段 GIN 索引的升级与回退 | `integration/test_migrations.py` |
 
 本次查询与清理交付验证：334 项（128 unit / 165 integration / 41 contract），
@@ -477,6 +480,59 @@ Preview 尚未验证；其他教师不能管理他人课程的判断已由课程
 - 生成期间竞态：来源资料被删除 → `FAILED` 且无题目；课程被归档 → `CANCELLED` 且无题目；
   **模型调用期间没有任何"事务中空闲"连接**（用 `pg_stat_activity` 断言不持有事务）。
 
+### 练习并发与契约修复验收（`fix/practice-concurrency-contract`）
+
+本轮修复了练习接口验收中确认的事务竞态、锁顺序、评分精度、输入校验、错误优先级
+与上下文预算问题，**不新增接口、不改成功状态码与响应 Schema、不新增迁移**
+（数据库仍为 `0009_practice_sets`）。
+
+**统一锁协议**：生成、发布、提交、重试与 Worker 回写全部按
+**课程 → 练习 → 任务 → 按 ID 升序的来源资料** 加锁；归档同样先锁课程行。
+Worker 领取任务时改为**只写任务行**（练习状态用普通读校验），消除了
+"任务 → 练习" 的反向锁链；失败与取消回写也先查课程状态，
+**模型失败但最终发现课程已归档时终态为 `CANCELLED`**。
+
+**错误优先级**：生成与提交改为路由只取原始 `Request`、由服务在**加锁之后**调用
+`parse_required_object_body` 校验请求体（FastAPI 原本会在解析依赖之前解析 JSON，
+导致非法 JSON 抢先返回 422）。固定顺序为
+认证 → 资源可见性 → 角色 → 归档/状态 → 请求体 → 写入冲突；
+路由同时用 `openapi_extra` 声明 `requestBody`，并由 `app/core/openapi.py`
+把模型补进导出文档的 `components`（组件与 `$ref` 与改动前一致）。
+
+**验证过程与结果**
+
+新增回归（真实 PostgreSQL，事件门控 + 锁观察窗口，不使用固定休眠）：
+
+| 覆盖 | 用例 |
+| --- | --- |
+| 生成/发布/提交/重试 × 两个方向：操作先持课程锁（归档等待、操作提交后归档完成）与归档先持课程锁（操作 `409 COURSE_ARCHIVED` 且无副作用） | `integration/test_practice_races.py`（8 项） |
+| 回写与过期重试并发不 deadlock、只形成一个串行结果；旧运行令牌不得写题目或覆盖任务状态 | 同上（2 项） |
+| 领取任务不得反向锁练习行（练习行被排他锁住时仍须完成） | 同上（1 项） |
+| 回写必须等资料共享锁（资料在回写期间被删除 → `FAILED`、不留题目） | 同上（1 项） |
+| 模型开始后归档且模型失败 → `CANCELLED`；模型开始后资料被删除 → `FAILED` | 同上（2 项） |
+| 并发提交恰好一次 `201`、其余 `409 PRACTICE_ALREADY_ATTEMPTED` | 同上（1 项） |
+| 错误优先级：未认证 / 非成员 / 学生 / 归档课程 × 畸形请求体 | `integration/test_practice_validation.py`（含 6 种畸形体参数化） |
+| 严格类型：`question_count` 对 `true`/`"3"`/`3.0`/`0`/`-1`/`21` 返回 422；`0`/`1` 不得当布尔 | 同上 |
+| 发布/重试请求体：省略与 `{}` 成功，`null`/数组/数字/非法 JSON/非法 UTF-8/多余字段一律 422 且不改状态 | 同上 |
+| 提交响应 = 结果接口 = 数据库逐字段一致，明细之和严格等于总分 | 同上 |
+| 分值分配：三题全对 `33.34 + 33.33 + 33.33 = 100.00`；3/4/6/7 题与混合题型、部分得分 | `unit/test_practice_scoring.py` |
+| 上下文预算：预算小于首片段仍不超限、每份资料均有上下文、任一资料无片段即安全失败、非正预算 | `unit/test_practice_context_budget.py` |
+| AI 输出严格类型：字符串/浮点/布尔下标与数字布尔整次失败 | `unit/test_practice_generation.py` |
+
+**变异检查**（临时改回缺陷实现，确认回归能捕获，随后全部恢复）：
+
+| 变异 | 失败用例 |
+| --- | --- |
+| `lock_teacher_course` 改为不加锁的普通读 | 8 项（两个方向的课程锁用例全部失败） |
+| Worker 回写去掉资料共享锁 | 2 项（资料锁用例与"模型期间资料被删除"用例） |
+| Worker 领取改回"任务 → 练习"反向加锁 | 1 项（`test_claim_never_waits_for_the_practice_row`，以"反向加锁顺序"断言失败） |
+
+三个变异均被捕获后恢复实现，完整套件重新全绿。
+
+**运行环境提示**：本机跑套件时**不要**设置 `PYTHONIOENCODING=utf-8`——
+该变量会被 `test_upload_cleanup.py` 的子进程继承，改变其输出编码导致断言失败
+（与代码无关；已在 `origin/main` 基线复核）。
+
 ### 环境验收（本地开发库升级 + 端到端问答 + 回填）
 
 本地开发库 `edu_ai_dev` 已完成 `0004 → 0008` 升级并做了端到端验证。
@@ -594,5 +650,6 @@ $ python scripts/backfill_material_chunks.py          # 第二次（幂等）
   优雅退出（SIGINT）尚未在真实部署环境演练，本地以测试驱动同一入口验证。
 
 `0004 → 0008`（问答）与 `0008 → 0009`（练习）的升级验证、
-"全部未删除 `READY` 资料都有片段"的覆盖检查已在本地开发库完成（见上）；
+"全部未删除 `READY` 资料都有片段"的覆盖检查已在本地开发库完成（见上），
+本轮修复未新增迁移，开发库复核仍为 `0009_practice_sets` / 23 张表；
 **部署与真实模型效果在真实模型联调完成前继续标记为未验收**。

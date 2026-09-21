@@ -2328,16 +2328,6 @@
             }
           }
         ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PracticeGenerateRequest"
-              }
-            }
-          }
-        },
         "responses": {
           "202": {
             "description": "已受理，返回练习生成任务",
@@ -2406,6 +2396,16 @@
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
                 }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PracticeGenerateRequest"
               }
             }
           }
@@ -2733,16 +2733,6 @@
             }
           }
         ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PracticeAttemptSubmitRequest"
-              }
-            }
-          }
-        },
         "responses": {
           "201": {
             "description": "提交成功，返回评分结果",
@@ -2811,6 +2801,16 @@
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
                 }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PracticeAttemptSubmitRequest"
               }
             }
           }
@@ -4299,34 +4299,6 @@
         ],
         "title": "Page[PracticeSetSummarySchema]"
       },
-      "PracticeAttemptAnswerRequest": {
-        "properties": {
-          "question_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Question Id"
-          },
-          "answer": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "boolean"
-              }
-            ],
-            "title": "Answer"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "question_id",
-          "answer"
-        ],
-        "title": "PracticeAttemptAnswerRequest",
-        "description": "单题提交（契约 7.6）：单选为选项 ID、判断为布尔、简答为文本。"
-      },
       "PracticeAttemptAnswerSchema": {
         "properties": {
           "question_id": {
@@ -4452,24 +4424,6 @@
         "title": "PracticeAttemptResultSchema",
         "description": "答题结果（契约 7.7）：百分制总分保留两位小数。"
       },
-      "PracticeAttemptSubmitRequest": {
-        "properties": {
-          "answers": {
-            "items": {
-              "$ref": "#/components/schemas/PracticeAttemptAnswerRequest"
-            },
-            "type": "array",
-            "title": "Answers"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "answers"
-        ],
-        "title": "PracticeAttemptSubmitRequest",
-        "description": "提交答案请求（契约 7.6）。"
-      },
       "PracticeDifficulty": {
         "type": "string",
         "enum": [
@@ -4479,42 +4433,6 @@
         ],
         "title": "PracticeDifficulty",
         "description": "难度（契约 7.2）。"
-      },
-      "PracticeGenerateRequest": {
-        "properties": {
-          "material_ids": {
-            "items": {
-              "type": "string",
-              "format": "uuid"
-            },
-            "type": "array",
-            "title": "Material Ids"
-          },
-          "question_count": {
-            "type": "integer",
-            "title": "Question Count"
-          },
-          "question_types": {
-            "items": {
-              "$ref": "#/components/schemas/PracticeQuestionType"
-            },
-            "type": "array",
-            "title": "Question Types"
-          },
-          "difficulty": {
-            "$ref": "#/components/schemas/PracticeDifficulty"
-          }
-        },
-        "additionalProperties": false,
-        "type": "object",
-        "required": [
-          "material_ids",
-          "question_count",
-          "question_types",
-          "difficulty"
-        ],
-        "title": "PracticeGenerateRequest",
-        "description": "生成练习请求（契约 7.2）。"
       },
       "PracticeGradingPointSchema": {
         "properties": {
@@ -4985,6 +4903,88 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "PracticeAttemptAnswerRequest": {
+        "additionalProperties": false,
+        "description": "单题提交（契约 7.6）：单选为选项 ID、判断为布尔、简答为文本。\n\n类型严格：只接受 JSON 字符串或 JSON 布尔值，``0`` / ``1`` 不会被转成布尔值。",
+        "properties": {
+          "question_id": {
+            "format": "uuid",
+            "title": "Question Id",
+            "type": "string"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "title": "Answer"
+          }
+        },
+        "required": [
+          "question_id",
+          "answer"
+        ],
+        "title": "PracticeAttemptAnswerRequest",
+        "type": "object"
+      },
+      "PracticeAttemptSubmitRequest": {
+        "additionalProperties": false,
+        "description": "提交答案请求（契约 7.6）。",
+        "properties": {
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/PracticeAttemptAnswerRequest"
+            },
+            "title": "Answers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "answers"
+        ],
+        "title": "PracticeAttemptSubmitRequest",
+        "type": "object"
+      },
+      "PracticeGenerateRequest": {
+        "additionalProperties": false,
+        "description": "生成练习请求（契约 7.2）。",
+        "properties": {
+          "material_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "title": "Material Ids",
+            "type": "array"
+          },
+          "question_count": {
+            "title": "Question Count",
+            "type": "integer"
+          },
+          "question_types": {
+            "items": {
+              "$ref": "#/components/schemas/PracticeQuestionType"
+            },
+            "title": "Question Types",
+            "type": "array"
+          },
+          "difficulty": {
+            "$ref": "#/components/schemas/PracticeDifficulty"
+          }
+        },
+        "required": [
+          "material_ids",
+          "question_count",
+          "question_types",
+          "difficulty"
+        ],
+        "title": "PracticeGenerateRequest",
+        "type": "object"
       }
     },
     "securitySchemes": {
