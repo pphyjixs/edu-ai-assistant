@@ -148,10 +148,10 @@ cd backend
 
 | 层 | 数量 | 数据库 |
 | --- | --- | --- |
-| `tests/unit` | 175 | 不接触数据库与网络；外部依赖替换为 fake 或 `MockTransport` |
+| `tests/unit` | 178 | 不接触数据库与网络；外部依赖替换为 fake 或 `MockTransport` |
 | `tests/integration` | 236 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储与解析 Worker 端到端用例需配置 S3 端点 |
 | `tests/contract` | 56 | 同上（令牌格式、课程、课件上传与课程问答契约、OpenAPI 一致性） |
-| 合计 | 467 | 连真实 PostgreSQL + 对象存储时除 1 项契约允许分支外全部通过（模型为本地假 HTTP 服务） |
+| 合计 | 470 | 连真实 PostgreSQL + 对象存储时除 1 项契约允许分支外全部通过（模型为本地假 HTTP 服务） |
 
 测试库规则（见 `backend/tests/pg_support.py`）：
 
@@ -244,6 +244,7 @@ cd backend
 | 回填 `--batch-size` 拒绝非正整数（解析层与函数入口） | `unit/test_backfill_cli.py`、`integration/test_materials_backfill.py` |
 | 课程行锁与资料共享锁的阻塞关系（创建先持锁 / 归档先持锁 / 删除等待问答） | `integration/test_chat_transactions.py` |
 | 非法 UTF-8 请求体统一 422 | `integration/test_chat_api.py` |
+| 维护脚本可独立启动（子进程加载完整 ORM 元数据） | `unit/test_maintenance_scripts_metadata.py` |
 | `pg_trgm` 扩展、chat 四表、片段 GIN 索引的升级与回退 | `integration/test_migrations.py` |
 
 本次查询与清理交付验证：334 项（128 unit / 165 integration / 41 contract），
@@ -436,8 +437,102 @@ Preview 尚未验证；其他教师不能管理他人课程的判断已由课程
   移除 `lock_live_materials` 的共享锁 → 删除等待用例失败；
   基线运行全绿。以此确认测试能可靠发现锁被误删的退化。
 
-**待验收的环境步骤**（本轮未执行，部署与真实模型效果继续标记为未验收）：
+### 环境验收（本地开发库升级 + 端到端问答 + 回填）
 
-1. 在可回退环境验证从迁移 `0004` 升至 `0008`（当前开发库仍为 `0004`）；
-2. 运行完整回填并确认所有未删除 `READY` 资料都有片段；
-3. 在配置真实 Chat Completions 端点的环境验证有依据与无依据问答。
+本地开发库 `edu_ai_dev` 已完成 `0004 → 0008` 升级并做了端到端验证。
+**模型侧指向本地模拟端点（`127.0.0.1:8099`），不代表真实模型联调已验收。**
+
+**1. 迁移状态与升级日志**
+
+```
+$ python -m alembic current
+0008_chat_qa (head)
+
+$ python -m alembic upgrade head      # 已在 head，无待执行迁移
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+exit=0
+```
+
+升级后核对（`alembic_version` / 表清单 / 扩展）：
+
+| 项目 | 结果 |
+| --- | --- |
+| `alembic_version` | `0008_chat_qa` |
+| 表数量 | 17（含 `material_sections`、`material_knowledge_points`、`material_chunks`、`material_delete_todos`、`chat_sessions`、`chat_messages`、`chat_message_citations`、`chat_generation_attempts`） |
+| `pg_trgm` | 已安装 |
+| 回退点 | 库级快照 `edu_ai_dev_before_verify_backup`（`CREATE DATABASE ... TEMPLATE`，本次操作前创建） |
+
+**2. 课程问答接口端到端验证**（真实 uvicorn + 独立解析 Worker + 真实 PostgreSQL/MinIO）
+
+```
+[OK] 健康检查 /health/ready — 200
+[OK] 注册 TEACHER / STUDENT / STUDENT — 201
+[OK] 创建课程 — 201
+[OK] 学生加入课程 — 201
+[OK] 创建会话（省略请求体）— 201
+[OK] 创建会话（空对象 {}）— 201
+[OK] 创建会话（显式 null → 422）— 422
+[OK] 无资料提问 → 201 无依据 — 201 grounded=False
+[OK] 初始化上传 — 201
+[OK] 预签名直传对象 — 200
+[OK] 完成上传 — 202
+[OK] 解析 Worker 推进到 READY — status=READY
+[OK] 大纲查询 — 200
+[OK] 有依据提问 → 201 grounded + 引用 — 201 citations=1
+     引用：chapter-1.docx · DOCX_PARAGRAPH · 1-4 · section=None · quote=第一章 绪论...
+[OK] 引用指向本次上传的资料
+[OK] 无关问题 → 201 无依据 — grounded=False
+[OK] 消息列表（3 问 3 答）— total=6
+[OK] 消息顺序 USER/ASSISTANT 交替
+[OK] 会话列表 — total=2
+[OK] 最近消息时间等于末条消息时间
+[OK] 非所有者读消息 → 404
+[OK] 匿名读消息 → 401
+[OK] 非成员访问会话列表 → 404
+```
+
+该片段的定位区间（1-4）横跨两个章节，因此 `section_id` / `section_title`
+为 `null`——符合契约 6.6「跨章节或落在章节外时为 `null`」的定义。
+
+**3. 回填与片段覆盖**
+
+清空一份 `READY` 资料的片段以模拟"片段功能上线前解析的存量资料"后：
+
+```
+[coverage 回填前]     ready_materials=2 without_chunks=0
+cleared 1 chunks（模拟存量资料）
+[coverage 清空片段后] ready_materials=2 without_chunks=1
+
+$ python scripts/backfill_material_chunks.py          # 第一次
+已回填片段：1 条资料；应处理而未完成：0 条；失败：0 条；[OK] 回填完成。exit=0
+
+$ python scripts/backfill_material_chunks.py          # 第二次（幂等）
+已回填片段：0 条资料；应处理而未完成：0 条；失败：0 条；
+[OK] 没有需要回填的资料（已有片段的资料默认跳过）。exit=0
+
+[coverage 回填后]     ready_materials=2 without_chunks=0
+```
+
+**所有未删除 `READY` 资料都有检索片段**（`without_chunks=0`），重复运行不重复处理。
+
+**4. 本轮顺带修复的真实缺陷**
+
+`scripts/parse_worker.py` 只导入 materials 相关模型，`materials.course_id`
+的外键目标表 `courses` 未注册，进程启动即
+`NoReferencedTableError: could not find table 'courses'`——维护脚本无法独立启动，
+而测试进程因已加载全量模型发现不了。修复：三个维护脚本
+（`parse_worker.py`、`cleanup_deleted_materials.py`、`backfill_material_chunks.py`）
+显式导入 `app.db.registry`。回归：
+`unit/test_maintenance_scripts_metadata.py` 在**子进程**中导入每个脚本并
+`configure_mappers()`，确保它们能单独启动。
+
+**5. 尚未验收**
+
+- **真实模型联调与回答效果**：本次端到端验证使用本地模拟端点，
+  真实 Chat Completions 端点的回答质量、语言一致性仍未验收；
+- 前端展示（聊天页面、引用跳转）与练习接口（第 7 节）未交付。
+
+`0004 → 0008` 的升级验证与"全部未删除 `READY` 资料都有片段"的覆盖检查
+已在本地开发库完成（见上）；**部署与真实模型效果在真实模型联调完成前
+继续标记为未验收**。
