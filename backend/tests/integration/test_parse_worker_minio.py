@@ -27,6 +27,7 @@ from app.modules.materials import worker
 from app.storage.deps import get_storage_dep
 from app.storage.errors import StorageObjectNotFoundError
 from app.storage.s3 import S3Storage, S3StorageConfig
+from tests import pg_support
 from tests.integration.test_materials_api import build_docx, build_pptx
 
 PASSWORD = "Demo password 2026!"
@@ -479,13 +480,12 @@ def test_deletion_pipeline_removes_object_from_real_bucket(
             )
             from sqlalchemy.pool import NullPool
 
-            from app.db.session import normalize_database_url
             from app.modules.materials import service as materials_service
 
+            # 用测试框架解析出的专用测试库 URL：只配置 DATABASE_URL 时
+            # 也能拿到派生的 ``<库名>_test``，不直接依赖 TEST_DATABASE_URL。
             engine = create_async_engine(
-                normalize_database_url(
-                    os.environ["TEST_DATABASE_URL"]
-                ).url,
+                pg_support.resolve_test_database_url(),
                 poolclass=NullPool,
             )
             try:

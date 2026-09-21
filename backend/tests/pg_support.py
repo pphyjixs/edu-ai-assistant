@@ -316,8 +316,11 @@ def truncate_all_tables(engine: Engine) -> None:
     with engine.begin() as connection:
         connection.execute(
             text(
-                "TRUNCATE TABLE jobs, materials, material_upload_sessions,"
-                " login_attempts, course_members, courses,"
+                "TRUNCATE TABLE jobs, chat_generation_attempts,"
+                " chat_message_citations, chat_messages, chat_sessions,"
+                " material_chunks, material_knowledge_points,"
+                " material_sections, material_delete_todos, materials,"
+                " material_upload_sessions, login_attempts, course_members, courses,"
                 " auth_sessions, users RESTART IDENTITY CASCADE"
             )
         )

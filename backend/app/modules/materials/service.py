@@ -505,7 +505,8 @@ async def delete_material(
     → 角色（403）→ 归档（409）→ 事务内删除。
 
     事务内容：标记删除（隐藏资料）→ 取消未完成解析（任务行锁内置
-    ``CANCELLED``）→ 清空章节与知识点 → 写入对象删除待办。对象本身由
+    ``CANCELLED``）→ 清空章节与知识点 → **清空可检索片段（6.1：删除后的资料
+    不得再被检索）** → 写入对象删除待办。对象本身由
     独立维护命令在 PUT 地址过期 + 缓冲期后删除（避免晚到 PUT 重建窗口）；
     上传会话与资料行（最小删除记录）保留供审计。
     """
@@ -541,7 +542,9 @@ async def delete_material(
         raise ResourceNotFoundError()
 
     repo.mark_material_deleted(session, locked, now=now)
+    # 章节与知识点级联清空；检索片段必须一并删除，否则删除后的资料仍会被问答检索到
     await repo.delete_sections(session, material_id=locked.id)
+    await repo.delete_chunks(session, material_id=locked.id)
     repo.add_delete_todo(
         session,
         todo_id=uuid.uuid4(),

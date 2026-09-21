@@ -142,6 +142,12 @@ class AiJobFailedError(ApiError):
     code = ErrorCode.AI_JOB_FAILED
 
 
+class ChatConflictError(ApiError):
+    """会话在回答生成期间被并发修改（契约 6.1 的乐观锁冲突）。"""
+
+    code = ErrorCode.CHAT_CONFLICT
+
+
 class ValidationError(ApiError):
     """请求参数未通过校验，details 内为 ``errors`` 字段级说明。"""
 

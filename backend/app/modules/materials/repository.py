@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.materials.models import (
     Material,
+    MaterialChunk,
     MaterialDeleteStatus,
     MaterialDeleteTodo,
     MaterialKnowledgePoint,
@@ -136,6 +137,35 @@ async def get_visible_material_by_id(
         )
     )
     return result.scalar_one_or_none()
+
+
+async def lock_live_materials(
+    session: AsyncSession, *, material_ids: list[uuid.UUID]
+) -> set[uuid.UUID]:
+    """按 ID 升序对资料加**共享锁**，返回仍为 ``READY`` 且未删除的资料 ID。
+
+    问答写入事务在落库引用前调用（契约 6.1）：共享锁与删除资料的排他锁
+    互斥，因此这些资料在本次事务提交前不会被并发删除——不会出现"引用指向
+    刚被删除的资料"。查询按 ID 升序加锁，多个并发事务取锁顺序一致，避免死锁。
+
+    返回的 ID 是**锁后**读到的状态：生成期间已失效的资料不在集合中，
+    调用方据此丢弃对应引用（全部失效则按无依据回答处理）。
+    """
+    if not material_ids:
+        return set()
+    ordered_ids = sorted(set(material_ids))
+    result = await session.execute(
+        select(Material.id)
+        .where(
+            Material.id.in_(ordered_ids),
+            Material.status == MaterialStatus.READY,
+            Material.deleted_at.is_(None),
+        )
+        .order_by(Material.id)
+        .with_for_update(read=True)
+        .execution_options(populate_existing=True)
+    )
+    return set(result.scalars().all())
 
 
 async def get_visible_material_for_update(
@@ -286,6 +316,60 @@ async def delete_sections(
     """清空资料的解析产物（重试解析前全量重写）。"""
     await session.execute(
         sa_delete(MaterialSection).where(MaterialSection.material_id == material_id)
+    )
+
+
+async def delete_chunks(session: AsyncSession, *, material_id: uuid.UUID) -> None:
+    """清空资料的可检索片段（删除资料与重新发布解析产物时调用）。"""
+    await session.execute(
+        sa_delete(MaterialChunk).where(MaterialChunk.material_id == material_id)
+    )
+
+
+def add_chunk(
+    session: AsyncSession,
+    *,
+    chunk_id: uuid.UUID,
+    material_id: uuid.UUID,
+    order: int,
+    content: str,
+    location_start: int,
+    location_end: int,
+) -> MaterialChunk:
+    """暂存一个检索片段（Worker 解析成功路径）。"""
+    chunk = MaterialChunk(
+        id=chunk_id,
+        material_id=material_id,
+        order=order,
+        content=content,
+        location_start=location_start,
+        location_end=location_end,
+    )
+    session.add(chunk)
+    return chunk
+
+
+async def list_chunks(
+    session: AsyncSession, *, material_id: uuid.UUID
+) -> list[MaterialChunk]:
+    """按 order 升序取资料的检索片段。"""
+    result = await session.execute(
+        select(MaterialChunk)
+        .where(MaterialChunk.material_id == material_id)
+        .order_by(MaterialChunk.order)
+    )
+    return list(result.scalars().all())
+
+
+async def count_chunks(session: AsyncSession, *, material_id: uuid.UUID) -> int:
+    """统计资料的片段数量（验收用：重复解析不得累积）。"""
+    return int(
+        await session.scalar(
+            select(func.count())
+            .select_from(MaterialChunk)
+            .where(MaterialChunk.material_id == material_id)
+        )
+        or 0
     )
 
 

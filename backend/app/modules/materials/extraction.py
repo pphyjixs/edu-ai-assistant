@@ -13,6 +13,9 @@
 ``chunk_chars``（默认 8,000）字符，块内保留各来源位置区间；全文超过
 ``max_chars``（默认 120,000）字符时抛 :class:`ExtractLimitExceeded`——
 任务直接进入 FAILED，**不截断后宣称成功**（契约 5.5）。
+
+同一批来源单元还会切分为**检索片段**（默认 1,000 字符、相邻片段重叠
+100 字符）：它们是问答检索的单位（契约 6.1），由 Worker 与大纲一同落库。
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import io
 import re
+from dataclasses import dataclass
 
 from app.modules.materials.schemas import MaterialSectionSourceType
 
@@ -257,20 +261,158 @@ def chunk_units(
     return chunks
 
 
+# --------------------------------------------------------------------------- #
+# 检索片段（契约 6.1：问答只检索这些片段）
+# --------------------------------------------------------------------------- #
+#: 检索片段的目标长度与相邻片段的重叠长度
+DEFAULT_RETRIEVAL_CHUNK_CHARS = 1_000
+DEFAULT_RETRIEVAL_OVERLAP_CHARS = 100
+
+
+class RetrievalChunk:
+    """一个可检索的原文片段。
+
+    :ivar index: 从 1 开始的片段序号（落库即 ``order``）
+    :ivar location_start / location_end: 片段覆盖的来源位置区间（从 1 开始）
+    :ivar content: 片段原文
+    """
+
+    __slots__ = ("index", "location_start", "location_end", "content")
+
+    def __init__(
+        self,
+        *,
+        index: int,
+        location_start: int,
+        location_end: int,
+        content: str,
+    ) -> None:
+        self.index = index
+        self.location_start = location_start
+        self.location_end = location_end
+        self.content = content
+
+
+def _advance(units: list[tuple[int, str]], unit_index: int, offset: int, step: int) -> tuple[int, int]:
+    """从 ``(unit_index, offset)`` 前进 ``step`` 个字符，返回新位置。"""
+    while unit_index < len(units) and step > 0:
+        remaining = len(units[unit_index][1]) - offset
+        if step < remaining:
+            return unit_index, offset + step
+        step -= remaining
+        unit_index += 1
+        offset = 0
+    return unit_index, offset
+
+
+def chunk_units_for_retrieval(
+    units: list[tuple[int, str]],
+    *,
+    chunk_chars: int = DEFAULT_RETRIEVAL_CHUNK_CHARS,
+    overlap_chars: int = DEFAULT_RETRIEVAL_OVERLAP_CHARS,
+) -> list[RetrievalChunk]:
+    """把来源单元切分为**检索片段**：约 ``chunk_chars`` 字符、相邻片段重叠约 ``overlap_chars``。
+
+    与送给模型的 :func:`chunk_units` 不同：片段是问答检索的单位，重叠让跨
+    片段边界的语义仍然完整可检索。切分按字符推进（不按单元切分），因此单个
+    超长单元也会产生多个片段；每一步至少前进 1 个字符，保证必定收敛。
+    """
+    if chunk_chars <= 0:
+        raise ValueError("chunk_chars 必须为正整数")
+    if overlap_chars < 0 or overlap_chars >= chunk_chars:
+        raise ValueError("overlap_chars 必须小于 chunk_chars 且不为负")
+
+    chunks: list[RetrievalChunk] = []
+    start_unit = 0
+    start_offset = 0
+
+    while start_unit < len(units):
+        pieces: list[str] = []
+        #: 片段总长（含拼接用的换行）
+        length = 0
+        #: 从原文消费的字符数（不含换行），用于计算下一片段的起点
+        consumed = 0
+        unit = start_unit
+        offset = start_offset
+        end_unit = start_unit
+
+        while unit < len(units) and length < chunk_chars:
+            text = units[unit][1]
+            piece = text[offset:] if unit == start_unit else text
+            # 片段用换行拼接单元，预算里要扣掉分隔符，否则总长会略微超出目标
+            separator = 1 if pieces else 0
+            budget = chunk_chars - length - separator
+            if budget <= 0:
+                break
+            if len(piece) > budget:
+                # 超长单元同样要截断：否则整份文本会塞进一个片段
+                piece = piece[:budget]
+            if piece:
+                pieces.append(piece)
+                length += separator + len(piece)
+                consumed += len(piece)
+            end_unit = unit
+            unit += 1
+            offset = 0
+
+        content = "\n".join(pieces).strip()
+        # 剩余内容已被上一片段的重叠覆盖时停止：不再产生越来越小的尾部碎片
+        if not content or (chunks and consumed <= overlap_chars):
+            break
+
+        chunks.append(
+            RetrievalChunk(
+                index=len(chunks) + 1,
+                location_start=units[start_unit][0],
+                location_end=units[end_unit][0],
+                content=content,
+            )
+        )
+
+        # 回退 overlap_chars 个字符作为下一片段的起点（至少前进 1 个字符）
+        step = max(consumed - overlap_chars, 1)
+        start_unit, start_offset = _advance(units, start_unit, start_offset, step)
+
+    return chunks
+
+
+@dataclass(frozen=True)
+class ExtractionResult:
+    """一次提取的产物：送给模型的块 + 落库检索的片段。"""
+
+    chunks: list[TextChunk]
+    retrieval_chunks: list[RetrievalChunk]
+
+
 def extract_and_chunk(
     data: bytes,
     *,
     content_type: str,
     max_chars: int = DEFAULT_MAX_CHARS,
     chunk_chars: int = DEFAULT_CHUNK_CHARS,
-) -> list[TextChunk]:
-    """提取文本并按来源顺序分块（Worker 主入口）。"""
+    retrieval_chunk_chars: int = DEFAULT_RETRIEVAL_CHUNK_CHARS,
+    retrieval_overlap_chars: int = DEFAULT_RETRIEVAL_OVERLAP_CHARS,
+) -> ExtractionResult:
+    """提取文本并同时产出模型块与检索片段（Worker 主入口）。
+
+    全文超过 ``max_chars`` 时抛 :class:`ExtractLimitExceeded`——**不截断**，
+    也不产出任何检索片段。
+    """
     units = extract_units(data, content_type=content_type)
-    return chunk_units(
+    source_type = source_type_for(content_type)
+    model_chunks = chunk_units(
         units,
-        source_type=source_type_for(content_type),
+        source_type=source_type,
         max_chars=max_chars,
         chunk_chars=chunk_chars,
+    )
+    return ExtractionResult(
+        chunks=model_chunks,
+        retrieval_chunks=chunk_units_for_retrieval(
+            units,
+            chunk_chars=retrieval_chunk_chars,
+            overlap_chars=retrieval_overlap_chars,
+        ),
     )
 
 
