@@ -439,13 +439,20 @@ def _is_retryable(job, *, now: datetime) -> bool:
 async def lock_retryable_job(
     session: AsyncSession, *, user: User, job_id: uuid.UUID, now: datetime | None = None
 ) -> RetryTarget:
-    """重试的前置阶段（契约 10.1）：读任务 → 锁课程 → 创建教师 → 未归档
-    → 锁练习 → 锁任务 → 可重试检查。
+    """重试的前置阶段（契约 10.1）。
 
-    锁顺序固定为 **课程 → 练习 → 任务**（与 Worker 回写、写接口一致），
-    不再使用 "任务 → 练习" 的反向顺序。
+    检查顺序固定为 **任务存在 → 关联资源可见性 → 角色 → 课程归档 → 类型/状态**，
+    与契约 7.1 / 10.1 一致：类型分流（如"资料重试改走资料接口"）排在权限与归档
+    之后，因此**非成员不能借重试接口探测任务是否存在或其类型**。
 
-    :raises ResourceNotFoundError: 任务/练习不存在、类型未实现（404）。
+    - ``PRACTICE_GENERATE``：锁顺序固定为 **课程 → 练习 → 任务**，可重试检查
+      在持有任务行锁时完成；
+    - ``MATERIAL_PARSE``：先按关联资料做成员可见性（404）→ 创建教师（403）→
+      未归档（409），最后才返回 ``409 JOB_NOT_RETRYABLE``（资料重试经由
+      ``POST /materials/{material_id}/parse``，契约 5.3）；
+    - ``SUBMISSION_GRADE``：资源类型未实现，统一按不可见处理（404）。
+
+    :raises ResourceNotFoundError: 任务/关联资源不存在或不可见（404）。
     :raises RoleForbiddenError / CourseForbiddenError: 非创建教师（403）。
     :raises CourseArchivedError: 课程已归档（409）。
     :raises JobNotRetryableError: 状态不可重试（409）。
@@ -457,11 +464,14 @@ async def lock_retryable_job(
     job = await jobs_repo.get_job_by_id(session, job_id)
     if job is None:
         raise ResourceNotFoundError()
+
     if job.type is JobType.SUBMISSION_GRADE:
-        # 资源未实现：统一按不可见处理
+        # 资源类型未实现：统一按不可见处理
         raise ResourceNotFoundError()
-    if job.type is not JobType.PRACTICE_GENERATE:
-        # 资料解析的重试一律经由 POST /materials/{material_id}/parse（契约 5.3）
+
+    if job.type is JobType.MATERIAL_PARSE:
+        # 关联资源是资料：先做可见性 → 角色 → 归档，再按类型分流（避免暴露任务存在性）
+        await _require_material_member_for_retry(session, user=user, material_id=job.resource_id)
         raise JobNotRetryableError()
 
     practice_set = await repo.get_set_by_id(session, job.resource_id)
@@ -479,6 +489,23 @@ async def lock_retryable_job(
     if not _is_retryable(locked_job, now=now or utc_now()):
         raise JobNotRetryableError()
     return RetryTarget(job=locked_job, practice_set=locked_set)
+
+
+async def _require_material_member_for_retry(
+    session: AsyncSession, *, user: User, material_id: uuid.UUID
+) -> None:
+    """资料任务的可见性 → 角色 → 归档检查（供重试接口复用，契约 10.1）。
+
+    顺序与 :func:`lock_teacher_course` 一致：资料（含已删除）不可见或非成员
+    统一 404；学生 403 ``ROLE_FORBIDDEN``、非创建教师 403 ``COURSE_FORBIDDEN``；
+    课程已归档 409 ``COURSE_ARCHIVED``。
+    """
+    from app.modules.materials import service as materials_service
+
+    material = await materials_service.get_material_for_member(
+        session, user=user, material_id=material_id
+    )
+    await lock_teacher_course(session, user=user, course_id=material.course_id)
 
 
 async def retry_practice_generate_job(
