@@ -36,6 +36,12 @@ class ErrorCode(str, Enum):
     AI_JOB_FAILED = "AI_JOB_FAILED"
     #: 会话在回答生成期间被并发修改，本次发送未写入（问答接口，契约 6.1）
     CHAT_CONFLICT = "CHAT_CONFLICT"
+    #: 练习尚未生成成功（发布非 DRAFT、提交未发布练习，契约 7.5 / 7.6）
+    PRACTICE_NOT_READY = "PRACTICE_NOT_READY"
+    #: 同一学生对同一练习重复提交（契约 7.6）
+    PRACTICE_ALREADY_ATTEMPTED = "PRACTICE_ALREADY_ATTEMPTED"
+    #: 任务当前状态不可重试（契约 10.1）
+    JOB_NOT_RETRYABLE = "JOB_NOT_RETRYABLE"
 
     # ---------------------------- 框架层错误码 ----------------------------
     #: 请求体或查询参数未通过 Pydantic 校验
@@ -67,6 +73,9 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.GRADE_NOT_REVIEWED: "尚未完成教师复核，不能发布",
     ErrorCode.AI_JOB_FAILED: "AI 或解析任务执行失败",
     ErrorCode.CHAT_CONFLICT: "会话已被更新，请重新发送",
+    ErrorCode.PRACTICE_NOT_READY: "练习尚未生成完成，暂时无法执行该操作",
+    ErrorCode.PRACTICE_ALREADY_ATTEMPTED: "你已经提交过这套练习",
+    ErrorCode.JOB_NOT_RETRYABLE: "该任务当前不可重试",
     ErrorCode.VALIDATION_ERROR: "请求参数不合法",
     ErrorCode.METHOD_NOT_ALLOWED: "请求方法不被支持",
     ErrorCode.INTERNAL_ERROR: "服务内部错误，请稍后重试",
@@ -93,6 +102,9 @@ DEFAULT_STATUS_CODES: dict[ErrorCode, int] = {
     ErrorCode.GRADE_NOT_REVIEWED: 409,
     ErrorCode.AI_JOB_FAILED: 502,
     ErrorCode.CHAT_CONFLICT: 409,
+    ErrorCode.PRACTICE_NOT_READY: 409,
+    ErrorCode.PRACTICE_ALREADY_ATTEMPTED: 409,
+    ErrorCode.JOB_NOT_RETRYABLE: 409,
     ErrorCode.VALIDATION_ERROR: 422,
     ErrorCode.METHOD_NOT_ALLOWED: 405,
     ErrorCode.INTERNAL_ERROR: 500,
