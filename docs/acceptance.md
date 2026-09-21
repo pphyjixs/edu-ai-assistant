@@ -148,10 +148,10 @@ cd backend
 
 | 层 | 数量 | 数据库 |
 | --- | --- | --- |
-| `tests/unit` | 167 | 不接触数据库与网络；外部依赖替换为 fake 或 `MockTransport` |
-| `tests/integration` | 232 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储与解析 Worker 端到端用例需配置 S3 端点 |
+| `tests/unit` | 175 | 不接触数据库与网络；外部依赖替换为 fake 或 `MockTransport` |
+| `tests/integration` | 236 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储与解析 Worker 端到端用例需配置 S3 端点 |
 | `tests/contract` | 56 | 同上（令牌格式、课程、课件上传与课程问答契约、OpenAPI 一致性） |
-| 合计 | 455 | 连真实 PostgreSQL + 对象存储时除 1 项契约允许分支外全部通过（模型为本地假 HTTP 服务） |
+| 合计 | 467 | 连真实 PostgreSQL + 对象存储时除 1 项契约允许分支外全部通过（模型为本地假 HTTP 服务） |
 
 测试库规则（见 `backend/tests/pg_support.py`）：
 
@@ -241,6 +241,9 @@ cd backend
 | 问答事务边界：模型调用无活动事务、生成中归档 409、引用资料并发删除降级 | `integration/test_chat_transactions.py` |
 | 创建会话与归档并发一致性、请求体省略/`{}`/显式 `null`/多余字段 | `integration/test_chat_transactions.py`、`integration/test_chat_api.py` |
 | 创建会话请求体为可选对象（非 nullable）、模型失败状态码声明 | `contract/test_chat_contract.py` |
+| 回填 `--batch-size` 拒绝非正整数（解析层与函数入口） | `unit/test_backfill_cli.py`、`integration/test_materials_backfill.py` |
+| 课程行锁与资料共享锁的阻塞关系（创建先持锁 / 归档先持锁 / 删除等待问答） | `integration/test_chat_transactions.py` |
+| 非法 UTF-8 请求体统一 422 | `integration/test_chat_api.py` |
 | `pg_trgm` 扩展、chat 四表、片段 GIN 索引的升级与回退 | `integration/test_migrations.py` |
 
 本次查询与清理交付验证：334 项（128 unit / 165 integration / 41 contract），
@@ -325,8 +328,8 @@ Preview 尚未验证；其他教师不能管理他人课程的判断已由课程
 因此测试反过来断言服务端不通过 Cookie 下发令牌，不假设也不约束前端的存储方式。
 
 课程问答（契约第 6 节 / 迁移 `0008_chat_qa`）交付与修复后验证，独立测试库
-`edu_ai_chat_verify_test` + MinIO 测试桶 `edu-ai-test`：**455 项收集，
-454 通过、1 跳过、0 失败**（unit 167 / contract 56 / integration 232）。
+`edu_ai_chat_verify_test` + MinIO 测试桶 `edu-ai-test`：**467 项收集，
+466 通过、1 跳过、0 失败**（unit 175 / contract 56 / integration 236）。
 唯一跳过是 `integration/test_storage_minio.py:289` 的契约允许分支
 （S3 实现未校验 `X-Amz-Expires`，该分支不适用），**不是**因缺少数据库或
 对象存储依赖而跳过；PostgreSQL 与对象存储相关用例全部真实执行。
@@ -406,6 +409,32 @@ Preview 尚未验证；其他教师不能管理他人课程的判断已由课程
 （`该 S3 实现未校验 X-Amz-Expires，需在 MinIO/AWS S3 环境验证`），
 **不是**因缺少数据库或对象存储依赖而跳过；PostgreSQL 与对象存储相关用例
 全部真实执行，运行后 `pg_database` 无残留。
+
+### P2 复审修复
+
+- **回填批量参数校验**：`--batch-size` 只接受正整数（CLI 用
+  `argparse.ArgumentTypeError` 直接拒绝，退出码 2），回填函数入口同样以
+  `ValueError` 拒绝 `batch_size <= 0`。此前 `0` 会产生 `LIMIT 0`、
+  把"没有候选"与"批量非法"混为一谈并输出成功文案，现在不会再发生。
+  回归：`unit/test_backfill_cli.py`（参数解析与默认值）、
+  `integration/test_materials_backfill.py::test_backfill_rejects_non_positive_batch_size`
+  （非法参数不产生副作用、合法参数仍能回填）。
+- **非法 UTF-8 请求体**：创建会话的请求体校验同时捕获
+  `UnicodeDecodeError`，字节级非法编码统一转为 `422 VALIDATION_ERROR`，
+  不再落到通用 `500`。回归：
+  `integration/test_chat_api.py::test_create_session_request_body_variants`
+  追加 `b"\xff\xfe\x00\x80"` 字节用例。
+- **并发测试改为事件同步并验证锁阻塞**：生成期间归档/删除的用例改用
+  `threading.Event` 门控模型（确认模型已开始 → 执行归档/删除 → 提交后
+  才放行），不再依赖固定 `sleep`；新增
+  `test_delete_waits_for_question_shared_lock`（问答持有资料共享锁时删除必须
+  等待）、`test_create_session_holds_course_lock_before_archive` 与
+  `test_archive_holds_course_lock_before_create`（两个方向的课程行锁等待与
+  最终结果）。断言方式为"在锁被持有时拿到锁应当超时"，而不是"任务尚未完成"。
+- **变异检查**（临时移除锁后运行上述用例，随后立即恢复源文件、不留改动）：
+  移除 `lock_member_course` 的课程行锁 → 两个方向性用例失败；
+  移除 `lock_live_materials` 的共享锁 → 删除等待用例失败；
+  基线运行全绿。以此确认测试能可靠发现锁被误删的退化。
 
 **待验收的环境步骤**（本轮未执行，部署与真实模型效果继续标记为未验收）：
 

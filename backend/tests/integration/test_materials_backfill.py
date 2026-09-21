@@ -503,3 +503,35 @@ def test_backfill_force_visits_every_candidate_once(
     # 原本缺片段的资料：force 模式同样补齐
     for mid in extra_ids:
         assert _chunk_rows(pg_sync_engine, mid), "force 模式下每条候选都应有片段"
+
+
+def test_backfill_rejects_non_positive_batch_size(
+    client,
+    fake_storage,
+    pg_session_factory,
+    make_settings,
+    pg_sync_engine,
+) -> None:
+    """``batch_size <= 0`` 必须报错，而不是漏掉候选后报告成功。"""
+    _, _, material_id = _create_course_with_material(
+        client,
+        fake_storage,
+        pg_session_factory,
+        make_settings,
+        email="backfill-bad-batch@example.com",
+    )
+    _drop_chunks(pg_sync_engine, material_id)
+
+    for bad_batch in (0, -1):
+        with pytest.raises(ValueError):
+            _run_backfill(
+                pg_session_factory, fake_storage, make_settings, batch_size=bad_batch
+            )
+
+    # 非法参数不产生任何副作用：资料仍缺片段，等待一次合法运行
+    assert _chunk_rows(pg_sync_engine, material_id) == []
+
+    # 合法参数仍然能正常回填（确认上面失败不是环境问题）
+    report = _run_backfill(pg_session_factory, fake_storage, make_settings)
+    assert report.filled == 1
+    assert _chunk_rows(pg_sync_engine, material_id)

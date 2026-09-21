@@ -256,6 +256,15 @@ def test_create_session_request_body_variants(
     extra_field = client.post(url, json={"title": "x"}, headers=_auth(teacher))
     assert extra_field.status_code == 422
 
+    # 非法 UTF-8 字节序列：解码失败同样是请求体问题，必须 422 而不是 500
+    invalid_encoding = client.post(
+        url,
+        content=b"\xff\xfe\x00\x80",
+        headers={**_auth(teacher), "Content-Type": "application/json"},
+    )
+    assert invalid_encoding.status_code == 422
+    assert invalid_encoding.json()["error"]["code"] == "VALIDATION_ERROR"
+
     # OpenAPI 与实现一致：请求体是**可选对象**（省略合法、显式 null 不合法）
     openapi = client.app.openapi()
     request_body = openapi["paths"][SESSIONS_URL]["post"]["requestBody"]
