@@ -18,8 +18,9 @@ API 进程只负责创建任务，解析一律由本 Worker 完成。
    超限直接 FAILED，不截断后宣称成功；扫描版 PDF 明确失败，不做 OCR）；
 3. 调用 Chat Completions 兼容端点生成章节与知识点（Pydantic 校验、
    原文摘录必须在来源文本中找到、同原文主要语言）；
-4. 全部结果准备好后**一次事务**发布章节、知识点、资料 ``READY`` 与
-   任务 ``SUCCEEDED``；失败只保存安全错误说明。
+4. 全部结果准备好后**一次事务**发布章节、知识点、**可检索原文片段**（先清后写，
+   重复解析不会累积）、资料 ``READY`` 与任务 ``SUCCEEDED``；失败只保存安全
+   错误说明，不写入任何片段。
 
 领取、心跳与回写使用 async 会话（``NullPool`` 场景连接不绑定循环）；
 下载、提取与模型调用在线程池中执行。所有错误都不会向外抛出：
@@ -173,6 +174,7 @@ async def _write_success(
     *,
     material: Material,
     outline: outline_ai.GeneratedOutline,
+    retrieval_chunks: list[extraction.RetrievalChunk],
     run_token: str,
     now: datetime,
 ) -> bool:
@@ -206,8 +208,20 @@ async def _write_success(
         logger.info("运行令牌不匹配或任务已非 RUNNING，放弃回写结果（material_id=%s）", material_id)
         return False
 
-    # 全量重写解析产物：重试场景下清掉上一次（未成功）的残留
+    # 全量重写解析产物：章节、知识点与检索片段都在同一事务内先清后写，
+    # 因此重复解析不会产生重复片段，旧执行者的中途结果也不会残留半份。
     await repo.delete_sections(session, material_id=material_id)
+    await repo.delete_chunks(session, material_id=material_id)
+    for chunk in retrieval_chunks:
+        repo.add_chunk(
+            session,
+            chunk_id=uuid.uuid4(),
+            material_id=material_id,
+            order=chunk.index,
+            content=chunk.content,
+            location_start=chunk.location_start,
+            location_end=chunk.location_end,
+        )
     # 两表之间没有 relationship，unit of work 不保证插入顺序：
     # 先写章节并 flush，知识点的外键才有可引用的行
     section_ids: list[uuid.UUID] = []
@@ -365,7 +379,7 @@ async def run_job(
             return
 
         try:
-            chunks = await asyncio.to_thread(
+            extracted = await asyncio.to_thread(
                 extraction.extract_and_chunk,
                 data,
                 content_type=material.content_type,
@@ -391,7 +405,7 @@ async def run_job(
         try:
             outline = await asyncio.to_thread(
                 outline_ai.generate_outline,
-                chunks,
+                extracted.chunks,
                 base_url=settings.ai_base_url,
                 api_key=settings.ai_api_key,
                 model=settings.ai_model,
@@ -419,6 +433,7 @@ async def run_job(
                 session,
                 material=fresh_material,
                 outline=outline,
+                retrieval_chunks=extracted.retrieval_chunks,
                 run_token=run_token,
                 now=utc_now(),
             )

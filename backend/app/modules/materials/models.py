@@ -1,6 +1,6 @@
 """Materials 模块 ORM 模型。
 
-四张表承载 ``docs/api-contract.md`` 第 4、5 节的课件上传协议与解析产物：
+五张表承载 ``docs/api-contract.md`` 第 4、5 节的课件上传协议与解析产物：
 
 - ``material_upload_sessions``：上传会话。保存课程、发起教师、**随机对象键**、
   预期大小、类型、哈希、两个期限（PUT 地址到期 / 确认截止）与完成结果
@@ -11,6 +11,8 @@
   ``deleted_at`` 是契约 5.2 的标记删除列。
 - ``material_sections`` / ``material_knowledge_points``：解析产物（契约 5.4），
   由 Worker 在解析成功时一次性写入。
+- ``material_chunks``：可检索的原文片段（契约 5.5 / 6.1），保存原文、顺序与
+  来源定位；问答检索只在这些片段上进行，删除资料时一并清空。
 - 解析任务不在本模块建表：统一落在 ``jobs`` 表（``app.modules.jobs``），
   由 ``(type, resource_id)`` 唯一约束保证一条资料只有一个 ``MATERIAL_PARSE`` 任务。
 
@@ -32,6 +34,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     func,
 )
@@ -381,6 +384,63 @@ class MaterialKnowledgePoint(Base):
 
     def __repr__(self) -> str:  # pragma: no cover - 仅用于调试
         return f"<MaterialKnowledgePoint id={self.id} order={self.order}>"
+
+
+class MaterialChunk(Base):
+    """可检索的原文片段（契约 5.5 / 6.1）。
+
+    问答检索只在这些片段上进行：保存资料、原文、顺序与来源定位。
+    片段由解析 Worker 在**成功回写的同一事务**内全量重写，因此解析失败、
+    旧执行者回写与重复解析都不会留下重复或半份片段。
+
+    定位单位由资料的 ``content_type`` 决定（PDF 页码 / PPTX 幻灯片号 /
+    DOCX 段落序号，均从 1 开始），与 :class:`MaterialSection` 一致，
+    因此引用可以把片段映射回章节（契约 6.6）。
+    """
+
+    __tablename__ = "material_chunks"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+
+    material_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "materials.id",
+            ondelete="CASCADE",
+            name="fk_material_chunks_material_id_materials",
+        ),
+        nullable=False,
+    )
+
+    #: 片段顺序，从 1 开始且在同一资料内连续
+    order: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    #: 片段原文；相邻片段之间有重叠，保证跨片段的语义不被切断
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+
+    location_start: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    location_end: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, nullable=False, default=utc_now, server_default=func.now()
+    )
+
+    __table_args__ = (
+        # 全量重写 + 唯一约束：重复解析不会累积片段
+        UniqueConstraint("material_id", "order", name="uq_material_chunks_material_order"),
+        Index("ix_material_chunks_material_id", "material_id"),
+        # 问答检索（契约 6.1）：pg_trgm 的 GIN 索引支撑相似度与 ILIKE 查询
+        Index(
+            "ix_material_chunks_content_trgm",
+            "content",
+            postgresql_using="gin",
+            postgresql_ops={"content": "gin_trgm_ops"},
+        ),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - 仅用于调试
+        return f"<MaterialChunk id={self.id} order={self.order}>"
 
 
 class MaterialDeleteStatus(str, enum.Enum):

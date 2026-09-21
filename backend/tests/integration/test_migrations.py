@@ -32,6 +32,14 @@ EXPECTED_TABLES = {
     "jobs",
     "material_upload_sessions",
     "materials",
+    "material_sections",
+    "material_knowledge_points",
+    "material_chunks",
+    "material_delete_todos",
+    "chat_sessions",
+    "chat_messages",
+    "chat_message_citations",
+    "chat_generation_attempts",
 }
 
 #: 迁移引入的原生枚举类型，回滚时必须全部清理
@@ -43,12 +51,15 @@ EXPECTED_ENUMS: dict[str, list[str]] = {
     "job_status": ["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"],
     "job_resource_type": ["MATERIAL", "PRACTICE_SET", "SUBMISSION"],
     "material_status": ["UPLOADING", "UPLOADED", "PROCESSING", "READY", "FAILED"],
+    "material_delete_todo_status": ["PENDING", "DONE"],
+    "chat_message_role": ["USER", "ASSISTANT"],
+    "chat_attempt_status": ["SUCCEEDED", "FAILED"],
 }
 
 COMPARE_OPTIONS = {"compare_type": True, "compare_server_default": True}
 
 #: head 对应的最新迁移
-REVISION = "0006_deletion_pipeline"
+REVISION = "0008_chat_qa"
 
 
 @pytest.fixture(scope="module")

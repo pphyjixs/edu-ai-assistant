@@ -1579,6 +1579,15 @@ def test_retry_revokes_stale_worker_write_back(
                 session,
                 material=material,
                 outline=old_outline,
+                # 旧执行者连检索片段一起带回：必须同样被拒绝（契约 6.1）
+                retrieval_chunks=[
+                    worker.extraction.RetrievalChunk(
+                        index=1,
+                        location_start=1,
+                        location_end=1,
+                        content="旧执行者的片段，不应落库。",
+                    )
+                ],
                 run_token=stale_token,
                 now=utc_now(),
             )
@@ -1612,7 +1621,16 @@ def test_retry_revokes_stale_worker_write_back(
             ),
             {"id": material_id},
         ).scalar_one()
+        chunk_count = connection.execute(
+            text(
+                "SELECT count(*) FROM material_chunks "
+                "WHERE material_id = CAST(:id AS uuid)"
+            ),
+            {"id": material_id},
+        ).scalar_one()
     assert section_count == 0
+    # 旧执行者的片段同样不得出现
+    assert chunk_count == 0
 
     # 新 Worker 领取：新令牌（与旧令牌不同）、原 job ID 不变，并正常完成
     ai_factory = _fake_model_client(
@@ -1637,3 +1655,157 @@ def test_retry_revokes_stale_worker_write_back(
     assert token is not None
     assert token != stale_token
     assert job["progress"] == 100
+
+
+# --------------------------------------------------------------------------- #
+# 可检索原文片段（契约 6.1）：解析成功落库、失败不落库、重复解析不累积、删除即清空
+# --------------------------------------------------------------------------- #
+def _chunk_rows(pg_sync_engine: Engine, material_id: str) -> list[dict]:
+    with pg_sync_engine.connect() as connection:
+        rows = (
+            connection.execute(
+                text(
+                    'SELECT "order", content, location_start, location_end'
+                    " FROM material_chunks WHERE material_id = CAST(:id AS uuid)"
+                    ' ORDER BY "order"'
+                ),
+                {"id": material_id},
+            )
+            .mappings()
+            .all()
+        )
+    return [dict(row) for row in rows]
+
+
+def _material_id_after_upload(
+    client: TestClient, fake_storage: FakeStorage, *, email: str = "chunks@example.com"
+) -> tuple[str, str]:
+    """注册教师、建课程并上传一份可解析资料，返回 ``(资料 ID, 令牌)``。"""
+    _register(client, email, "TEACHER")
+    teacher = _login(client, email)
+    course_id = _create_course(client, teacher)
+    completed = _upload(client, fake_storage, teacher, course_id)
+    return completed["material"]["id"], teacher
+
+
+def test_worker_persists_retrieval_chunks(
+    client: TestClient,
+    fake_storage: FakeStorage,
+    pg_sync_engine: Engine,
+    pg_session_factory,
+    make_settings,
+) -> None:
+    """解析成功：片段与大纲一同落库，顺序连续且定位合法。"""
+    material_id, _ = _material_id_after_upload(client, fake_storage)
+    ai_factory = _fake_model_client(
+        lambda request: _model_json_response(VALID_OUTLINE_PAYLOAD)
+    )
+
+    assert (
+        _drive_worker(pg_session_factory, fake_storage, make_settings, ai_factory)
+        == 1
+    )
+    assert client.get(
+        f"/api/v1/materials/{material_id}", headers=_auth(_login(client, "chunks@example.com"))
+    ).json()["status"] == "READY"
+
+    rows = _chunk_rows(pg_sync_engine, material_id)
+    assert rows, "解析成功必须落库可检索片段"
+    assert [row["order"] for row in rows] == list(range(1, len(rows) + 1))
+    for row in rows:
+        assert row["content"].strip()
+        assert 1 <= row["location_start"] <= row["location_end"]
+
+    # 原文必须可检索：正文句子出现在某个片段中
+    joined = "\n".join(row["content"] for row in rows)
+    assert "软件工程是应用系统化的方法。" in joined
+    assert "需求分析是软件生命周期的起点。" in joined
+
+
+def test_repeated_parse_does_not_duplicate_chunks(
+    client: TestClient,
+    fake_storage: FakeStorage,
+    pg_sync_engine: Engine,
+    pg_session_factory,
+    make_settings,
+) -> None:
+    """重复解析：片段全量重写，数量不翻倍（契约 5.5）。"""
+    material_id, teacher = _material_id_after_upload(client, fake_storage)
+    ai_factory = _fake_model_client(
+        lambda request: _model_json_response(VALID_OUTLINE_PAYLOAD)
+    )
+
+    assert _drive_worker(pg_session_factory, fake_storage, make_settings, ai_factory) == 1
+    first = _chunk_rows(pg_sync_engine, material_id)
+    assert first
+
+    # 队列已空：再驱动一次不会新增任何片段
+    assert _drive_worker(pg_session_factory, fake_storage, make_settings, ai_factory) == 0
+    assert _chunk_rows(pg_sync_engine, material_id) == first
+
+    # 强制把任务重置为 PENDING（等价于一次重试）后再解析：仍然是同一批片段
+    with pg_sync_engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE jobs SET status='PENDING', run_token=NULL,"
+                " lease_expires_at=NULL, started_at=NULL, finished_at=NULL,"
+                " progress=0, error=NULL WHERE id = ("
+                " SELECT id FROM jobs WHERE resource_id = CAST(:id AS uuid))"
+            ),
+            {"id": material_id},
+        )
+    assert _drive_worker(pg_session_factory, fake_storage, make_settings, ai_factory) == 1
+    second = _chunk_rows(pg_sync_engine, material_id)
+    assert len(second) == len(first)
+    assert [row["content"] for row in second] == [row["content"] for row in first]
+
+
+def test_failed_parse_persists_no_chunks(
+    client: TestClient,
+    fake_storage: FakeStorage,
+    pg_sync_engine: Engine,
+    pg_session_factory,
+    make_settings,
+) -> None:
+    """解析失败：不落库任何片段（也不产生可见的错误响应体之外的影响）。"""
+    _register(client, "badfile@example.com", "TEACHER")
+    teacher = _login(client, "badfile@example.com")
+    course_id = _create_course(client, teacher)
+    completed = _upload(
+        client,
+        fake_storage,
+        teacher,
+        course_id,
+        filename="broken.docx",
+        content_type=DOCX_MIME,
+        content=UNPARSEABLE_DOCX,
+    )
+    material_id = completed["material"]["id"]
+
+    assert (
+        _drive_worker(pg_session_factory, fake_storage, make_settings, None) == 1
+    )
+    detail = client.get(f"/api/v1/materials/{material_id}", headers=_auth(teacher))
+    assert detail.json()["status"] == "FAILED"
+    assert _chunk_rows(pg_sync_engine, material_id) == []
+
+
+def test_deleting_material_removes_chunks(
+    client: TestClient,
+    fake_storage: FakeStorage,
+    pg_sync_engine: Engine,
+    pg_session_factory,
+    make_settings,
+) -> None:
+    """删除资料后片段不得再被检索（契约 5.2 / 6.1）。"""
+    material_id, teacher = _material_id_after_upload(client, fake_storage)
+    ai_factory = _fake_model_client(
+        lambda request: _model_json_response(VALID_OUTLINE_PAYLOAD)
+    )
+    assert _drive_worker(pg_session_factory, fake_storage, make_settings, ai_factory) == 1
+    assert _chunk_rows(pg_sync_engine, material_id)
+
+    deleted = client.delete(f"/api/v1/materials/{material_id}", headers=_auth(teacher))
+    assert deleted.status_code == 204, deleted.text
+
+    assert _chunk_rows(pg_sync_engine, material_id) == []
