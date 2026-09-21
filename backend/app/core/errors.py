@@ -148,6 +148,24 @@ class ChatConflictError(ApiError):
     code = ErrorCode.CHAT_CONFLICT
 
 
+class PracticeNotReadyError(ApiError):
+    """练习尚未生成成功（发布或提交时的状态分流，契约 7.5 / 7.6）。"""
+
+    code = ErrorCode.PRACTICE_NOT_READY
+
+
+class PracticeAlreadyAttemptedError(ApiError):
+    """同一学生对同一练习重复提交（契约 7.6）。"""
+
+    code = ErrorCode.PRACTICE_ALREADY_ATTEMPTED
+
+
+class JobNotRetryableError(ApiError):
+    """任务当前状态不可重试（契约 10.1）。"""
+
+    code = ErrorCode.JOB_NOT_RETRYABLE
+
+
 class ValidationError(ApiError):
     """请求参数未通过校验，details 内为 ``errors`` 字段级说明。"""
 

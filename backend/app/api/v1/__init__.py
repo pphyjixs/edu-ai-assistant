@@ -33,6 +33,7 @@ from app.modules.chat.router import chat_router
 from app.modules.courses.router import courses_router
 from app.modules.jobs.router import jobs_router
 from app.modules.materials.router import materials_router
+from app.modules.practice.router import practice_router
 
 #: v1 路由聚合器；业务模块实现后在此 include_router。
 api_router = APIRouter()
@@ -49,6 +50,9 @@ api_router.include_router(materials_router)
 
 # -------------------------------- chat --------------------------------
 api_router.include_router(chat_router)
+
+# ------------------------------ practice ------------------------------
+api_router.include_router(practice_router)
 
 # -------------------------------- jobs -------------------------------
 api_router.include_router(jobs_router)

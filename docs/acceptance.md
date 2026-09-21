@@ -62,9 +62,9 @@
 - [x] 回答基于该课程已就绪资料，不跨课程泄漏内容。（检索 SQL 限定课程 ID、资料未删除且 `READY`；`integration/test_chat_scope.py` 断言提示词只含本课程 `READY` 资料的片段——跨课程、`PROCESSING` 与已删除资料的原文都不出现）
 - [ ] 有依据的回答展示至少一个可点击引用。（**后端已交付**：`grounded=true` 时引用含资料 ID/名称、命中章节（无法匹配为 `null`）、来源类型、从 1 开始的位置与已校验的原文摘录；**前端引用跳转尚未接入**）
 - [ ] 资料不足时回答明确提示“课程资料中未找到依据”。（**后端已交付**：无 `READY` 资料或检索不到内容、以及模型引用全部校验失败时，固定返回该文案 + `grounded=false` + 空引用，仍是 `201`；**前端展示尚未验收**）
-- [ ] 教师可生成包含指定数量和题型的练习。（**练习模块尚未交付**，第一版只交付后端问答能力）
-- [ ] 学生提交练习后看到得分、答案和解析。（**练习模块尚未交付**）
-- [ ] 练习和问答在刷新页面后仍可查看。（问答**后端已交付**：会话、消息、引用与生成尝试持久化，`integration/test_chat_api.py` 断言重新查询后一问一答与引用完整一致；练习尚未交付）
+- [ ] 教师可生成包含指定数量和题型的练习。（**后端已交付**：`POST /courses/{id}/practice-sets/generate` 受理 1–10 份资料、1–20 道题与指定题型，返回 `202` 生成任务；题型配额由服务端按顺序均衡分配并在 Worker 回写前复核。`integration/test_practice_api.py` 覆盖生成→出题→发布全链路；**前端生成入口尚未接入**）
+- [ ] 学生提交练习后看到得分、答案和解析。（**后端已交付**：一次提交、三种题型评分、百分制两位小数，结果含每题提交答案、是否完全正确、得分、标准答案与解析；`integration/test_practice_api.py` 断言满分提交得 `100.0`、重复提交 `409 PRACTICE_ALREADY_ATTEMPTED`、学生详情不含答案、结果仅本人与创建教师可读；**前端答题与结果页尚未接入**）
+- [ ] 练习和问答在刷新页面后仍可查看。（**后端已交付**：问答的会话/消息/引用/尝试记录与练习的题目/答题记录/生成尝试均持久化，测试断言重新查询后逐字段一致；**前端展示尚未验收**）
 
 ## 6. Assignments 验收
 
@@ -148,10 +148,10 @@ cd backend
 
 | 层 | 数量 | 数据库 |
 | --- | --- | --- |
-| `tests/unit` | 175 | 不接触数据库与网络；外部依赖替换为 fake 或 `MockTransport` |
-| `tests/integration` | 236 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储与解析 Worker 端到端用例需配置 S3 端点 |
-| `tests/contract` | 56 | 同上（令牌格式、课程、课件上传与课程问答契约、OpenAPI 一致性） |
-| 合计 | 467 | 连真实 PostgreSQL + 对象存储时除 1 项契约允许分支外全部通过（模型为本地假 HTTP 服务） |
+| `tests/unit` | 219 | 不接触数据库与网络；外部依赖替换为 fake 或 `MockTransport` |
+| `tests/integration` | 246 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储与解析 Worker 端到端用例需配置 S3 端点 |
+| `tests/contract` | 69 | 同上（令牌格式、课程、课件上传、课程问答与课程练习契约、OpenAPI 一致性） |
+| 合计 | 534 | 连真实 PostgreSQL + 对象存储时除 1 项契约允许分支外全部通过（模型为本地假 HTTP 服务） |
 
 测试库规则（见 `backend/tests/pg_support.py`）：
 
@@ -244,6 +244,13 @@ cd backend
 | 回填 `--batch-size` 拒绝非正整数（解析层与函数入口） | `unit/test_backfill_cli.py`、`integration/test_materials_backfill.py` |
 | 课程行锁与资料共享锁的阻塞关系（创建先持锁 / 归档先持锁 / 删除等待问答） | `integration/test_chat_transactions.py` |
 | 非法 UTF-8 请求体统一 422 | `integration/test_chat_api.py` |
+| 维护脚本可独立启动（子进程加载完整 ORM 元数据） | `unit/test_maintenance_scripts_metadata.py` |
+| 练习请求校验与模型输出约束（配额、选项、要点、来源摘录） | `unit/test_practice_generation.py` |
+| 练习题型配额、文本规范化与三种题型评分、分数舍入 | `unit/test_practice_scoring.py` |
+| 练习六接口路径/状态码、请求体与响应组件、答案字段、新错误码 | `contract/test_practice_contract.py` |
+| 练习生成→发布→提交→结果的权限、可见性、归档与竞态 | `integration/test_practice_api.py` |
+| 练习 Worker 领取互斥、并发提交唯一性、无活动事务模型调用 | `integration/test_practice_api.py` |
+| 练习六表与四个原生枚举的升级与回退 | `integration/test_migrations.py` |
 | `pg_trgm` 扩展、chat 四表、片段 GIN 索引的升级与回退 | `integration/test_migrations.py` |
 
 本次查询与清理交付验证：334 项（128 unit / 165 integration / 41 contract），
@@ -436,8 +443,156 @@ Preview 尚未验证；其他教师不能管理他人课程的判断已由课程
   移除 `lock_live_materials` 的共享锁 → 删除等待用例失败；
   基线运行全绿。以此确认测试能可靠发现锁被误删的退化。
 
-**待验收的环境步骤**（本轮未执行，部署与真实模型效果继续标记为未验收）：
+### 课程练习交付验证（契约第 7 节 / 迁移 `0009_practice_sets`）
 
-1. 在可回退环境验证从迁移 `0004` 升至 `0008`（当前开发库仍为 `0004`）；
-2. 运行完整回填并确认所有未删除 `READY` 资料都有片段；
-3. 在配置真实 Chat Completions 端点的环境验证有依据与无依据问答。
+练习模块（生成 → 发布 → 提交 → 结果，含独立 Worker 与任务重试）的交付验证，
+独立测试库 `edu_ai_chat_verify_test`。**模型侧全部使用本地假模型**，
+真实模型出题质量未验收。
+
+本步覆盖：
+
+- 请求校验（`unit/test_practice_generation.py`）：资料数量与重复、题型非空与去重、
+  题数边界与"不少于题型数量"、显式 `null` 拒绝；模型输出的数量与题型配额、
+  单选选项数量/重复/下标、判断题布尔、简答评分要点、来源片段与摘录核对
+  （摘录不在片段原文中即整次失败）、选项 ID 由服务端生成；
+- 配额与评分（`unit/test_practice_scoring.py`）：题型配额均衡分配与余数规则、
+  文本 NFKC/大小写/空白/标点规范化、单选与判断完全匹配、简答按要点比例给分
+  且每个要点只计一次、总分百分制两位小数（全对恰为 `100.00`）；
+- 六个接口契约（`contract/test_practice_contract.py`）：路径与成功状态码
+  （`202/200/200/200/201/200`）、Bearer、请求体字段集与 `additionalProperties: false`、
+  发布与重试声明为**可省略对象**请求体（非 nullable）、题目公共字段与教师专有字段、
+  答题结果字段集、任务类型与资源类型枚举、三个新错误码；
+- 全链路（`integration/test_practice_api.py`）：生成 `202` → `GENERATING` 期间学生
+  `404`、发布 `409 PRACTICE_NOT_READY` → 驱动 Worker 出题 → 教师可见 `DRAFT`
+  与答案/要点/解析、学生仍 `404` → 发布 `200`（重复发布幂等且 `published_at` 不变）
+  → 已发布列表可见 → 学生提交 `201` 得 `100.0` → 结果仅本人与创建教师可读
+  （非成员 `404`、匿名 `401`）；
+- 权限与守卫：学生生成 `403 ROLE_FORBIDDEN`、非成员 `404`、资料不属于本课程 `404`、
+  资料未 `READY` `409 MATERIAL_NOT_READY`；归档课程禁止生成/发布/提交（`409 COURSE_ARCHIVED`）
+  但列表、详情与任务查询仍可读；
+- 并发与 Worker：两个 Worker 并发领取同一批任务恰好各领取一次（`attempts` 均为 1）、
+  **并发提交只有一次成功**（唯一约束兜底，库里只留一份答题记录与明细）、
+  失败不留部分题目、重试复用原 job 与练习 ID 并重置为 `PENDING`/`GENERATING`、
+  **旧运行令牌无法回写**、已成功与 `MATERIAL_PARSE` 任务返回 `409 JOB_NOT_RETRYABLE`；
+- 生成期间竞态：来源资料被删除 → `FAILED` 且无题目；课程被归档 → `CANCELLED` 且无题目；
+  **模型调用期间没有任何"事务中空闲"连接**（用 `pg_stat_activity` 断言不持有事务）。
+
+### 环境验收（本地开发库升级 + 端到端问答 + 回填）
+
+本地开发库 `edu_ai_dev` 已完成 `0004 → 0008` 升级并做了端到端验证。
+**模型侧指向本地模拟端点（`127.0.0.1:8099`），不代表真实模型联调已验收。**
+
+**1. 迁移状态与升级日志**
+
+```
+$ python -m alembic current
+0008_chat_qa (head)
+
+$ python -m alembic upgrade head      # 已在 head，无待执行迁移
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+exit=0
+```
+
+升级后核对（`alembic_version` / 表清单 / 扩展）：
+
+| 项目 | 结果 |
+| --- | --- |
+| `alembic_version`（问答交付时） | `0008_chat_qa` |
+| 表数量（问答交付时） | 17（含 `material_sections`、`material_knowledge_points`、`material_chunks`、`material_delete_todos`、`chat_sessions`、`chat_messages`、`chat_message_citations`、`chat_generation_attempts`） |
+| `pg_trgm` | 已安装 |
+| 回退点 | 库级快照 `edu_ai_dev_before_verify_backup`（问答交付前）与 `edu_ai_dev_before_0009_backup`（练习迁移前） |
+
+练习模块的迁移 `0008_chat_qa → 0009_practice_sets` 已在本地开发库执行并复核：
+
+```
+$ python scripts\_migrate_dev.py backup     # CREATE DATABASE ... TEMPLATE
+backup created: edu_ai_dev_before_0009_backup
+
+$ python -m alembic upgrade head
+INFO  [alembic.runtime.migration] Running upgrade 0008_chat_qa -> 0009_practice_sets, 课程练习：practice 六表与四个原生枚举
+exit=0
+```
+
+| 项目 | 迁移前 | 迁移后 |
+| --- | --- | --- |
+| `alembic_version` | `0008_chat_qa` | `0009_practice_sets` |
+| 表数量 | 17 | 23（+ `practice_sets`、`practice_set_materials`、`practice_questions`、`practice_attempts`、`practice_attempt_answers`、`practice_generation_attempts`） |
+| practice 枚举 | 无 | `practice_status`、`practice_difficulty`、`practice_question_type`、`practice_generation_status` |
+
+**2. 课程问答接口端到端验证**（真实 uvicorn + 独立解析 Worker + 真实 PostgreSQL/MinIO）
+
+```
+[OK] 健康检查 /health/ready — 200
+[OK] 注册 TEACHER / STUDENT / STUDENT — 201
+[OK] 创建课程 — 201
+[OK] 学生加入课程 — 201
+[OK] 创建会话（省略请求体）— 201
+[OK] 创建会话（空对象 {}）— 201
+[OK] 创建会话（显式 null → 422）— 422
+[OK] 无资料提问 → 201 无依据 — 201 grounded=False
+[OK] 初始化上传 — 201
+[OK] 预签名直传对象 — 200
+[OK] 完成上传 — 202
+[OK] 解析 Worker 推进到 READY — status=READY
+[OK] 大纲查询 — 200
+[OK] 有依据提问 → 201 grounded + 引用 — 201 citations=1
+     引用：chapter-1.docx · DOCX_PARAGRAPH · 1-4 · section=None · quote=第一章 绪论...
+[OK] 引用指向本次上传的资料
+[OK] 无关问题 → 201 无依据 — grounded=False
+[OK] 消息列表（3 问 3 答）— total=6
+[OK] 消息顺序 USER/ASSISTANT 交替
+[OK] 会话列表 — total=2
+[OK] 最近消息时间等于末条消息时间
+[OK] 非所有者读消息 → 404
+[OK] 匿名读消息 → 401
+[OK] 非成员访问会话列表 → 404
+```
+
+该片段的定位区间（1-4）横跨两个章节，因此 `section_id` / `section_title`
+为 `null`——符合契约 6.6「跨章节或落在章节外时为 `null`」的定义。
+
+**3. 回填与片段覆盖**
+
+清空一份 `READY` 资料的片段以模拟"片段功能上线前解析的存量资料"后：
+
+```
+[coverage 回填前]     ready_materials=2 without_chunks=0
+cleared 1 chunks（模拟存量资料）
+[coverage 清空片段后] ready_materials=2 without_chunks=1
+
+$ python scripts/backfill_material_chunks.py          # 第一次
+已回填片段：1 条资料；应处理而未完成：0 条；失败：0 条；[OK] 回填完成。exit=0
+
+$ python scripts/backfill_material_chunks.py          # 第二次（幂等）
+已回填片段：0 条资料；应处理而未完成：0 条；失败：0 条；
+[OK] 没有需要回填的资料（已有片段的资料默认跳过）。exit=0
+
+[coverage 回填后]     ready_materials=2 without_chunks=0
+```
+
+**所有未删除 `READY` 资料都有检索片段**（`without_chunks=0`），重复运行不重复处理。
+
+**4. 本轮顺带修复的真实缺陷**
+
+`scripts/parse_worker.py` 只导入 materials 相关模型，`materials.course_id`
+的外键目标表 `courses` 未注册，进程启动即
+`NoReferencedTableError: could not find table 'courses'`——维护脚本无法独立启动，
+而测试进程因已加载全量模型发现不了。修复：三个维护脚本
+（`parse_worker.py`、`cleanup_deleted_materials.py`、`backfill_material_chunks.py`）
+显式导入 `app.db.registry`。回归：
+`unit/test_maintenance_scripts_metadata.py` 在**子进程**中导入每个脚本并
+`configure_mappers()`，确保它们能单独启动。
+
+**5. 尚未验收**
+
+- **真实模型联调与效果**：问答与练习的环境验证都使用本地模拟端点，
+  真实 Chat Completions 端点的**回答质量、语言一致性与出题质量**仍未验收，
+  不以模拟服务通过代替；
+- **前端展示**：聊天页面、引用跳转、练习生成/答题/结果页均未接入；
+- **练习 Worker 的独立进程部署**：`scripts/practice_worker.py` 的常驻运行与
+  优雅退出（SIGINT）尚未在真实部署环境演练，本地以测试驱动同一入口验证。
+
+`0004 → 0008`（问答）与 `0008 → 0009`（练习）的升级验证、
+"全部未删除 `READY` 资料都有片段"的覆盖检查已在本地开发库完成（见上）；
+**部署与真实模型效果在真实模型联调完成前继续标记为未验收**。

@@ -1129,25 +1129,271 @@ Authorization: Bearer <access_token>
 
 | 方法 | 路径 | 说明 | 权限 |
 | --- | --- | --- | --- |
-| POST | `/courses/{course_id}/practice-sets/generate` | 生成练习 | 课程教师 |
-| GET | `/courses/{course_id}/practice-sets` | 已发布练习 | 课程成员 |
+| POST | `/courses/{course_id}/practice-sets/generate` | 生成练习 | 课程创建教师 |
+| GET | `/courses/{course_id}/practice-sets` | 已发布练习列表 | 课程成员 |
 | GET | `/practice-sets/{set_id}` | 练习详情 | 课程成员 |
-| POST | `/practice-sets/{set_id}/publish` | 发布练习 | 课程教师 |
-| POST | `/practice-sets/{set_id}/attempts` | 提交答案 | 学生 |
-| GET | `/practice-attempts/{attempt_id}` | 答题结果 | 本人或课程教师 |
+| POST | `/practice-sets/{set_id}/publish` | 发布练习 | 课程创建教师 |
+| POST | `/practice-sets/{set_id}/attempts` | 提交答案 | 课程学生 |
+| GET | `/practice-attempts/{attempt_id}` | 答题结果 | 本人或课程创建教师 |
 
-生成请求：
+### 7.1 通用规则与权限
+
+练习状态：
+
+| 状态 | 含义 |
+| --- | --- |
+| `GENERATING` | 已受理生成，题目尚未就绪 |
+| `DRAFT` | 生成成功，尚未发布（教师可查看，学生不可见） |
+| `PUBLISHED` | 已发布，学生可见并可提交 |
+| `FAILED` | 生成失败（`GET /jobs/{job_id}` 给出安全错误摘要，可重试） |
+| `CANCELLED` | 生成期间课程被归档，结果作废 |
+
+- 生成、发布、重试仅**课程创建教师**可用；学生返回 `403 ROLE_FORBIDDEN`，其他教师返回 `403 COURSE_FORBIDDEN`，非成员统一 `404 RESOURCE_NOT_FOUND`。
+- 列表与详情对课程成员开放（教师或学生均可读）。
+- 提交仅**课程学生**可用；教师提交返回 `403 ROLE_FORBIDDEN`。
+- 答题结果仅**本人或课程创建教师**可读，其他用户与不存在统一 `404`。
+- 练习不存在，或对当前用户不可见时统一 `404 RESOURCE_NOT_FOUND`（学生视角下 `GENERATING` / `DRAFT` / `FAILED` / `CANCELLED` 一律按不存在处理）。
+- **归档课程**：已发布练习列表、练习详情与历史答题结果仍返回 `200`（读历史）；生成、发布、重试与提交返回 `409 COURSE_ARCHIVED`。
+- **不可变**：发布后练习内容不可修改；来源资料后续被删除或重新解析**不影响**已发布练习——题目携带来源快照（资料 ID、名称、片段定位与原文摘录）。
+- 分页沿用第 1 节（`page` / `page_size`，默认 20、最大 100），越界 `422 VALIDATION_ERROR`。
+- 每个学生对每套练习**只能提交一次**。
+
+### 7.2 生成练习
+
+```http
+POST /api/v1/courses/{course_id}/practice-sets/generate
+Authorization: Bearer <access_token>
+```
 
 ```json
 {
-  "material_ids": ["uuid"],
+  "material_ids": ["9c2f1e77-5b3a-4d18-9c1e-6f1a2b3c4d5e"],
   "question_count": 5,
   "question_types": ["SINGLE_CHOICE", "TRUE_FALSE"],
   "difficulty": "MEDIUM"
 }
 ```
 
-返回 `202` 和一个 `PRACTICE_GENERATE` 任务。
+| 字段 | 类型 | 规则 |
+| --- | --- | --- |
+| `material_ids` | UUID 数组 | 1–10 个，**不重复** |
+| `question_count` | integer | 1–20，且**不少于题型数量**（每种题型至少 1 题） |
+| `question_types` | 枚举数组 | 非空、不重复，取值 `SINGLE_CHOICE` / `TRUE_FALSE` / `SHORT_ANSWER` |
+| `difficulty` | 枚举 | `EASY` / `MEDIUM` / `HARD` |
+
+请求体拒绝多余字段、显式 `null`、类型不符与空数组（统一 `422 VALIDATION_ERROR`）。
+
+处理顺序固定为：认证（401）→ 课程存在且当前用户是课程成员（404）→ 课程创建教师（403）→ 课程未归档（409）→ 请求结构校验（422）→ 资料可见性与就绪（404 / 409）→ 创建练习与任务（202）。
+
+资料检查：
+
+| 情形 | 结果 |
+| --- | --- |
+| 资料不存在、已删除或不属于本课程 | `404 RESOURCE_NOT_FOUND`（不区分，避免枚举） |
+| 资料存在但未 `READY`，或没有任何检索片段 | `409 MATERIAL_NOT_READY` |
+
+成功响应为 `202 Accepted`，Schema `JobStatus`（`type` 恒为 `PRACTICE_GENERATE`、`resource_type` 恒为 `PRACTICE_SET`、`resource_id` 为新建练习 ID）。练习记录（`GENERATING`）与任务在同一事务创建，题目由独立 Worker 生成（见 7.10）。
+
+```json
+{
+  "id": "3f8a1c2e-9d4b-4c17-8e6a-1b2c3d4e5f60",
+  "type": "PRACTICE_GENERATE",
+  "status": "PENDING",
+  "progress": 0,
+  "resource_type": "PRACTICE_SET",
+  "resource_id": "1d3a9c11-8f2b-4c17-9d5e-2a7b6c8d1e02",
+  "error": null,
+  "created_at": "2026-09-21T08:30:00Z",
+  "started_at": null,
+  "finished_at": null
+}
+```
+
+### 7.3 已发布练习列表
+
+```http
+GET /api/v1/courses/{course_id}/practice-sets?page=1&page_size=20
+Authorization: Bearer <access_token>
+```
+
+课程成员（教师或学生）可读，**只列出 `PUBLISHED`**；按 `published_at` 倒序、同值按 `id` 倒序。归档课程仍返回 `200`。
+
+成功响应为 `200`，Schema `Page<PracticeSetSummary>`（不含题目）。课程不存在或非成员统一 `404`。
+
+### 7.4 练习详情
+
+```http
+GET /api/v1/practice-sets/{set_id}
+Authorization: Bearer <access_token>
+```
+
+| 视角 | 可见状态 |
+| --- | --- |
+| 课程创建教师 | 全部状态（`GENERATING` / `DRAFT` / `PUBLISHED` / `FAILED` / `CANCELLED`） |
+| 课程学生 | 仅 `PUBLISHED`；其余状态统一 `404 RESOURCE_NOT_FOUND` |
+| 其他教师 / 非成员 | `404 RESOURCE_NOT_FOUND` |
+
+成功响应为 `200`，Schema `PracticeSet`（含按 `order` 升序的 `questions`）。
+
+**答案可见性**：学生响应中每题**不含** `correct_answer`、`grading_points`、`explanation`（这些字段不出现或为 `null`）；教师响应包含。学生只能在自己提交之后的**答题结果**里看到标准答案与解析（7.7）。
+
+### 7.5 发布练习
+
+```http
+POST /api/v1/practice-sets/{set_id}/publish
+Authorization: Bearer <access_token>
+```
+
+无请求字段（省略请求体或 `{}`；显式 `null` 与多余字段 `422`）。
+
+处理顺序：认证（401）→ 练习存在且当前用户是课程成员（404）→ 课程创建教师（403）→ 课程未归档（409）→ 状态分流。
+
+| 当前状态 | 结果 |
+| --- | --- |
+| `DRAFT` | `200`，置为 `PUBLISHED` 并记录 `published_at` |
+| `PUBLISHED` | `200`，幂等返回当前详情（不改变 `published_at`） |
+| `GENERATING` / `FAILED` / `CANCELLED` | `409 PRACTICE_NOT_READY` |
+
+成功响应为 `200 PracticeSet`（教师视角）。
+
+### 7.6 提交答案
+
+```http
+POST /api/v1/practice-sets/{set_id}/attempts
+Authorization: Bearer <access_token>
+```
+
+```json
+{
+  "answers": [
+    { "question_id": "uuid", "answer": "选项 UUID" },
+    { "question_id": "uuid", "answer": true },
+    { "question_id": "uuid", "answer": "简答文本" }
+  ]
+}
+```
+
+| 字段 | 类型 | 规则 |
+| --- | --- | --- |
+| `answers` | 对象数组 | **恰好覆盖练习的全部题目**；`question_id` 不重复、不缺失、不越界 |
+| 单选答案 | UUID 字符串 | 必须是该题 `options` 中的选项 ID |
+| 判断答案 | boolean | 只能是 `true` / `false` |
+| 简答答案 | string | 去除首尾空白后非空（长度上限 2000） |
+
+校验失败统一返回 `422 VALIDATION_ERROR`：重复或缺失题目、未知 `question_id`、答案类型与题型不符、单选答案不在选项内、简答为空或超长、多余字段与显式 `null`。
+
+处理顺序：认证（401）→ 练习存在且当前用户是课程成员（404）→ 课程学生（教师 `403 ROLE_FORBIDDEN`）→ 课程未归档（409）→ 练习已发布（未发布 `409 PRACTICE_NOT_READY`）→ 请求校验（422）→ 写入答题记录（201 / 409）。
+
+规则：
+
+- **一名学生对每套练习只能提交一次**：`(practice_set_id, student_id)` 唯一约束是最终防线，并发提交只有一次成功，其余返回 `409 PRACTICE_ALREADY_ATTEMPTED`。
+- 评分与答题记录在**同一事务**写入；评分过程中出现验证错误时不写入半份记录。
+- 成功响应为 `201 Created`，Schema `PracticeAttemptResult`（见 7.7）。
+
+### 7.7 答题结果
+
+```http
+GET /api/v1/practice-attempts/{attempt_id}
+Authorization: Bearer <access_token>
+```
+
+仅**本人或课程创建教师**可读；其他用户与不存在统一 `404 RESOURCE_NOT_FOUND`。归档课程的本人结果仍可读。
+
+成功响应为 `200`，Schema `PracticeAttemptResult`：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `id` | UUID string | 答题记录 ID |
+| `practice_set_id` | UUID string | 练习 ID |
+| `student_id` | UUID string | 学生 ID（教师视角用于区分） |
+| `total_score` | number | 百分制总分，保留两位小数 |
+| `submitted_at` | ISO 8601 UTC string | 提交时间 |
+| `answers` | `PracticeAttemptAnswer[]` | 按题目 `order` 排列 |
+
+`PracticeAttemptAnswer`：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `question_id` | UUID string | 题目 ID |
+| `question_order` | integer | 题目顺序 |
+| `type` | 题型枚举 | 题型 |
+| `prompt` | string | 题干 |
+| `submitted_answer` | string / boolean | 提交的答案（单选为选项 ID，判断为布尔，简答为文本） |
+| `is_correct` | boolean | 是否完全正确（简答题命中全部评分要点才为 `true`） |
+| `score` | number | 本题得分（保留两位小数） |
+| `correct_answer` | string / boolean | 标准答案 |
+| `explanation` | string | 解析 |
+| `knowledge_point` | string 或 `null` | 知识点 |
+
+**学生只能通过本接口获得答案与解析**：练习详情（7.4）中不含这些字段，且仅本人提交成功后可读。
+
+### 7.8 响应 Schema
+
+`PracticeSetSummary`（列表用，不含题目）：
+
+| 字段 | 类型 |
+| --- | --- |
+| `id` | UUID string |
+| `course_id` | UUID string |
+| `title` | string |
+| `status` | 状态枚举 |
+| `difficulty` | 难度枚举 |
+| `question_count` | integer（题目实际数量） |
+| `question_types` | 题型枚举数组 |
+| `created_at` / `updated_at` | ISO 8601 UTC string |
+| `published_at` | ISO 8601 UTC string 或 `null` |
+
+`PracticeSet`（详情用）：`PracticeSetSummary` 的字段 + `questions: PracticeQuestion[]`（按 `order` 升序）。
+
+`PracticeQuestion`：
+
+| 字段 | 类型 | 可见性 |
+| --- | --- | --- |
+| `id` | UUID string | 全部 |
+| `order` | integer（从 1 开始，连续） | 全部 |
+| `type` | `SINGLE_CHOICE` / `TRUE_FALSE` / `SHORT_ANSWER` | 全部 |
+| `prompt` | string | 全部 |
+| `options` | `{id, text}[]`（判断题与简答题为空数组） | 全部 |
+| `knowledge_point` | string 或 `null` | 全部 |
+| `correct_answer` | string / boolean | **仅教师**（学生为 `null`） |
+| `grading_points` | `{point, accepted[]}[]`（简答题评分要点；其他题型空数组） | **仅教师** |
+| `explanation` | string | **仅教师**（学生为 `null`） |
+
+### 7.9 评分规则
+
+- 所有题**等权**：每题满分 `100 / question_count`；总分为百分制，按 `Decimal` 计算并四舍五入到两位小数，最终限制在 0–100。
+- `SINGLE_CHOICE` / `TRUE_FALSE`：与标准答案**完全匹配**得满分，否则 0。
+- `SHORT_ANSWER`：对提交文本做 Unicode NFKC、大小写、空白与常见标点规范化后，与各评分要点的可接受短语逐一比对；**每个要点只计一次**，命中任一可接受短语即获得该要点对应的比例分值。
+- 简答题只有命中**全部**要点时 `is_correct` 为 `true`；部分命中保留部分得分。
+
+### 7.10 生成 Worker
+
+`PRACTICE_GENERATE` 由**独立 Worker 进程**执行（`scripts/practice_worker.py`），不在 API 请求内调用模型：
+
+1. 以 `FOR UPDATE SKIP LOCKED` 领取一个 `PENDING` 的 `PRACTICE_GENERATE` 任务，生成运行令牌、递增 `attempts`、设置租约（`PRACTICE_GENERATE_LEASE_SECONDS`，默认 300 秒）并推进到 `RUNNING`；按租约 1/3 心跳续租。
+2. 读取所选资料的片段快照后**结束只读事务**，再调用模型（模型调用期间不持有数据库事务）。
+3. 从各资料按顺序轮流选取片段，默认最多向模型提供 `PRACTICE_GENERATE_MAX_CHARS`（60,000）字符，并保证每份资料至少有一个片段。
+4. 按请求的题型顺序均衡分配题数，余数依次分配给靠前题型（每种题型至少 1 题）。
+5. 模型输出经 Pydantic 与业务校验：标题、精确数量的题目、题型配额一致、单选 2–6 个规范化后不重复的选项与合法正确项、判断题为布尔、简答题含标准答案与 2–6 个评分要点、每题含解析、知识点、来源片段 ID 与原文摘录；摘录必须能在对应片段原文中找到，否则整次生成失败（选项 ID 由服务端生成）。
+6. 发布事务按固定顺序加锁：课程 → 练习 → 任务 → 按 ID 排序的来源资料；复查课程仍活动、练习仍在生成、运行令牌匹配、来源资料仍可用后**一次性**写入全部题目，提交为 `DRAFT` / `SUCCEEDED`。
+7. 课程在生成期间被归档 → 练习与任务写入 `CANCELLED`；资料失效、模型失败或输出非法 → `FAILED`，**不留下部分题目**。旧执行者在重试后因运行令牌不匹配无法回写。
+8. 日志与生成尝试记录只保存模型名称、提示词版本、耗时与**安全失败摘要**，不含完整提示词、课件原文、密钥或模型地址。
+
+### 7.11 练习错误响应
+
+| 场景 | HTTP | 错误码 |
+| --- | --- | --- |
+| 缺少、无效或过期的 Access Token | 401 | `AUTH_TOKEN_EXPIRED` |
+| 课程/练习/答题记录不存在，或当前用户不可见 | 404 | `RESOURCE_NOT_FOUND` |
+| 学生调用教师接口；教师提交答案 | 403 | `ROLE_FORBIDDEN` |
+| 其他教师操作非本人创建的课程资源 | 403 | `COURSE_FORBIDDEN` |
+| 生成、发布、重试或提交发生在归档课程 | 409 | `COURSE_ARCHIVED` |
+| 所选资料未 `READY` 或没有片段 | 409 | `MATERIAL_NOT_READY` |
+| 发布非 `DRAFT` 状态、提交未发布练习 | 409 | `PRACTICE_NOT_READY` |
+| 同一学生对同一练习重复提交 | 409 | `PRACTICE_ALREADY_ATTEMPTED` |
+| 重试不可重试的任务（`PENDING`、有效租约内的 `RUNNING`、`SUCCEEDED`、`CANCELLED`） | 409 | `JOB_NOT_RETRYABLE` |
+| 请求结构、数量边界、题型/难度取值、答案类型与覆盖 | 422 | `VALIDATION_ERROR` |
+| 生成任务失败（不落库部分题目） | 502 | `AI_JOB_FAILED` |
 
 ## 8. 实验任务接口
 
@@ -1242,7 +1488,37 @@ Authorization: Bearer <access_token>
 
 任务响应结构与第 4.7 节的 `JobStatus` 一致；课件上传产生的任务为 `MATERIAL_PARSE`，`resource_type` 为 `MATERIAL`，`resource_id` 为资料 ID。
 
-前端轮询建议：前 30 秒每 2 秒一次，之后每 5 秒一次；页面离开时停止轮询。`FAILED` 后展示后端返回的安全错误信息和重试入口（`MATERIAL_PARSE` 任务的失败重试经由 `POST /materials/{material_id}/parse`，见 5.3）。解析 Worker 的状态推进行为见 5.5。
+前端轮询建议：前 30 秒每 2 秒一次，之后每 5 秒一次；页面离开时停止轮询。`FAILED` 后展示后端返回的安全错误信息和重试入口（`MATERIAL_PARSE` 任务的失败重试经由 `POST /materials/{material_id}/parse`，见 5.3；`PRACTICE_GENERATE` 任务经由 `POST /jobs/{job_id}/retry`，见下）。
+
+**任务可见性**：`GET /jobs/{job_id}` 按任务关联资源的可见性返回——`MATERIAL_PARSE` 按资料可见性（5.1 / 5.4 的规则）；`PRACTICE_GENERATE` 按练习可见性（7.4 的规则，学生仅在该练习 `PUBLISHED` 时可见）。不可见与不存在统一 `404 RESOURCE_NOT_FOUND`。
+
+### 10.1 重试练习生成任务
+
+```http
+POST /api/v1/jobs/{job_id}/retry
+Authorization: Bearer <access_token>
+```
+
+仅**课程创建教师**可调用。请求体可省略或传 `{}`（显式 `null` 与多余字段 `422`）。
+
+处理顺序：认证（401）→ 任务存在且可见（404）→ 课程创建教师（403 / 404）→ 课程未归档（409）→ 状态分流。
+
+可重试：`FAILED`，以及**租约已过期**的 `RUNNING`（崩溃遗留）。重试时：
+
+- 复用原练习 ID 与 job ID；
+- 清除运行令牌、租约、错误与**旧题目**，把任务重置为 `PENDING`、练习重置为 `GENERATING`；
+- 成功响应为 `202 Accepted`，Schema `JobStatus`。
+
+| 情形 | 结果 |
+| --- | --- |
+| `FAILED`，或租约已过期的 `RUNNING` | `202`，按上述重置 |
+| `PENDING` | `409 JOB_NOT_RETRYABLE` |
+| `RUNNING` 且租约仍有效 | `409 JOB_NOT_RETRYABLE` |
+| `SUCCEEDED` / `CANCELLED` | `409 JOB_NOT_RETRYABLE` |
+| `MATERIAL_PARSE` 任务 | `409 JOB_NOT_RETRYABLE`（改走 `POST /materials/{material_id}/parse`，见 5.3） |
+| `SUBMISSION_GRADE` 任务 | 本次未实现该任务类型，统一 `404 RESOURCE_NOT_FOUND` |
+
+练习生成 Worker 的状态推进行为见 7.10。
 
 ## 11. Dashboard 接口
 
@@ -1274,6 +1550,9 @@ Dashboard 只返回页面首屏需要的摘要和最近记录，不返回完整�
 | `GRADE_NOT_REVIEWED` | 409 | 未完成教师复核，不能发布 |
 | `AI_JOB_FAILED` | 502 | AI 或解析任务失败 |
 | `CHAT_CONFLICT` | 409 | 会话在回答生成期间被并发修改，本次发送未写入（见 6.1 / 6.5） |
+| `PRACTICE_NOT_READY` | 409 | 练习尚未生成成功（非 `DRAFT` 状态发布、提交未发布练习，见 7.5 / 7.6） |
+| `PRACTICE_ALREADY_ATTEMPTED` | 409 | 同一学生对同一练习重复提交（见 7.6） |
+| `JOB_NOT_RETRYABLE` | 409 | 任务当前状态不可重试（见 10.1） |
 | `VALIDATION_ERROR` | 422 | 请求体或查询参数未通过校验，`details.errors` 为字段级说明 |
 | `METHOD_NOT_ALLOWED` | 405 | 请求方法不被该路径支持 |
 | `INTERNAL_ERROR` | 500 | 未预期的服务端错误，响应不含异常堆栈 |

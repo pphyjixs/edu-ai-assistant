@@ -34,6 +34,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.core.config import get_settings  # noqa: E402
+from app.db import registry  # noqa: E402,F401 - 导入全部 ORM 模型，否则外键目标缺失
 from app.db.session import get_session_factory  # noqa: E402
 from app.modules.materials import service as materials_service  # noqa: E402
 from app.storage.s3 import S3Storage, S3StorageConfig  # noqa: E402
