@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, Request, status
 from app.core.pagination import Page, PaginationDep
 from app.core.request_body import (
     EMPTY_OBJECT_REQUEST_BODY,
+    parse_required_object_body,
     validate_empty_object_body,
 )
 from app.core.schemas import ErrorResponse
@@ -22,6 +23,11 @@ from app.db.session import SessionDep
 from app.modules.auth.permissions import CurrentUserDep
 from app.modules.jobs.schemas import JobStatus
 from app.modules.practice import repository as repo
+from app.modules.practice.deps import (
+    LockedCourseDep,
+    LockedPublishSetDep,
+    LockedSubmitSetDep,
+)
 from app.modules.practice import service
 from app.modules.practice.models import PracticeAttempt, PracticeQuestion, PracticeSet
 from app.modules.practice.schemas import (
@@ -63,7 +69,34 @@ _ARCHIVED = {
     "description": "课程已归档，不能生成、发布、重试或提交（COURSE_ARCHIVED）",
 }
 
-#: 无请求字段的接口（发布练习）使用 core 的可选对象请求体声明与手工校验
+#: 有请求字段的接口改用原始 ``Request``（保证"检查在前、请求体在后"的优先级），
+#: 因此需要显式声明 requestBody；组件由 app.main.install_explicit_schemas 补齐。
+GENERATE_REQUEST_BODY: dict = {
+    "requestBody": {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {"$ref": "#/components/schemas/PracticeGenerateRequest"}
+            }
+        },
+    }
+}
+
+SUBMIT_REQUEST_BODY: dict = {
+    "requestBody": {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {"$ref": "#/components/schemas/PracticeAttemptSubmitRequest"}
+            }
+        },
+    }
+}
+
+#: 无请求字段的接口（发布练习、重试任务）使用 core 的可选对象请求体声明与手工校验
+
+#: 用原始 Request 手工解析、需要显式补进 OpenAPI 组件的请求模型
+PRACTICE_REQUEST_MODELS = (PracticeGenerateRequest, PracticeAttemptSubmitRequest)
 
 
 # --------------------------------------------------------------------------- #
@@ -194,15 +227,19 @@ def _attempt_result_schema(
         },
         **_AUTH_ERRORS,
     },
+    openapi_extra=GENERATE_REQUEST_BODY,
 )
 async def generate_practice_set(
     course_id: uuid.UUID,
-    payload: PracticeGenerateRequest,
+    request: Request,
     user: CurrentUserDep,
     session: SessionDep,
+    course: LockedCourseDep,
 ) -> JobStatus:
+    # 顺序固定：认证 → 资源/角色/归档（依赖，含课程行锁）→ 请求体 → 写入（仍在锁内）
+    payload = await parse_required_object_body(request, PracticeGenerateRequest)
     _practice_set, job = await service.create_practice_set(
-        session, user=user, course_id=course_id, payload=payload
+        session, course=course, user=user, payload=payload
     )
     return JobStatus.model_validate(job)
 
@@ -311,11 +348,11 @@ async def publish_practice_set(
     request: Request,
     user: CurrentUserDep,
     session: SessionDep,
+    locked: LockedPublishSetDep,
 ) -> PracticeSetSchema:
+    # 顺序：认证 → 资源/角色/归档/状态（依赖内完成）→ 请求体 → 写入
     await validate_empty_object_body(request)
-    practice_set = await service.publish_practice_set(
-        session, user=user, set_id=set_id
-    )
+    practice_set = await service.publish_practice_set(session, practice_set=locked)
     questions = await repo.list_questions(session, practice_set_id=set_id)
     return _detail_schema(practice_set, questions, answers_visible=True)
 
@@ -352,15 +389,18 @@ async def publish_practice_set(
         },
         **_AUTH_ERRORS,
     },
+    openapi_extra=SUBMIT_REQUEST_BODY,
 )
 async def submit_practice_attempt(
     set_id: uuid.UUID,
-    payload: PracticeAttemptSubmitRequest,
+    request: Request,
     user: CurrentUserDep,
     session: SessionDep,
+    locked: LockedSubmitSetDep,
 ) -> PracticeAttemptResultSchema:
+    payload = await parse_required_object_body(request, PracticeAttemptSubmitRequest)
     attempt, questions, answers = await service.submit_attempt(
-        session, user=user, set_id=set_id, payload=payload
+        session, practice_set=locked, user=user, payload=payload
     )
     return _attempt_result_schema(attempt, questions, answers)
 
