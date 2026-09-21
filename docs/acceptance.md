@@ -149,9 +149,9 @@ cd backend
 | 层 | 数量 | 数据库 |
 | --- | --- | --- |
 | `tests/unit` | 167 | 不接触数据库与网络；外部依赖替换为 fake 或 `MockTransport` |
-| `tests/integration` | 224 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储与解析 Worker 端到端用例需配置 S3 端点 |
-| `tests/contract` | 54 | 同上（令牌格式、课程、课件上传与课程问答契约、OpenAPI 一致性） |
-| 合计 | 445 | 连真实 PostgreSQL + 对象存储时除 1 项契约允许分支外全部通过（模型为本地假 HTTP 服务） |
+| `tests/integration` | 232 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储与解析 Worker 端到端用例需配置 S3 端点 |
+| `tests/contract` | 56 | 同上（令牌格式、课程、课件上传与课程问答契约、OpenAPI 一致性） |
+| 合计 | 455 | 连真实 PostgreSQL + 对象存储时除 1 项契约允许分支外全部通过（模型为本地假 HTTP 服务） |
 
 测试库规则（见 `backend/tests/pg_support.py`）：
 
@@ -237,6 +237,10 @@ cd backend
 | 会话与消息权限、隔离、持久化、请求校验 | `integration/test_chat_api.py` |
 | 跨课程/未就绪/已删除不进提示词、归档竞态、并发 409、模型失败 502/503 | `integration/test_chat_scope.py` |
 | 片段回填：幂等、force 重写、提交前复查、失败安全摘要 | `integration/test_materials_backfill.py` |
+| 回填跨批次遍历（含首屏持续失败项）、force 覆盖全部候选 | `integration/test_materials_backfill.py` |
+| 问答事务边界：模型调用无活动事务、生成中归档 409、引用资料并发删除降级 | `integration/test_chat_transactions.py` |
+| 创建会话与归档并发一致性、请求体省略/`{}`/显式 `null`/多余字段 | `integration/test_chat_transactions.py`、`integration/test_chat_api.py` |
+| 创建会话请求体为可选对象（非 nullable）、模型失败状态码声明 | `contract/test_chat_contract.py` |
 | `pg_trgm` 扩展、chat 四表、片段 GIN 索引的升级与回退 | `integration/test_migrations.py` |
 
 本次查询与清理交付验证：334 项（128 unit / 165 integration / 41 contract），
@@ -320,9 +324,9 @@ Preview 尚未验证；其他教师不能管理他人课程的判断已由课程
 契约测试只校验请求与响应格式：契约 2.2 把令牌存放位置交给前端自行决定，
 因此测试反过来断言服务端不通过 Cookie 下发令牌，不假设也不约束前端的存储方式。
 
-课程问答（契约第 6 节 / 迁移 `0008_chat_qa`）交付验证，独立测试库
-`edu_ai_chat_verify_test` + MinIO 测试桶 `edu-ai-test`：**445 项收集，
-444 通过、1 跳过、0 失败**（unit 167 / contract 54 / integration 224）。
+课程问答（契约第 6 节 / 迁移 `0008_chat_qa`）交付与修复后验证，独立测试库
+`edu_ai_chat_verify_test` + MinIO 测试桶 `edu-ai-test`：**455 项收集，
+454 通过、1 跳过、0 失败**（unit 167 / contract 56 / integration 232）。
 唯一跳过是 `integration/test_storage_minio.py:289` 的契约允许分支
 （S3 实现未校验 `X-Amz-Expires`，该分支不适用），**不是**因缺少数据库或
 对象存储依赖而跳过；PostgreSQL 与对象存储相关用例全部真实执行。
@@ -360,3 +364,51 @@ Preview 尚未验证；其他教师不能管理他人课程的判断已由课程
 
 **前端**：聊天页面与引用跳转尚未接入，第 5 节 Learning 中涉及前端展示的
 条目保持未勾选。
+
+### 问答写入边界与回填遍历修复（PR #6 复审）
+
+本轮修复四类阻断项并补上永久回归（`integration/test_chat_transactions.py`
+新增；`test_chat_api.py`、`test_chat_scope.py`、`test_materials_backfill.py`
+扩展）：
+
+- **事务与并发边界**：只读检查与检索结束后立即结束事务，模型调用期间
+  **没有活动事务**（`test_model_call_runs_without_active_transaction`
+  在构造 AI 客户端的时刻断言 `session.in_transaction() is False`）；
+  写入事务按固定顺序执行——锁课程行并复查成员与归档 → 校验会话版本 →
+  引用资料按 ID 升序加共享锁并复查 → 落库。
+  回归：`test_archive_during_generation_rejects_question`（生成中归档 →
+  `409 COURSE_ARCHIVED` 且 0 条消息）、
+  `test_create_session_and_archive_concurrency_is_consistent`（创建会话与
+  归档并发，结果与落库会话数一致）、
+  `test_material_deleted_during_generation_degrades_to_ungrounded`
+  （生成期间资料被删除 → 引用被复查排除、按无依据回答、0 条引用）；
+  原有同会话并发仍是一组消息成功、另一请求 `409 CHAT_CONFLICT`。
+- **回填遍历**：`--batch-size` 改为**每页批量大小**，按 `(created_at, id)`
+  游标遍历全部候选；单条失败仍推进游标；每页读取前结束查询事务；
+  汇总成功/跳过/失败，有失败或应处理未完成时退出码为 `1`。
+  回归：`test_backfill_scans_all_pages_with_failure_in_first_page`
+  （105 条、第一页含持续失败项，后续页仍全部回填；重复运行只重试仍缺片段
+  的那一条）、`test_backfill_force_visits_every_candidate_once`
+  （force 覆盖全部候选且不累积片段）。
+- **契约边界**：无检索片段时直接返回 `201` + 固定文案 + `grounded:false`
+  + 空引用，**不要求模型配置**（`test_no_evidence_without_model_config_returns_201`），
+  只有检索到片段才可能 `503`（`test_missing_model_configuration_returns_503`）；
+  创建会话区分「省略请求体 / `{}`」（成功）与「显式 `null` / 多余字段」
+  （`422`），OpenAPI 声明为可选对象请求体（`test_create_session_request_body_variants`
+  与契约用例 `test_create_session_request_body_is_optional_object`）；
+  会话 `last_message_at` 等于助手消息的实际 `created_at`。
+- **验收测试配置**：`test_parse_worker_minio.py` 的真实桶删除用例改用
+  `tests/pg_support.resolve_test_database_url()`，只配置 `DATABASE_URL`
+  时同样使用派生的 `_test` 库，不再直接读取 `TEST_DATABASE_URL`。
+
+本轮完整运行的唯一跳过仍是 `integration/test_storage_minio.py:289` 的
+契约允许分支：MinIO 未校验 `X-Amz-Expires`，该用例按“未验证”单独说明
+（`该 S3 实现未校验 X-Amz-Expires，需在 MinIO/AWS S3 环境验证`），
+**不是**因缺少数据库或对象存储依赖而跳过；PostgreSQL 与对象存储相关用例
+全部真实执行，运行后 `pg_database` 无残留。
+
+**待验收的环境步骤**（本轮未执行，部署与真实模型效果继续标记为未验收）：
+
+1. 在可回退环境验证从迁移 `0004` 升至 `0008`（当前开发库仍为 `0004`）；
+2. 运行完整回填并确认所有未删除 `READY` 资料都有片段；
+3. 在配置真实 Chat Completions 端点的环境验证有依据与无依据问答。

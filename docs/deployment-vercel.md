@@ -121,13 +121,14 @@ Worker 依赖该环境的 `DATABASE_URL`、`STORAGE_*` 与模型 `AI_BASE_URL` /
 - **开放问答前必须回填已有资料**（片段是解析 Worker 之后才落库的，早先解析完成的 `READY` 资料没有片段、检索不到）：
 
 ```bash
-python scripts/backfill_material_chunks.py            # 只补没有片段的资料
-python scripts/backfill_material_chunks.py --force    # 连已有片段的资料一并重做
+python scripts/backfill_material_chunks.py                 # 只补没有片段的资料
+python scripts/backfill_material_chunks.py --force         # 连已有片段的资料一并重做
+python scripts/backfill_material_chunks.py --batch-size 500  # 每页批量大小
 ```
 
-该命令幂等：重复执行结果一致，失败只输出安全摘要并保留资料原状态，再次运行即可重试；资料在回填期间被删除或状态变化时不会留下可检索片段。它依赖 `DATABASE_URL` 与 `STORAGE_*`。
+该命令按 `(created_at, id)` 游标**遍历全部候选**（`--batch-size` 只是每页批量大小，不是总上限），幂等：重复执行结果一致，失败只输出安全摘要并保留资料原状态，再次运行只重试仍缺片段的资料；资料在回填期间被删除或状态变化时不会留下可检索片段。退出码 `0` 表示全部处理成功，`1` 表示有失败或应处理而未完成的资料（需重跑或排查），`2` 为配置缺失，`3` 为数据库不可达。它依赖 `DATABASE_URL` 与 `STORAGE_*`。
 
-问答复用 Worker 的模型配置（`AI_BASE_URL` / `AI_MODEL` / `AI_API_KEY`）；模型未配置时问答接口返回 `503 SERVICE_UNAVAILABLE`，不影响其他接口。
+问答复用 Worker 的模型配置（`AI_BASE_URL` / `AI_MODEL` / `AI_API_KEY`）。**模型配置只在真正需要调用模型时检查**：检索不到片段时问答按“无依据”返回 `201`，不受模型配置影响；只有检索到片段而模型端点或模型名缺失才返回 `503 SERVICE_UNAVAILABLE`（契约 6.1 / 6.5 / 6.7）。
 
 开发、Preview 和 Production 使用独立配置。任何密钥都不能使用 `VITE_` 前缀，也不能提交到仓库。
 

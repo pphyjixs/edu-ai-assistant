@@ -1881,7 +1881,7 @@
           "chat"
         ],
         "summary": "创建问答会话",
-        "description": "课程成员（教师或学生）均可创建；创建者即会话所有者。归档课程返回 409 COURSE_ARCHIVED。课程不存在或非成员统一 404。",
+        "description": "课程成员（教师或学生）均可创建；创建者即会话所有者。归档课程返回 409 COURSE_ARCHIVED。课程不存在或非成员统一 404。请求体可省略、也可传空对象 {}；显式 null 或含未声明字段返回 422。",
         "operationId": "create_chat_session_api_v1_courses__course_id__chat_sessions_post",
         "security": [
           {
@@ -1900,23 +1900,6 @@
             }
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/ChatSessionCreateRequest"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "title": " Payload"
-              }
-            }
-          }
-        },
         "responses": {
           "201": {
             "description": "创建成功",
@@ -1959,7 +1942,7 @@
             }
           },
           "422": {
-            "description": "请求体含未声明字段（VALIDATION_ERROR）",
+            "description": "请求体为显式 null，或含未声明字段（VALIDATION_ERROR）",
             "content": {
               "application/json": {
                 "schema": {
@@ -1975,6 +1958,18 @@
                 "schema": {
                   "$ref": "#/components/schemas/ErrorResponse"
                 }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "没有请求字段：可省略请求体或传空对象 {}"
               }
             }
           }
@@ -2461,13 +2456,6 @@
         ],
         "title": "ChatQuestionRequest",
         "description": "发送问题（契约 6.5）：只有 ``content`` 一个字段。"
-      },
-      "ChatSessionCreateRequest": {
-        "properties": {},
-        "additionalProperties": false,
-        "type": "object",
-        "title": "ChatSessionCreateRequest",
-        "description": "创建会话（契约 6.2）：没有请求字段，只接受省略请求体或空对象。"
       },
       "ChatSessionSchema": {
         "properties": {
