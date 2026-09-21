@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import uuid
 from collections.abc import Iterator
 
@@ -27,8 +28,10 @@ from tests.integration.test_chat_api import (  # noqa: F401 - 复用构造
     make_answering_factory,
 )
 from tests.integration.test_materials_api import (
+    DOCX_MIME,
     _auth,
     _fake_model_client,
+    build_docx,
 )
 from tests.integration.test_materials_api import fake_storage as fake_storage  # noqa: F401
 
@@ -81,6 +84,93 @@ def _drop_chunks(pg_sync_engine, material_id: str) -> None:
             ),
             {"id": material_id},
         )
+
+
+def _teacher_id(pg_sync_engine, email: str) -> str:
+    with pg_sync_engine.connect() as connection:
+        return connection.execute(
+            text("SELECT id FROM users WHERE email_normalized = :email"),
+            {"email": email.lower()},
+        ).scalar_one()
+
+
+def _insert_ready_material(
+    pg_sync_engine,
+    fake_storage,
+    *,
+    course_id: str,
+    teacher_id: str,
+    index: int,
+    content: bytes,
+) -> str:
+    """直接插入一条 READY 且**没有片段**的资料（模拟片段功能上线前的数据）。
+
+    对象同时写入假存储；``index`` 用来递增 ``created_at``，保证游标顺序稳定。
+    """
+    material_id = uuid.uuid4()
+    upload_id = uuid.uuid4()
+    object_key = f"backfill/{index}.docx"
+    filename = f"legacy-{index}.docx"
+    sha256_hex = hashlib.sha256(content).hexdigest()
+    fake_storage.store_object(
+        object_key,
+        size=len(content),
+        content_type=DOCX_MIME,
+        sha256_hex=sha256_hex,
+        content=content,
+    )
+
+    with pg_sync_engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO material_upload_sessions"
+                " (id, course_id, teacher_id, object_key, filename, content_type,"
+                "  size, sha256, upload_url_expires_at, confirm_deadline_at,"
+                "  created_at, updated_at)"
+                " VALUES (CAST(:id AS uuid), CAST(:course_id AS uuid),"
+                "  CAST(:teacher_id AS uuid), :object_key, :filename, :content_type,"
+                "  :size, :sha256, now(), now() + interval '1 day',"
+                "  now() + CAST(:offset_ms AS int) * interval '1 millisecond',"
+                "  now() + CAST(:offset_ms AS int) * interval '1 millisecond')"
+            ),
+            {
+                "id": str(upload_id),
+                "course_id": course_id,
+                "teacher_id": teacher_id,
+                "object_key": object_key,
+                "filename": filename,
+                "content_type": DOCX_MIME,
+                "size": len(content),
+                "sha256": sha256_hex,
+                "offset_ms": index,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO materials"
+                " (id, course_id, upload_id, filename, content_type, size, sha256,"
+                "  storage_key, status, uploaded_by, error_message, deleted_at,"
+                "  created_at, updated_at)"
+                " VALUES (CAST(:id AS uuid), CAST(:course_id AS uuid),"
+                "  CAST(:upload_id AS uuid), :filename, :content_type, :size, :sha256,"
+                "  :object_key, 'READY', CAST(:teacher_id AS uuid), NULL, NULL,"
+                "  now() + CAST(:offset_ms AS int) * interval '1 millisecond',"
+                "  now() + CAST(:offset_ms AS int) * interval '1 millisecond')"
+            ),
+            {
+                "id": str(material_id),
+                "course_id": course_id,
+                "upload_id": str(upload_id),
+                "filename": filename,
+                "content_type": DOCX_MIME,
+                "size": len(content),
+                "sha256": sha256_hex,
+                "object_key": object_key,
+                "teacher_id": teacher_id,
+                "offset_ms": index,
+            },
+        )
+    return str(material_id)
 
 
 def _set_status(pg_sync_engine, material_id: str, status: str) -> None:
@@ -305,3 +395,111 @@ def test_backfill_can_target_single_material(
 
     assert report.filled == 1
     assert _chunk_rows(pg_sync_engine, first_id)
+
+
+# --------------------------------------------------------------------------- #
+# 跨批次遍历：批量大小不是总上限
+# --------------------------------------------------------------------------- #
+def test_backfill_scans_all_pages_with_failure_in_first_page(
+    client,
+    fake_storage,
+    pg_session_factory,
+    make_settings,
+    pg_sync_engine,
+) -> None:
+    """最早一批含持续失败项时，后续批次仍会被处理（游标推进、失败不阻断）。"""
+    course_id, teacher, _ = _create_course_with_material(
+        client,
+        fake_storage,
+        pg_session_factory,
+        make_settings,
+        email="backfill-pages@example.com",
+    )
+    teacher_id = _teacher_id(pg_sync_engine, "backfill-pages@example.com")
+    content = build_docx([("回填跨批次的标识词甲乙丙丁", None)])
+
+    total = 105
+    material_ids = [
+        _insert_ready_material(
+            pg_sync_engine,
+            fake_storage,
+            course_id=course_id,
+            teacher_id=teacher_id,
+            index=index,
+            content=content,
+        )
+        for index in range(total)
+    ]
+    # 最早的一条对象缺失：持续失败项，位于第一页
+    first_key = _storage_key(pg_sync_engine, material_ids[0])
+    fake_storage.objects.pop(first_key)
+
+    report = _run_backfill(
+        pg_session_factory, fake_storage, make_settings, batch_size=50
+    )
+
+    assert report.filled == total - 1, "跨页的后续资料同样必须被回填"
+    assert report.failed_count == 1
+    assert report.skipped == 0
+    assert report.ok is False, "存在失败资料时不得报告成功"
+    assert report.failed[0].material_id == uuid.UUID(material_ids[0])
+    assert first_key not in report.failed[0].reason
+
+    # 最后一页的资料也已建立片段索引
+    assert _chunk_rows(pg_sync_engine, material_ids[-1])
+    # 第一页其余资料同样完成
+    assert _chunk_rows(pg_sync_engine, material_ids[1])
+
+    # 重复运行：只重试仍缺片段的那一条（其余资料被跳过，不重复处理）
+    second = _run_backfill(
+        pg_session_factory, fake_storage, make_settings, batch_size=50
+    )
+    assert second.filled == 0
+    assert second.failed_count == 1
+    assert second.failed[0].material_id == uuid.UUID(material_ids[0])
+
+
+def test_backfill_force_visits_every_candidate_once(
+    client,
+    fake_storage,
+    pg_session_factory,
+    make_settings,
+    pg_sync_engine,
+) -> None:
+    """`--force` 在一次运行中覆盖全部候选，每条只访问一次、不累积片段。"""
+    course_id, teacher, material_id = _create_course_with_material(
+        client,
+        fake_storage,
+        pg_session_factory,
+        make_settings,
+        email="backfill-force-pages@example.com",
+    )
+    teacher_id = _teacher_id(pg_sync_engine, "backfill-force-pages@example.com")
+    content = build_docx([("强制重写的标识词戊己庚辛", None)])
+    extra_ids = [
+        _insert_ready_material(
+            pg_sync_engine,
+            fake_storage,
+            course_id=course_id,
+            teacher_id=teacher_id,
+            index=index,
+            content=content,
+        )
+        for index in range(3)
+    ]
+
+    uploaded_before = len(_chunk_rows(pg_sync_engine, material_id))
+    report = _run_backfill(
+        pg_session_factory, fake_storage, make_settings, force=True, batch_size=2
+    )
+
+    # 4 条资料（真实上传 1 条 + 直插 3 条）都被访问一次
+    assert report.filled == 4
+    assert report.failed_count == 0
+    assert report.skipped == 0
+    assert report.ok is True
+    # 已有片段的资料：force 重写后数量不累积
+    assert len(_chunk_rows(pg_sync_engine, material_id)) == uploaded_before
+    # 原本缺片段的资料：force 模式同样补齐
+    for mid in extra_ids:
+        assert _chunk_rows(pg_sync_engine, mid), "force 模式下每条候选都应有片段"

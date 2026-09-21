@@ -131,3 +131,20 @@ def test_error_code_enum_includes_chat_conflict(schema: dict) -> None:
     assert "CHAT_CONFLICT" in error_code["enum"]
     assert "SERVICE_UNAVAILABLE" in error_code["enum"]
     assert "AI_JOB_FAILED" in error_code["enum"]
+
+
+def test_create_session_request_body_is_optional_object(schema: dict) -> None:
+    """契约 6.2：创建会话没有请求字段，请求体是**可选对象**而非可空类型。"""
+    request_body = schema["paths"][SESSIONS_PATH]["post"]["requestBody"]
+    assert request_body.get("required") in (None, False)
+
+    body_schema = request_body["content"]["application/json"]["schema"]
+    assert body_schema.get("type") == "object"
+    assert "anyOf" not in body_schema, "省略合法，但显式 null 不合法"
+    assert body_schema.get("nullable") is not True
+
+
+def test_send_question_documents_model_failure_statuses(schema: dict) -> None:
+    """契约 6.7：需要调用模型时的失败状态码与冲突状态码都要声明。"""
+    send_op = schema["paths"][MESSAGES_PATH]["post"]
+    assert {"409", "502", "503"} <= send_op["responses"].keys()

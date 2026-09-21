@@ -233,6 +233,39 @@ def test_create_session_permissions_and_archived_course(
     assert listed.json()["total"] == 1
 
 
+def test_create_session_request_body_variants(
+    client: TestClient, fake_storage: FakeStorage
+) -> None:
+    """省略请求体与 `{}` 都成功；显式 `null` 与多余字段统一 422（契约 6.2）。"""
+    _register(client, "teacher@example.com", "TEACHER")
+    teacher = _login(client, "teacher@example.com")
+    course_id = _create_course(client, teacher)
+    url = SESSIONS_URL.format(course_id=course_id)
+
+    assert client.post(url, headers=_auth(teacher)).status_code == 201
+    assert client.post(url, json={}, headers=_auth(teacher)).status_code == 201
+
+    explicit_null = client.post(
+        url,
+        content=b"null",
+        headers={**_auth(teacher), "Content-Type": "application/json"},
+    )
+    assert explicit_null.status_code == 422
+    assert explicit_null.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    extra_field = client.post(url, json={"title": "x"}, headers=_auth(teacher))
+    assert extra_field.status_code == 422
+
+    # OpenAPI 与实现一致：请求体是**可选对象**（省略合法、显式 null 不合法）
+    openapi = client.app.openapi()
+    request_body = openapi["paths"][SESSIONS_URL]["post"]["requestBody"]
+    assert request_body.get("required") in (None, False)
+    body_schema = request_body["content"]["application/json"]["schema"]
+    assert body_schema.get("type") == "object"
+    assert "anyOf" not in body_schema, "请求体不应声明为可空（null）类型"
+    assert body_schema.get("nullable") is not True
+
+
 def test_session_list_only_returns_own_sessions(
     client: TestClient, fake_storage: FakeStorage
 ) -> None:
@@ -373,6 +406,32 @@ def test_send_question_validates_content(
     # 消息分页越界 → 422
     invalid = client.get(url, params={"page_size": 101}, headers=_auth(teacher))
     assert invalid.status_code == 422
+
+
+def test_no_evidence_without_model_config_returns_201(
+    db_isolation: None, pg_app, fake_storage: FakeStorage
+) -> None:
+    """没有可检索片段时返回 201 无依据，不要求模型配置（契约 6.1 优先于 503）。"""
+    with _make_chat_client(
+        db_isolation, pg_app, fake_storage, None, ai_configured=False
+    ) as client:
+        _register(client, "no-evidence@example.com", "TEACHER")
+        teacher = _login(client, "no-evidence@example.com")
+        course_id = _create_course(client, teacher)
+        session_id = client.post(
+            SESSIONS_URL.format(course_id=course_id), headers=_auth(teacher)
+        ).json()["id"]
+
+        response = client.post(
+            MESSAGES_URL.format(session_id=session_id),
+            json={"content": "这门课讲了什么？"},
+            headers=_auth(teacher),
+        )
+
+        assert response.status_code == 201, response.text
+        assert response.json()["grounded"] is False
+        assert response.json()["content"] == "课程资料中未找到依据"
+        assert response.json()["citations"] == []
 
 
 def test_conversation_persists_with_citations(
