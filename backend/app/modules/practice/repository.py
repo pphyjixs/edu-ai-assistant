@@ -11,6 +11,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.engine import Row
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.practice.models import (
@@ -124,6 +125,27 @@ async def get_set_by_id(
     session: AsyncSession, set_id: uuid.UUID
 ) -> PracticeSet | None:
     return await session.get(PracticeSet, set_id)
+
+
+async def get_generation_spec(
+    session: AsyncSession, set_id: uuid.UUID
+) -> Row | None:
+    """读取生成所需的标量快照（**不加锁**，供 Worker 领取时的只读校验）。
+
+    Worker 领取事务里只能用普通读：加练习行锁会形成 "任务 → 练习" 的反向
+    锁链，与写接口的 "课程 → 练习 → 任务" 顺序冲突。
+    """
+    result = await session.execute(
+        select(
+            PracticeSet.id,
+            PracticeSet.course_id,
+            PracticeSet.status,
+            PracticeSet.requested_question_count,
+            PracticeSet.question_types,
+            PracticeSet.difficulty,
+        ).where(PracticeSet.id == set_id)
+    )
+    return result.one_or_none()
 
 
 async def get_set_for_update(
