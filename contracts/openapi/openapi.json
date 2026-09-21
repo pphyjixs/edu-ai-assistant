@@ -2303,13 +2303,606 @@
         }
       }
     },
+    "/api/v1/courses/{course_id}/practice-sets/generate": {
+      "post": {
+        "tags": [
+          "practice"
+        ],
+        "summary": "生成练习",
+        "description": "仅课程创建教师可调用。创建练习记录（GENERATING）与 PRACTICE_GENERATE 任务（同一事务），题目由独立 Worker 生成。所选资料必须属于本课程、未删除、READY 且有检索片段。",
+        "operationId": "generate_practice_set_api_v1_courses__course_id__practice_sets_generate_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "course_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Course Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PracticeGenerateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "已受理，返回练习生成任务",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobStatus"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "学生调用教师接口为 ROLE_FORBIDDEN；非创建教师为 COURSE_FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "非成员，或所选资料不存在/已删除/不属于本课程（RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "课程已归档（COURSE_ARCHIVED）或资料未就绪（MATERIAL_NOT_READY）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "请求结构、数量边界或题型取值不合法（VALIDATION_ERROR）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/courses/{course_id}/practice-sets": {
+      "get": {
+        "tags": [
+          "practice"
+        ],
+        "summary": "课程已发布练习",
+        "description": "课程成员（教师或学生）可读，只列出已发布练习，按发布时间的倒序分页；归档课程仍可读。课程不存在或非成员统一 404。",
+        "operationId": "list_practice_sets_api_v1_courses__course_id__practice_sets_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "course_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Course Id"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "页码，从 1 开始",
+              "default": 1,
+              "title": "Page"
+            },
+            "description": "页码，从 1 开始"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "每页条数，最大 100",
+              "default": 20,
+              "title": "Page Size"
+            },
+            "description": "每页条数，最大 100"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_PracticeSetSummarySchema_"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "课程不存在，或当前用户不是课程成员（RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "分页参数不合法（VALIDATION_ERROR）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/practice-sets/{set_id}": {
+      "get": {
+        "tags": [
+          "practice"
+        ],
+        "summary": "练习详情",
+        "description": "课程教师可读全部状态；课程学生只能读已发布练习，其余状态统一 404。学生响应不含标准答案、评分要点与解析；教师响应包含。",
+        "operationId": "get_practice_set_api_v1_practice_sets__set_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "set_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Set Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PracticeSetSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在，或当前用户不可见（RESOURCE_NOT_FOUND；学生视角下草稿/生成中/失败/取消的练习一律按不存在处理）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/practice-sets/{set_id}/publish": {
+      "post": {
+        "tags": [
+          "practice"
+        ],
+        "summary": "发布练习",
+        "description": "仅课程创建教师可调用。`DRAFT` 发布为 `PUBLISHED`；已发布幂等返回 200；生成中、失败或取消返回 409 PRACTICE_NOT_READY。请求体可省略或传 {}。",
+        "operationId": "publish_practice_set_api_v1_practice_sets__set_id__publish_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "set_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Set Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "发布成功（含幂等重放）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PracticeSetSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "学生调用教师接口为 ROLE_FORBIDDEN；非创建教师为 COURSE_FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在，或当前用户不可见（RESOURCE_NOT_FOUND；学生视角下草稿/生成中/失败/取消的练习一律按不存在处理）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "课程已归档（COURSE_ARCHIVED）或练习未就绪（PRACTICE_NOT_READY）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "请求体为显式 null 或含未声明字段（VALIDATION_ERROR）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "没有请求字段：可省略请求体或传空对象 {}"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/practice-sets/{set_id}/attempts": {
+      "post": {
+        "tags": [
+          "practice"
+        ],
+        "summary": "提交答案",
+        "description": "仅课程学生可提交已发布练习，且每套练习只能提交一次；答案必须恰好覆盖全部题目且类型与题型相符。评分与答题记录在同一事务写入。",
+        "operationId": "submit_practice_attempt_api_v1_practice_sets__set_id__attempts_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "set_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Set Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PracticeAttemptSubmitRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "提交成功，返回评分结果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PracticeAttemptResultSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "教师提交返回 ROLE_FORBIDDEN；非创建教师读取他人资源为 COURSE_FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在，或当前用户不可见（RESOURCE_NOT_FOUND；学生视角下草稿/生成中/失败/取消的练习一律按不存在处理）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "课程已归档（COURSE_ARCHIVED）、练习未发布（PRACTICE_NOT_READY）或重复提交（PRACTICE_ALREADY_ATTEMPTED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "答案覆盖、类型或取值不合法（VALIDATION_ERROR）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/practice-attempts/{attempt_id}": {
+      "get": {
+        "tags": [
+          "practice"
+        ],
+        "summary": "答题结果",
+        "description": "仅本人或课程创建教师可读，其他用户与不存在统一 404。结果包含总分、每题提交答案、是否完全正确、得分、标准答案与解析。",
+        "operationId": "get_practice_attempt_api_v1_practice_attempts__attempt_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Attempt Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PracticeAttemptResultSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在，或当前用户不可见（RESOURCE_NOT_FOUND；学生视角下草稿/生成中/失败/取消的练习一律按不存在处理）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/jobs/{job_id}": {
       "get": {
         "tags": [
           "jobs"
         ],
         "summary": "查询任务状态",
-        "description": "任务不存在，或当前用户不是任务关联资源所属课程的成员时，统一返回 404 RESOURCE_NOT_FOUND，不区分「不存在」与「不可见」。第一版只接入 MATERIAL_PARSE（课件解析）任务，其可见性等同于资料所属课程的成员；归档课程的任务仍可读。",
+        "description": "任务不存在，或当前用户不可见任务关联资源时，统一返回 404 RESOURCE_NOT_FOUND，不区分「不存在」与「不可见」。MATERIAL_PARSE 按资料可见性；PRACTICE_GENERATE 按练习可见性（教师可读任意状态，学生仅在该练习已发布时可见）；归档课程仍可读。",
         "operationId": "get_job_api_v1_jobs__job_id__get",
         "security": [
           {
@@ -2349,8 +2942,8 @@
               }
             }
           },
-          "401": {
-            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+          "404": {
+            "description": "任务不存在，或当前用户无权查看（RESOURCE_NOT_FOUND）",
             "content": {
               "application/json": {
                 "schema": {
@@ -2359,8 +2952,8 @@
               }
             }
           },
-          "404": {
-            "description": "任务不存在，或当前用户无权查看（RESOURCE_NOT_FOUND）",
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
             "content": {
               "application/json": {
                 "schema": {
@@ -2376,6 +2969,117 @@
                 "schema": {
                   "$ref": "#/components/schemas/HTTPValidationError"
                 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/jobs/{job_id}/retry": {
+      "post": {
+        "tags": [
+          "jobs"
+        ],
+        "summary": "重试练习生成任务",
+        "description": "仅课程创建教师可调用。只接受 FAILED，或租约已过期的 RUNNING（崩溃遗留）；复用原练习与 job ID，清除运行令牌、租约、错误与旧题目，重置为 GENERATING / PENDING 供 Worker 重新领取。MATERIAL_PARSE 任务返回 409 JOB_NOT_RETRYABLE（改走资料重试接口）；SUBMISSION_GRADE 未实现，统一 404。请求体可省略或传 {}。",
+        "operationId": "retry_job_api_v1_jobs__job_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "已重置，返回同一个任务",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobStatus"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "学生调用为 ROLE_FORBIDDEN；非创建教师为 COURSE_FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务不存在或不可见（RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "课程已归档（COURSE_ARCHIVED）或状态不可重试（JOB_NOT_RETRYABLE）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "请求体为显式 null 或含未声明字段（VALIDATION_ERROR）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "没有请求字段：可省略请求体或传空对象 {}"
               }
             }
           }
@@ -2868,6 +3572,9 @@
           "GRADE_NOT_REVIEWED",
           "AI_JOB_FAILED",
           "CHAT_CONFLICT",
+          "PRACTICE_NOT_READY",
+          "PRACTICE_ALREADY_ATTEMPTED",
+          "JOB_NOT_RETRYABLE",
           "VALIDATION_ERROR",
           "METHOD_NOT_ALLOWED",
           "INTERNAL_ERROR",
@@ -3560,6 +4267,544 @@
           "total"
         ],
         "title": "Page[MaterialDetail]"
+      },
+      "Page_PracticeSetSummarySchema_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PracticeSetSummarySchema"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "page",
+          "page_size",
+          "total"
+        ],
+        "title": "Page[PracticeSetSummarySchema]"
+      },
+      "PracticeAttemptAnswerRequest": {
+        "properties": {
+          "question_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Question Id"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "title": "Answer"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "question_id",
+          "answer"
+        ],
+        "title": "PracticeAttemptAnswerRequest",
+        "description": "单题提交（契约 7.6）：单选为选项 ID、判断为布尔、简答为文本。"
+      },
+      "PracticeAttemptAnswerSchema": {
+        "properties": {
+          "question_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Question Id"
+          },
+          "question_order": {
+            "type": "integer",
+            "title": "Question Order"
+          },
+          "type": {
+            "$ref": "#/components/schemas/PracticeQuestionType"
+          },
+          "prompt": {
+            "type": "string",
+            "title": "Prompt"
+          },
+          "submitted_answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "title": "Submitted Answer"
+          },
+          "is_correct": {
+            "type": "boolean",
+            "title": "Is Correct"
+          },
+          "score": {
+            "type": "number",
+            "title": "Score"
+          },
+          "correct_answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              }
+            ],
+            "title": "Correct Answer"
+          },
+          "explanation": {
+            "type": "string",
+            "title": "Explanation"
+          },
+          "knowledge_point": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Knowledge Point"
+          }
+        },
+        "type": "object",
+        "required": [
+          "question_id",
+          "question_order",
+          "type",
+          "prompt",
+          "submitted_answer",
+          "is_correct",
+          "score",
+          "correct_answer",
+          "explanation",
+          "knowledge_point"
+        ],
+        "title": "PracticeAttemptAnswerSchema",
+        "description": "答题结果中的单题明细（契约 7.7）。"
+      },
+      "PracticeAttemptResultSchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "practice_set_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Practice Set Id"
+          },
+          "student_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Student Id"
+          },
+          "total_score": {
+            "type": "number",
+            "title": "Total Score"
+          },
+          "submitted_at": {
+            "type": "string",
+            "title": "Submitted At"
+          },
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/PracticeAttemptAnswerSchema"
+            },
+            "type": "array",
+            "title": "Answers"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "practice_set_id",
+          "student_id",
+          "total_score",
+          "submitted_at",
+          "answers"
+        ],
+        "title": "PracticeAttemptResultSchema",
+        "description": "答题结果（契约 7.7）：百分制总分保留两位小数。"
+      },
+      "PracticeAttemptSubmitRequest": {
+        "properties": {
+          "answers": {
+            "items": {
+              "$ref": "#/components/schemas/PracticeAttemptAnswerRequest"
+            },
+            "type": "array",
+            "title": "Answers"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "answers"
+        ],
+        "title": "PracticeAttemptSubmitRequest",
+        "description": "提交答案请求（契约 7.6）。"
+      },
+      "PracticeDifficulty": {
+        "type": "string",
+        "enum": [
+          "EASY",
+          "MEDIUM",
+          "HARD"
+        ],
+        "title": "PracticeDifficulty",
+        "description": "难度（契约 7.2）。"
+      },
+      "PracticeGenerateRequest": {
+        "properties": {
+          "material_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Material Ids"
+          },
+          "question_count": {
+            "type": "integer",
+            "title": "Question Count"
+          },
+          "question_types": {
+            "items": {
+              "$ref": "#/components/schemas/PracticeQuestionType"
+            },
+            "type": "array",
+            "title": "Question Types"
+          },
+          "difficulty": {
+            "$ref": "#/components/schemas/PracticeDifficulty"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "material_ids",
+          "question_count",
+          "question_types",
+          "difficulty"
+        ],
+        "title": "PracticeGenerateRequest",
+        "description": "生成练习请求（契约 7.2）。"
+      },
+      "PracticeGradingPointSchema": {
+        "properties": {
+          "point": {
+            "type": "string",
+            "title": "Point"
+          },
+          "accepted": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Accepted"
+          }
+        },
+        "type": "object",
+        "required": [
+          "point",
+          "accepted"
+        ],
+        "title": "PracticeGradingPointSchema",
+        "description": "简答题评分要点（教师可见）。"
+      },
+      "PracticeOptionSchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "text"
+        ],
+        "title": "PracticeOptionSchema",
+        "description": "单选选项：ID 由服务端生成。"
+      },
+      "PracticeQuestionSchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          },
+          "type": {
+            "$ref": "#/components/schemas/PracticeQuestionType"
+          },
+          "prompt": {
+            "type": "string",
+            "title": "Prompt"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/PracticeOptionSchema"
+            },
+            "type": "array",
+            "title": "Options"
+          },
+          "knowledge_point": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Knowledge Point"
+          },
+          "correct_answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Correct Answer"
+          },
+          "grading_points": {
+            "items": {
+              "$ref": "#/components/schemas/PracticeGradingPointSchema"
+            },
+            "type": "array",
+            "title": "Grading Points"
+          },
+          "explanation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Explanation"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "order",
+          "type",
+          "prompt",
+          "options",
+          "knowledge_point"
+        ],
+        "title": "PracticeQuestionSchema",
+        "description": "题目。教师专有字段在学生视角下为 ``null`` / 空数组。"
+      },
+      "PracticeQuestionType": {
+        "type": "string",
+        "enum": [
+          "SINGLE_CHOICE",
+          "TRUE_FALSE",
+          "SHORT_ANSWER"
+        ],
+        "title": "PracticeQuestionType",
+        "description": "题型（契约 7.2）。"
+      },
+      "PracticeSetSchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "course_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Course Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PracticeStatus"
+          },
+          "difficulty": {
+            "$ref": "#/components/schemas/PracticeDifficulty"
+          },
+          "question_count": {
+            "type": "integer",
+            "title": "Question Count"
+          },
+          "question_types": {
+            "items": {
+              "$ref": "#/components/schemas/PracticeQuestionType"
+            },
+            "type": "array",
+            "title": "Question Types"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/PracticeQuestionSchema"
+            },
+            "type": "array",
+            "title": "Questions"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "course_id",
+          "title",
+          "status",
+          "difficulty",
+          "question_count",
+          "question_types",
+          "created_at",
+          "updated_at",
+          "published_at",
+          "questions"
+        ],
+        "title": "PracticeSetSchema",
+        "description": "练习详情：含按 ``order`` 升序的题目。"
+      },
+      "PracticeSetSummarySchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "course_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Course Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "status": {
+            "$ref": "#/components/schemas/PracticeStatus"
+          },
+          "difficulty": {
+            "$ref": "#/components/schemas/PracticeDifficulty"
+          },
+          "question_count": {
+            "type": "integer",
+            "title": "Question Count"
+          },
+          "question_types": {
+            "items": {
+              "$ref": "#/components/schemas/PracticeQuestionType"
+            },
+            "type": "array",
+            "title": "Question Types"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "course_id",
+          "title",
+          "status",
+          "difficulty",
+          "question_count",
+          "question_types",
+          "created_at",
+          "updated_at",
+          "published_at"
+        ],
+        "title": "PracticeSetSummarySchema",
+        "description": "练习集摘要（列表用，不含题目）。"
+      },
+      "PracticeStatus": {
+        "type": "string",
+        "enum": [
+          "GENERATING",
+          "DRAFT",
+          "PUBLISHED",
+          "FAILED",
+          "CANCELLED"
+        ],
+        "title": "PracticeStatus",
+        "description": "练习状态（契约 7.1）。"
       },
       "RefreshRequest": {
         "properties": {
