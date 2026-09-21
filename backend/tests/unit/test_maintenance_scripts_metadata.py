@@ -19,6 +19,7 @@ from app.core.config import BACKEND_DIR
 #: 面向运维的全部独立入口脚本
 MAINTENANCE_SCRIPTS = (
     "scripts/parse_worker.py",
+    "scripts/practice_worker.py",
     "scripts/cleanup_deleted_materials.py",
     "scripts/backfill_material_chunks.py",
 )
