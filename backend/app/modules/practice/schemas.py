@@ -4,6 +4,11 @@
 业务边界（数量、题型组合、答案覆盖）在 Pydantic 层给出确定结果并统一
 转成 ``422 VALIDATION_ERROR``。
 
+**严格类型**（契约 7.2 / 7.6）：``question_count`` 只接受 JSON 整数
+（``true`` / ``"3"`` / ``3.0`` 都是 422）；作答值只接受 JSON 字符串或
+JSON 布尔值（``0`` / ``1`` 不会被当作布尔值）。模型输出中的正确项下标与
+判断题答案同样严格，避免错误输出被静默转换。
+
 模型输出（:class:`GeneratedPractice`）只描述**结构**；业务配额、选项唯一性、
 来源片段与摘录的核对在 :mod:`app.modules.practice.generation_ai` 中完成。
 """
@@ -12,7 +17,16 @@ from __future__ import annotations
 
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 from app.core.time import UtcTimestamp
 from app.modules.practice.models import (
@@ -46,7 +60,8 @@ class PracticeGenerateRequest(_StrictRequest):
     """生成练习请求（契约 7.2）。"""
 
     material_ids: list[uuid.UUID]
-    question_count: int
+    #: 只接受 JSON 整数：``true``、``"3"``、``3.0`` 都返回 422
+    question_count: StrictInt
     question_types: list[PracticeQuestionType]
     difficulty: PracticeDifficulty
 
@@ -82,20 +97,21 @@ class PracticeGenerateRequest(_StrictRequest):
 
 
 class PracticeAttemptAnswerRequest(BaseModel):
-    """单题提交（契约 7.6）：单选为选项 ID、判断为布尔、简答为文本。"""
+    """单题提交（契约 7.6）：单选为选项 ID、判断为布尔、简答为文本。
+
+    类型严格：只接受 JSON 字符串或 JSON 布尔值，``0`` / ``1`` 不会被转成布尔值。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     question_id: uuid.UUID
-    answer: str | bool
+    answer: StrictStr | StrictBool
 
     @field_validator("answer")
     @classmethod
-    def _validate_answer(cls, value: str | bool) -> str | bool:
+    def _validate_answer(cls, value: StrictStr | StrictBool) -> StrictStr | StrictBool:
         if isinstance(value, bool):
             return value
-        if not isinstance(value, str):
-            raise ValueError("答案必须是字符串或布尔值")
         if len(value) > SHORT_ANSWER_MAX_LENGTH:
             raise ValueError(f"简答答案不能超过 {SHORT_ANSWER_MAX_LENGTH} 个字符")
         return value
@@ -225,10 +241,10 @@ class GeneratedQuestion(BaseModel):
     type: PracticeQuestionType
     prompt: str = Field(min_length=1, max_length=2000)
     options: list[GeneratedOption] = Field(default_factory=list, max_length=6)
-    #: 单选题：正确选项下标
-    correct_option_index: int | None = None
-    #: 判断题：正确取值
-    correct_boolean: bool | None = None
+    #: 单选题：正确选项下标（严格整数，不接受字符串下标）
+    correct_option_index: StrictInt | None = None
+    #: 判断题：正确取值（严格布尔，不接受 0/1 或 "true"）
+    correct_boolean: StrictBool | None = None
     #: 简答题：标准答案文本
     correct_text: str | None = Field(default=None, max_length=2000)
     explanation: str = Field(min_length=1, max_length=2000)

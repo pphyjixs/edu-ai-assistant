@@ -136,6 +136,49 @@ def test_submit_request_rejects_empty_and_bad_answer_types() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 严格类型（契约 7.2 / 7.6）
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("value", [True, False, "3", "3.0", 3.0, 3.5, [3], {"n": 3}])
+def test_question_count_only_accepts_json_integers(value: object) -> None:
+    """``question_count`` 只接受 JSON 整数：布尔、字符串、浮点数都是 422。"""
+    with pytest.raises(PydanticValidationError):
+        PracticeGenerateRequest.model_validate(_generate_payload(question_count=value))
+
+
+def test_question_count_range_is_still_enforced() -> None:
+    """严格类型之上仍保留 1–20 的业务范围。"""
+    for value in (0, -1, 21):
+        with pytest.raises(PydanticValidationError):
+            PracticeGenerateRequest.model_validate(
+                _generate_payload(question_count=value)
+            )
+    assert PracticeGenerateRequest.model_validate(
+        _generate_payload(question_count=20)
+    ).question_count == 20
+
+
+@pytest.mark.parametrize("value", [0, 1, 0.0, 1.0, [], {}])
+def test_answers_reject_numbers_instead_of_booleans(value: object) -> None:
+    """作答值不接受数字：``0`` / ``1`` 不会被当作布尔值。"""
+    with pytest.raises(PydanticValidationError):
+        PracticeAttemptAnswerRequest.model_validate(
+            {"question_id": str(uuid.uuid4()), "answer": value}
+        )
+
+
+def test_answers_accept_only_string_or_boolean() -> None:
+    """合法形态：JSON 字符串（单选/简答）与 JSON 布尔值（判断）。"""
+    text = PracticeAttemptAnswerRequest.model_validate(
+        {"question_id": str(uuid.uuid4()), "answer": "选项 ID"}
+    )
+    boolean = PracticeAttemptAnswerRequest.model_validate(
+        {"question_id": str(uuid.uuid4()), "answer": True}
+    )
+    assert text.answer == "选项 ID" and isinstance(text.answer, str)
+    assert boolean.answer is True
+
+
+# --------------------------------------------------------------------------- #
 # 模型输出校验（契约 7.10）
 # --------------------------------------------------------------------------- #
 def test_validate_generated_accepts_well_formed_output() -> None:
@@ -323,6 +366,69 @@ def _model_response(payload: dict) -> httpx.Response:
             "choices": [{"message": {"content": json.dumps(payload, ensure_ascii=False)}}]
         },
     )
+
+
+def _generate_with_payload(payload: dict) -> object:
+    """把指定的模型输出喂给适配层（走假 HTTP 端点）。"""
+    chunk = _chunk()
+    return generation_ai.generate_practice(
+        [chunk],
+        question_count=1,
+        question_types=[SINGLE],
+        difficulty=PracticeDifficulty.EASY,
+        base_url="http://fake-model.local/v1",
+        api_key="",
+        model="m",
+        timeout_seconds=1.0,
+        client=httpx.Client(
+            transport=httpx.MockTransport(lambda request: _model_response(payload))
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"correct_option_index": "0"},      # 字符串下标
+        {"correct_option_index": 0.0},      # 浮点下标
+        {"correct_option_index": True},     # 布尔下标
+        {"options": [{"text": "甲"}, {"text": "乙"}], "correct_boolean": 1},
+    ],
+)
+def test_non_strict_model_output_is_rejected(mutation: dict) -> None:
+    """模型输出中的不规范值（字符串下标、数字布尔）必须整次失败，不被静默转换。"""
+    chunk = _chunk()
+    question = _single_question(chunk.chunk_id)
+    question.update(mutation)
+    payload = {"title": "t", "questions": [question]}
+
+    # 结构校验层（Pydantic 严格类型）或业务校验层（配额/来源）都必须拒绝
+    with pytest.raises(
+        (PydanticValidationError, generation_ai.PracticeGenerationError)
+    ):
+        _generate_with_payload(payload)
+
+
+def test_numeric_boolean_for_true_false_is_rejected() -> None:
+    """判断题的 ``1`` 不会被当作 ``true``。"""
+    chunk = _chunk()
+    payload = {
+        "title": "t",
+        "questions": [
+            {
+                "type": "TRUE_FALSE",
+                "prompt": "判断",
+                "correct_boolean": 1,
+                "explanation": "解析",
+                "source_chunk_id": str(chunk.chunk_id),
+                "source_quote": "软件工程是应用系统化的方法。",
+            }
+        ],
+    }
+    with pytest.raises(
+        (PydanticValidationError, generation_ai.PracticeGenerationError)
+    ):
+        _generate_with_payload(payload)
 
 
 def test_generate_practice_through_fake_model() -> None:

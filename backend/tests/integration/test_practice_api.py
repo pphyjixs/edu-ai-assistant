@@ -24,6 +24,7 @@ from app.modules.auth.models import User
 from app.modules.practice import generation_ai
 from app.modules.practice import service as practice_service
 from app.modules.practice import worker as practice_worker
+from app.modules.practice.models import PracticeDifficulty
 from app.modules.practice.schemas import PracticeAttemptSubmitRequest
 from tests.integration.test_chat_api import (
     _create_course_with_material,
@@ -587,8 +588,15 @@ def test_worker_failure_then_retry_recovers(
     written = asyncio.run(
         practice_worker._write_success(
             pg_session_factory,
-            practice_set_id=uuid.UUID(set_id),
-            run_token=stale_token,
+            claimed=practice_worker.ClaimedPracticeJob(
+                job_id=uuid.UUID(job["id"]),
+                practice_set_id=uuid.UUID(set_id),
+                course_id=uuid.UUID(course_id),
+                run_token=stale_token,
+                requested_question_count=3,
+                question_types=["SINGLE_CHOICE", "TRUE_FALSE", "SHORT_ANSWER"],
+                difficulty=PracticeDifficulty.MEDIUM,
+            ),
             validated=validated_stub,
             settings=make_settings(
                 ai_base_url="http://fake-model.local/v1", ai_model="fake-model"
@@ -679,8 +687,9 @@ def test_worker_claim_is_mutually_exclusive(
 
     assert len(claimed) == 2, "两个任务都应被领取"
     assert len({item.job_id for item in claimed}) == 2, "不得重复领取同一任务"
-    assert len({item.practice_set.id for item in claimed}) == 2
+    assert len({item.practice_set_id for item in claimed}) == 2
     assert len({item.run_token for item in claimed}) == 2, "运行令牌必须互不相同"
+    assert all(item.course_id == uuid.UUID(course_id) for item in claimed)
 
     # 每个任务的 attempts 恰好递增一次（并发领取没有重复计数）
     with pg_sync_engine.connect() as connection:
@@ -732,10 +741,13 @@ def test_concurrent_submit_only_one_succeeds(
             user = await session.get(User, student_id)
             assert user is not None
             try:
+                locked = await practice_service.lock_set_for_submit(
+                    session, user=user, set_id=uuid.UUID(set_id)
+                )
                 await practice_service.submit_attempt(
                     session,
+                    practice_set=locked,
                     user=user,
-                    set_id=uuid.UUID(set_id),
                     payload=PracticeAttemptSubmitRequest.model_validate(
                         {"answers": answers}
                     ),

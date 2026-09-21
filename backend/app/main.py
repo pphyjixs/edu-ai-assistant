@@ -23,8 +23,10 @@ from app.core.cors import build_cors_middleware_kwargs
 from app.core.exception_handlers import register_exception_handlers
 from app.core.logging import setup_logging
 from app.core.middleware import RequestContextMiddleware
+from app.core.openapi import install_explicit_schemas
 from app.core.schemas import ErrorResponse
 from app.db.session import dispose_engines
+from app.modules.practice.router import PRACTICE_REQUEST_MODELS
 
 logger = logging.getLogger("app.main")
 
@@ -93,6 +95,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # 健康检查不在 /api/v1 之下，供平台探针直接访问。
     app.include_router(health_router)
     app.include_router(api_router, prefix=resolved.api_v1_prefix)
+
+    # 手工解析请求体的接口不会自动产生组件，这里显式补进 OpenAPI
+    install_explicit_schemas(app, PRACTICE_REQUEST_MODELS)
 
     return app
 

@@ -9,6 +9,11 @@
 - :func:`grade_attempt`：所有题等权（每题满分 ``100 / 题数``），单选与判断
   完全匹配得满分；简答题每个要点只计一次、命中任一可接受短语即得分，
   命中全部要点才算完全正确。总分按 ``Decimal`` 计算并四舍五入到两位小数。
+- **分值分配**：单题评分阶段保留**未舍入**的原始分；先由原始分之和得出总分
+  （``ROUND_HALF_UP`` 两位小数），再把每题原始分**向下截取到分**，最后按
+  "小数余数从大到小、题目顺序从小到大"分配剩余分值。因此
+  **明细分数之和严格等于总分**，全对必然是 ``100.00``（例如三道等权全对：
+  ``33.34 + 33.33 + 33.33``）。
 """
 
 from __future__ import annotations
@@ -16,8 +21,8 @@ from __future__ import annotations
 import re
 import unicodedata
 import uuid
-from dataclasses import dataclass
-from decimal import ROUND_HALF_UP, Decimal
+from dataclasses import dataclass, replace
+from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 
 from app.modules.practice.models import PracticeQuestionType
 
@@ -58,6 +63,11 @@ def normalize_text(text: str) -> str:
 def round_score(value: Decimal) -> Decimal:
     """四舍五入到两位小数。"""
     return value.quantize(SCORE_QUANTUM, rounding=ROUND_HALF_UP)
+
+
+def floor_score(value: Decimal) -> Decimal:
+    """向下截取到分（不四舍五入）。"""
+    return value.quantize(SCORE_QUANTUM, rounding=ROUND_DOWN)
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,8 +119,9 @@ def _grade_short_answer(
             matched.append(str(item.get("point", "")))
 
     ratio = Decimal(len(matched)) / Decimal(len(points))
-    score = round_score(full_score * ratio)
-    return score, len(matched) == len(points), matched
+    # 单题阶段保留未舍入的原始分：舍入与余数分配统一在 grade_attempt 完成，
+    # 否则各题分别四舍五入后明细之和会与总分不等。
+    return full_score * ratio, len(matched) == len(points), matched
 
 
 def grade_question(
@@ -119,7 +130,7 @@ def grade_question(
     *,
     full_score: Decimal,
 ) -> GradedAnswer:
-    """单题评分。"""
+    """单题评分，返回**未舍入**的原始分（舍入与分配见 :func:`grade_attempt`）。"""
     if question.type is PracticeQuestionType.SHORT_ANSWER:
         score, is_correct, matched = _grade_short_answer(
             question, str(submitted), full_score
@@ -144,10 +155,46 @@ def grade_question(
     )
 
 
+def allocate_scores(raw_scores: list[Decimal], orders: list[int]) -> list[Decimal]:
+    """把总分（两位小数）精确分配到各题：向下截取 + 余数分配。
+
+    分配规则（契约 7.9）：
+
+    1. 每题原始分**向下截取**到分，得到各题的基础分；
+    2. 剩余分值（总分 − 基础分之和）按"小数余数从大到小"分配，余数相同时
+       **题目顺序从小到大**优先，每题最多补一分。
+
+    因此返回值的和**严格等于**总分（在两位小数意义上），且每题得分都不超过
+    其原始分上界向上取整的结果。
+    """
+    if not raw_scores:
+        raise ValueError("题目不能为空")
+    total = round_score(sum(raw_scores, Decimal("0")))
+    total = min(max(total, Decimal("0")), TOTAL_SCORE)
+
+    floors = [floor_score(value) for value in raw_scores]
+    remainder = total - sum(floors, Decimal("0"))
+    units = int((remainder / SCORE_QUANTUM).to_integral_value(rounding=ROUND_HALF_UP))
+    units = max(0, min(units, len(floors)))
+
+    # 余数（原始分的小数部分）从大到小；相同则题目顺序从小到大
+    ranked = sorted(
+        range(len(floors)),
+        key=lambda index: (-(raw_scores[index] - floors[index]), orders[index]),
+    )
+    awarded = list(floors)
+    for index in ranked[:units]:
+        awarded[index] += SCORE_QUANTUM
+    return awarded
+
+
 def grade_attempt(
     questions: list[GradableQuestion], submitted: dict[uuid.UUID, object]
 ) -> tuple[Decimal, list[GradedAnswer]]:
     """整卷评分：等权、百分制、两位小数、限制在 0–100。
+
+    总分与各题得分在同一处确定：先按未舍入原始分求和得到总分，再按
+    :func:`allocate_scores` 分配，保证**明细之和严格等于总分**。
 
     :raises ValueError: 提交未覆盖全部题目（调用方应先完成请求校验）。
     """
@@ -158,13 +205,16 @@ def grade_attempt(
         raise ValueError("提交答案未覆盖全部题目")
 
     full_score = TOTAL_SCORE / Decimal(len(questions))
-    graded = [
+    raw = [
         grade_question(question, submitted[question.question_id], full_score=full_score)
         for question in sorted(questions, key=lambda item: item.order)
     ]
 
-    total = round_score(sum((item.score for item in graded), Decimal("0")))
-    total = min(max(total, Decimal("0")), TOTAL_SCORE)
+    awarded = allocate_scores(
+        [item.score for item in raw], [item.order for item in raw]
+    )
+    graded = [replace(item, score=score) for item, score in zip(raw, awarded)]
+    total = sum((item.score for item in graded), Decimal("0"))
     return total, graded
 
 
@@ -174,6 +224,8 @@ __all__ = [
     "SCORE_QUANTUM",
     "TOTAL_SCORE",
     "allocate_question_counts",
+    "allocate_scores",
+    "floor_score",
     "grade_attempt",
     "grade_question",
     "normalize_text",

@@ -141,70 +141,18 @@ async def get_job_for_viewer(
 async def retry_practice_generate_job(
     session: AsyncSession, *, user: User, job_id: uuid.UUID, now: datetime | None = None
 ) -> Job:
-    """重试练习生成任务（契约 10.1）。
+    """**已迁移**：练习生成任务的加锁与重置逻辑移到
+    :mod:`app.modules.practice.service`（契约 10.1）。
 
-    仅课程创建教师可调用；只接受 ``FAILED`` 或**租约已过期**的 ``RUNNING``。
-    复用原练习 ID 与 job ID，清除运行令牌、租约、错误与旧题目，重置为
-    ``GENERATING`` / ``PENDING`` 供 Worker 重新领取。
-
-    :raises ResourceNotFoundError: 任务不存在、不可见或类型未实现（404）。
-    :raises JobNotRetryableError: ``MATERIAL_PARSE`` 或状态不可重试（409）。
+    保留这个薄封装是为了让直接调用 jobs 服务的既有代码路径仍然可用：
+    它等价于"加锁准备 + 写入"两步，并且与 HTTP 路由一样按
+    ``课程 → 练习 → 任务`` 的顺序加锁。
     """
-    from app.core.errors import JobNotRetryableError, RoleForbiddenError
-    from app.modules.auth.models import UserRole
-    from app.modules.courses import service as courses_service
-    from app.modules.practice import repository as practice_repo
-    from app.modules.practice.models import PracticeStatus
+    from app.modules.practice import service as practice_service
 
-    job = await repo.get_job_by_id(session, job_id)
-    if job is None:
-        raise ResourceNotFoundError()
-    if job.type is JobType.SUBMISSION_GRADE:
-        raise ResourceNotFoundError()
-    if job.type is JobType.MATERIAL_PARSE:
-        # 资料解析的重试一律经由 POST /materials/{material_id}/parse（契约 5.3）
-        raise JobNotRetryableError()
-
-    practice_set = await practice_repo.get_set_by_id(session, job.resource_id)
-    if practice_set is None:
-        raise ResourceNotFoundError()
-    course = await courses_service.require_member_course(
-        session, user=user, course_id=practice_set.course_id
+    target = await practice_service.lock_retryable_job(
+        session, user=user, job_id=job_id, now=now
     )
-    if user.role is UserRole.STUDENT:
-        raise RoleForbiddenError()
-    await courses_service.require_course_teacher(
-        session, user=user, course_id=course.id
+    return await practice_service.retry_practice_generate_job(
+        session, target=target, now=now
     )
-    courses_service.require_course_active(course)
-
-    locked_job = await repo.get_job_for_resource_for_update(
-        session, job_type=JobType.PRACTICE_GENERATE, resource_id=job.resource_id
-    )
-    locked_set = await practice_repo.get_set_for_update(session, job.resource_id)
-    if locked_job is None or locked_set is None:  # pragma: no cover - 并发删除兜底
-        raise ResourceNotFoundError()
-
-    timestamp = now or utc_now()
-    lease_expired = (
-        locked_job.lease_expires_at is None
-        or locked_job.lease_expires_at <= timestamp
-    )
-    retryable = locked_job.status is JobStatusValue.FAILED or (
-        locked_job.status is JobStatusValue.RUNNING and lease_expired
-    )
-    if not retryable:
-        raise JobNotRetryableError()
-
-    await practice_repo.delete_questions(session, practice_set_id=locked_set.id)
-    locked_job.status = JobStatusValue.PENDING
-    locked_job.progress = 0
-    locked_job.error = None
-    locked_job.started_at = None
-    locked_job.finished_at = None
-    locked_job.run_token = None
-    locked_job.lease_expires_at = None
-    locked_set.status = PracticeStatus.GENERATING
-    locked_set.updated_at = timestamp
-    await session.commit()
-    return locked_job

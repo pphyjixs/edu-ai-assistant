@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy.exc import IntegrityError
@@ -33,8 +34,11 @@ from app.core.errors import (
 from app.core.pagination import PaginationParams
 from app.core.time import utc_now
 from app.modules.auth.models import User, UserRole
+from app.modules.courses import repository as courses_repo
 from app.modules.courses import service as courses_service
+from app.modules.courses.models import Course
 from app.modules.jobs import service as jobs_service
+from app.modules.jobs.models import JobStatusValue
 from app.modules.materials.models import MaterialStatus
 from app.modules.practice import repository as repo
 from app.modules.practice import scoring
@@ -78,26 +82,97 @@ def _question_types_as_str(payload: PracticeGenerateRequest) -> list[str]:
     return [item.value for item in payload.question_types]
 
 
+async def _lock_visible_course(
+    session: AsyncSession, *, user: User, course_id: uuid.UUID
+) -> Course:
+    """锁住课程行并做成员可见性检查（课程不存在或非成员统一 404）。"""
+    course = await courses_repo.get_course_for_update(session, course_id)
+    if course is None:
+        raise ResourceNotFoundError()
+    if not await courses_service.is_course_member(
+        session, user=user, course_id=course.id
+    ):
+        raise ResourceNotFoundError()
+    return course
+
+
+async def lock_teacher_course(
+    session: AsyncSession, *, user: User, course_id: uuid.UUID
+) -> Course:
+    """**写接口第一阶段**：锁课程 → 成员（404）→ 创建教师（403）→ 未归档（409）。
+
+    检查顺序与契约 7.1 一致；拿到的行锁保持到本次事务结束，因此后续的请求体
+    校验与写入都发生在锁内。
+    """
+    course = await _lock_visible_course(session, user=user, course_id=course_id)
+    await _require_creator_teacher(session, user=user, course=course)
+    courses_service.require_course_active(course)
+    return course
+
+
+async def lock_set_for_publish(
+    session: AsyncSession, *, user: User, set_id: uuid.UUID
+) -> PracticeSet:
+    """发布的前置阶段：读练习（404）→ 锁课程 → 创建教师 → 未归档 → 锁练习。
+
+    锁顺序固定为 **课程 → 练习**；练习状态检查（`409 PRACTICE_NOT_READY`）
+    也在这一阶段完成，因此请求体校验排在其后。
+    """
+    practice_set = await repo.get_set_by_id(session, set_id)
+    if practice_set is None:
+        raise ResourceNotFoundError()
+    await lock_teacher_course(
+        session, user=user, course_id=practice_set.course_id
+    )
+
+    locked = await repo.get_set_for_update(session, set_id)
+    if locked is None:  # pragma: no cover - 并发删除的兜底
+        raise ResourceNotFoundError()
+    if locked.status not in (PracticeStatus.DRAFT, PracticeStatus.PUBLISHED):
+        raise PracticeNotReadyError()
+    return locked
+
+
+async def lock_set_for_submit(
+    session: AsyncSession, *, user: User, set_id: uuid.UUID
+) -> PracticeSet:
+    """提交的前置阶段：读练习（404）→ 锁课程 → 成员 → 学生（403）→ 未归档
+    → 锁练习 → 已发布（409）。"""
+    practice_set = await repo.get_set_by_id(session, set_id)
+    if practice_set is None:
+        raise ResourceNotFoundError()
+    course = await _lock_visible_course(
+        session, user=user, course_id=practice_set.course_id
+    )
+    if user.role is not UserRole.STUDENT:
+        raise RoleForbiddenError()
+    courses_service.require_course_active(course)
+
+    locked = await repo.get_set_for_update(session, set_id)
+    if locked is None:  # pragma: no cover - 并发删除的兜底
+        raise ResourceNotFoundError()
+    if locked.status is not PracticeStatus.PUBLISHED:
+        raise PracticeNotReadyError()
+    return locked
+
+
 async def create_practice_set(
     session: AsyncSession,
     *,
+    course: Course,
     user: User,
-    course_id: uuid.UUID,
     payload: PracticeGenerateRequest,
     now: datetime | None = None,
 ) -> tuple[PracticeSet, object]:
-    """生成练习（契约 7.2）：创建练习记录与任务，返回 ``(练习, 任务)``。
+    """生成的写入阶段（契约 7.2）：创建练习记录与任务。
 
-    :raises ResourceNotFoundError: 非成员，或所选资料不可见（404）。
-    :raises RoleForbiddenError / CourseForbiddenError: 非创建教师（403）。
-    :raises CourseArchivedError: 课程已归档（409）。
+    调用方必须先用 :func:`lock_teacher_course` 拿到课程行锁；资料可见性与就绪
+    检查、练习与任务的写入都发生在该锁内。
+
+    :raises ResourceNotFoundError: 所选资料不可见（404）。
     :raises MaterialNotReadyError: 所选资料未就绪或缺片段（409）。
     """
     from app.core.errors import MaterialNotReadyError
-
-    course = await _require_course_member(session, user=user, course_id=course_id)
-    await _require_creator_teacher(session, user=user, course=course)
-    courses_service.require_course_active(course)
 
     # 资料可见性与就绪（契约 7.2）：不可见/已删除/不属于本课程统一 404
     rows = await repo.list_generation_materials(
@@ -185,34 +260,23 @@ async def get_practice_set(
 async def publish_practice_set(
     session: AsyncSession,
     *,
-    user: User,
-    set_id: uuid.UUID,
+    practice_set: PracticeSet,
     now: datetime | None = None,
 ) -> PracticeSet:
-    """发布练习（契约 7.5）：``DRAFT`` → ``PUBLISHED``，已发布幂等返回。"""
-    practice_set = await repo.get_set_by_id(session, set_id)
-    if practice_set is None:
-        raise ResourceNotFoundError()
-    course = await _require_course_member(
-        session, user=user, course_id=practice_set.course_id
-    )
-    await _require_creator_teacher(session, user=user, course=course)
-    courses_service.require_course_active(course)
+    """发布的写入阶段（契约 7.5）：``DRAFT`` → ``PUBLISHED``，已发布幂等返回。
 
-    locked = await repo.get_set_for_update(session, set_id)
-    if locked is None:  # pragma: no cover - 并发删除的兜底
-        raise ResourceNotFoundError()
-    if locked.status is PracticeStatus.PUBLISHED:
-        return locked  # 幂等：不改动 published_at
-    if locked.status is not PracticeStatus.DRAFT:
-        raise PracticeNotReadyError()
+    调用方必须先用 :func:`lock_set_for_publish` 锁好课程与练习行；
+    归档检查与状态检查都在那一阶段完成，因此这里的写入始终在锁内。
+    """
+    if practice_set.status is PracticeStatus.PUBLISHED:
+        return practice_set  # 幂等：不写库、不改动 published_at
 
     published_at = now or utc_now()
-    locked.status = PracticeStatus.PUBLISHED
-    locked.published_at = published_at
-    locked.updated_at = published_at
+    practice_set.status = PracticeStatus.PUBLISHED
+    practice_set.published_at = published_at
+    practice_set.updated_at = published_at
     await session.commit()
-    return locked
+    return practice_set
 
 
 def _invalid(message: str, field: str) -> ValidationError:
@@ -262,35 +326,23 @@ def _validate_submitted_answers(
 async def submit_attempt(
     session: AsyncSession,
     *,
+    practice_set: PracticeSet,
     user: User,
-    set_id: uuid.UUID,
     payload: PracticeAttemptSubmitRequest,
     now: datetime | None = None,
 ) -> tuple[PracticeAttempt, list[PracticeQuestion], list[PracticeAttemptAnswer]]:
-    """提交答案并同步评分（契约 7.6）。
+    """提交答案并同步评分（契约 7.6）的写入阶段。
 
-    返回 ``(答题记录, 题目, 每题得分)``；评分与记录在同一事务写入。
+    调用方必须先用 :func:`lock_set_for_submit` 锁好课程与练习行：成员、角色、
+    归档与练习状态检查都在那一阶段完成（先于请求体校验），评分与写入在本阶段
+    的同一事务内完成。
 
-    :raises RoleForbiddenError: 教师提交（403）。
-    :raises CourseArchivedError: 课程已归档（409）。
-    :raises PracticeNotReadyError: 练习未发布（409）。
     :raises ValidationError: 答案覆盖或类型不符（422）。
     :raises PracticeAlreadyAttemptedError: 重复提交（409）。
     """
-    # 只保留标量：回滚会 expire ORM 对象，之后不能再访问 user.role / user.id
+    # 只保留标量：回滚会 expire ORM 对象，之后不能再访问 user.id
     student_id = user.id
-    practice_set = await repo.get_set_by_id(session, set_id)
-    if practice_set is None:
-        raise ResourceNotFoundError()
-    course = await _require_course_member(
-        session, user=user, course_id=practice_set.course_id
-    )
-    if user.role is not UserRole.STUDENT:
-        raise RoleForbiddenError()
-    courses_service.require_course_active(course)
-    if practice_set.status is not PracticeStatus.PUBLISHED:
-        raise PracticeNotReadyError()
-
+    set_id = practice_set.id
     questions = await repo.list_questions(session, practice_set_id=set_id)
     if not questions:  # pragma: no cover - 已发布练习必然有题目
         raise PracticeNotReadyError()
@@ -367,6 +419,92 @@ async def submit_attempt(
     )
 
 
+@dataclass(slots=True)
+class RetryTarget:
+    """重试目标：已按统一顺序加锁的任务与练习。"""
+
+    job: object
+    practice_set: PracticeSet
+
+
+def _is_retryable(job, *, now: datetime) -> bool:
+    """``FAILED``，或**租约已过期**的 ``RUNNING``（崩溃遗留）才可重试。"""
+    if job.status is JobStatusValue.FAILED:
+        return True
+    if job.status is not JobStatusValue.RUNNING:
+        return False
+    return job.lease_expires_at is None or job.lease_expires_at <= now
+
+
+async def lock_retryable_job(
+    session: AsyncSession, *, user: User, job_id: uuid.UUID, now: datetime | None = None
+) -> RetryTarget:
+    """重试的前置阶段（契约 10.1）：读任务 → 锁课程 → 创建教师 → 未归档
+    → 锁练习 → 锁任务 → 可重试检查。
+
+    锁顺序固定为 **课程 → 练习 → 任务**（与 Worker 回写、写接口一致），
+    不再使用 "任务 → 练习" 的反向顺序。
+
+    :raises ResourceNotFoundError: 任务/练习不存在、类型未实现（404）。
+    :raises RoleForbiddenError / CourseForbiddenError: 非创建教师（403）。
+    :raises CourseArchivedError: 课程已归档（409）。
+    :raises JobNotRetryableError: 状态不可重试（409）。
+    """
+    from app.core.errors import JobNotRetryableError
+    from app.modules.jobs import repository as jobs_repo
+    from app.modules.jobs.models import JobType
+
+    job = await jobs_repo.get_job_by_id(session, job_id)
+    if job is None:
+        raise ResourceNotFoundError()
+    if job.type is JobType.SUBMISSION_GRADE:
+        # 资源未实现：统一按不可见处理
+        raise ResourceNotFoundError()
+    if job.type is not JobType.PRACTICE_GENERATE:
+        # 资料解析的重试一律经由 POST /materials/{material_id}/parse（契约 5.3）
+        raise JobNotRetryableError()
+
+    practice_set = await repo.get_set_by_id(session, job.resource_id)
+    if practice_set is None:
+        raise ResourceNotFoundError()
+    practice_set_id = practice_set.id
+    await lock_teacher_course(session, user=user, course_id=practice_set.course_id)
+
+    locked_set = await repo.get_set_for_update(session, practice_set_id)
+    locked_job = await jobs_service.lock_practice_generate_job(
+        session, practice_set_id=practice_set_id
+    )
+    if locked_set is None or locked_job is None:  # pragma: no cover - 并发删除兜底
+        raise ResourceNotFoundError()
+    if not _is_retryable(locked_job, now=now or utc_now()):
+        raise JobNotRetryableError()
+    return RetryTarget(job=locked_job, practice_set=locked_set)
+
+
+async def retry_practice_generate_job(
+    session: AsyncSession, *, target: RetryTarget, now: datetime | None = None
+) -> object:
+    """重试的写入阶段（契约 10.1）：清空旧题目并重置任务，复用原 ID。
+
+    调用方必须先用 :func:`lock_retryable_job` 加锁并完成全部检查。
+    """
+    timestamp = now or utc_now()
+    practice_set = target.practice_set
+    job = target.job
+    await repo.delete_questions(session, practice_set_id=practice_set.id)
+    job.status = JobStatusValue.PENDING
+    job.progress = 0
+    job.error = None
+    job.started_at = None
+    job.finished_at = None
+    job.run_token = None
+    job.lease_expires_at = None
+    practice_set.status = PracticeStatus.GENERATING
+    practice_set.updated_at = timestamp
+    await session.commit()
+    return job
+
+
 async def get_attempt_result(
     session: AsyncSession, *, user: User, attempt_id: uuid.UUID
 ) -> tuple[PracticeAttempt, PracticeSet, list[PracticeQuestion], list[PracticeAttemptAnswer]]:
@@ -396,10 +534,16 @@ async def get_attempt_result(
 
 
 __all__ = [
+    "RetryTarget",
     "create_practice_set",
     "get_attempt_result",
     "get_practice_set",
     "list_published_sets",
+    "lock_retryable_job",
+    "lock_set_for_publish",
+    "lock_set_for_submit",
+    "lock_teacher_course",
     "publish_practice_set",
+    "retry_practice_generate_job",
     "submit_attempt",
 ]

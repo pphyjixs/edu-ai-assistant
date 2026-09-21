@@ -23,6 +23,8 @@ from app.db.session import SessionDep
 from app.modules.auth.permissions import CurrentUserDep
 from app.modules.jobs import service
 from app.modules.jobs.schemas import JobStatus
+from app.modules.practice import service as practice_service
+from app.modules.practice.deps import RetryTargetDep
 
 jobs_router = APIRouter(tags=["jobs"])
 
@@ -101,9 +103,9 @@ async def retry_job(
     request: Request,
     user: CurrentUserDep,
     session: SessionDep,
+    target: RetryTargetDep,
 ) -> JobStatus:
+    # 依赖已按 课程 → 练习 → 任务 的顺序加锁并完成全部检查，请求体校验在其后
     await validate_empty_object_body(request)
-    job = await service.retry_practice_generate_job(
-        session, user=user, job_id=job_id
-    )
+    job = await practice_service.retry_practice_generate_job(session, target=target)
     return JobStatus.model_validate(job)
