@@ -58,13 +58,13 @@
 
 ## 5. Learning 验收
 
-- [ ] 学生只能在自己加入的课程中创建问答会话。
-- [ ] 回答基于该课程已就绪资料，不跨课程泄漏内容。
-- [ ] 有依据的回答展示至少一个可点击引用。
-- [ ] 资料不足时回答明确提示“课程资料中未找到依据”。
-- [ ] 教师可生成包含指定数量和题型的练习。
-- [ ] 学生提交练习后看到得分、答案和解析。
-- [ ] 练习和问答在刷新页面后仍可查看。
+- [x] 学生只能在自己加入的课程中创建问答会话。（`integration/test_chat_api.py`：非成员创建会话与列表统一 `404 RESOURCE_NOT_FOUND`，同课程其他成员不是所有者时读写消息同样 `404`，不泄露会话存在性）
+- [x] 回答基于该课程已就绪资料，不跨课程泄漏内容。（检索 SQL 限定课程 ID、资料未删除且 `READY`；`integration/test_chat_scope.py` 断言提示词只含本课程 `READY` 资料的片段——跨课程、`PROCESSING` 与已删除资料的原文都不出现）
+- [ ] 有依据的回答展示至少一个可点击引用。（**后端已交付**：`grounded=true` 时引用含资料 ID/名称、命中章节（无法匹配为 `null`）、来源类型、从 1 开始的位置与已校验的原文摘录；**前端引用跳转尚未接入**）
+- [ ] 资料不足时回答明确提示“课程资料中未找到依据”。（**后端已交付**：无 `READY` 资料或检索不到内容、以及模型引用全部校验失败时，固定返回该文案 + `grounded=false` + 空引用，仍是 `201`；**前端展示尚未验收**）
+- [ ] 教师可生成包含指定数量和题型的练习。（**练习模块尚未交付**，第一版只交付后端问答能力）
+- [ ] 学生提交练习后看到得分、答案和解析。（**练习模块尚未交付**）
+- [ ] 练习和问答在刷新页面后仍可查看。（问答**后端已交付**：会话、消息、引用与生成尝试持久化，`integration/test_chat_api.py` 断言重新查询后一问一答与引用完整一致；练习尚未交付）
 
 ## 6. Assignments 验收
 
@@ -148,10 +148,10 @@ cd backend
 
 | 层 | 数量 | 数据库 |
 | --- | --- | --- |
-| `tests/unit` | 141 | 不接触数据库与网络；外部依赖替换为 fake 或 `MockTransport` |
-| `tests/integration` | 199 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储与解析 Worker 端到端用例需配置 S3 端点 |
-| `tests/contract` | 47 | 同上（令牌格式、课程与课件上传契约、OpenAPI 一致性） |
-| 合计 | 387 | 连真实 PostgreSQL + 对象存储时全部通过（模型为本地假 HTTP 服务） |
+| `tests/unit` | 167 | 不接触数据库与网络；外部依赖替换为 fake 或 `MockTransport` |
+| `tests/integration` | 224 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储与解析 Worker 端到端用例需配置 S3 端点 |
+| `tests/contract` | 54 | 同上（令牌格式、课程、课件上传与课程问答契约、OpenAPI 一致性） |
+| 合计 | 445 | 连真实 PostgreSQL + 对象存储时除 1 项契约允许分支外全部通过（模型为本地假 HTTP 服务） |
 
 测试库规则（见 `backend/tests/pg_support.py`）：
 
@@ -232,6 +232,12 @@ cd backend
 | 列表/删除/重试/大纲的路径、状态码、响应组件（`MaterialOutline` 等）与错误码 | `contract/test_materials_contract.py` |
 | 过期上传清理：删孤立对象并标记过期、幂等、已完成资料不删、与完成请求争锁、存储不可用跳过；维护命令连接隔离测试库与真实测试桶执行两次 | `integration/test_upload_cleanup.py` |
 | 上传会话 `expired_at` 过期清理标记列 | `integration/test_migrations.py` |
+| 问答检索与引用校验、模型异常分支（离线） | `unit/test_chat_retrieval_and_answer.py` |
+| 问答四接口的路径、状态码、Bearer、响应组件与错误码枚举 | `contract/test_chat_contract.py` |
+| 会话与消息权限、隔离、持久化、请求校验 | `integration/test_chat_api.py` |
+| 跨课程/未就绪/已删除不进提示词、归档竞态、并发 409、模型失败 502/503 | `integration/test_chat_scope.py` |
+| 片段回填：幂等、force 重写、提交前复查、失败安全摘要 | `integration/test_materials_backfill.py` |
+| `pg_trgm` 扩展、chat 四表、片段 GIN 索引的升级与回退 | `integration/test_migrations.py` |
 
 本次查询与清理交付验证：334 项（128 unit / 165 integration / 41 contract），
 连真实 PostgreSQL + MinIO（Quay 镜像 `quay.io/minio/minio`，本机以 Docker 启动，
@@ -260,6 +266,23 @@ HTTP 服务）：DOCX / PPTX / PDF 三种格式经真实预签名直传后由 Wo
 从真实桶流式读取（复核大小与 SHA-256）解析为 READY；删除后维护命令
 从真实桶移除对象。**真实外部模型调用未验收**：假模型服务仅覆盖
 Chat Completions 请求形状与失败分支，模型生成质量属后续验收。
+
+可检索原文片段（契约 6.1 / 迁移 `0007_material_chunks`）交付验证：
+402 项（152 unit / 203 integration / 47 contract），连真实 PostgreSQL 时
+**389 通过、13 跳过、0 失败**；13 项跳过全部是未配置 `TEST_S3_*` 的对象存储
+用例（`test_storage_minio.py` 8 + `test_parse_worker_minio.py` 4）与
+`test_upload_cleanup.py` 的真实存储删除 1 项。本步覆盖：
+
+- 切片规则（`unit/test_materials_retrieval_chunks.py`）：片段约 1,000 字符、
+  相邻片段重叠 100±10 字符（按原文位置度量）、顺序号从 1 连续、
+  单个超长来源单元同样切成多片、参数非法直接拒绝；
+- 落库（`integration/test_materials_api.py`）：解析成功时片段与章节、知识点、
+  资料 `READY`、任务 `SUCCEEDED` 在同一事务内先清后写，正文句子可检索；
+- 不产生重复或半份片段：队列空后再驱动 Worker 不新增；强制把任务重置为
+  `PENDING` 再解析，片段内容与数量完全一致（全量重写）；
+- 解析失败不落库任何片段；**旧执行者回写**（`test_retry_revokes_stale_worker_write_back`
+  竞态回归用例已扩展）连同片段一起被拒绝，片段数为 0；
+- 删除资料后片段被清空，不再被检索。
 
 HeadObject 带 `x-amz-checksum-mode: ENABLED` 后，MinIO 回显已存储的
 `x-amz-checksum-sha256`，校验值读取也由真实存储用例验证。真实 PUT、内容与签名哈希不符被拒、
@@ -290,8 +313,50 @@ cd backend
 在本地 PostgreSQL 上执行完整套件，运行后确认测试库、迁移库及生命周期检查库均无残留。
 存在 2 条测试客户端依赖弃用警告。
 Preview 尚未验证；其他教师不能管理他人课程的判断已由课程模块覆盖，
-但平台角色守卫（`ROLE_FORBIDDEN`）仍由 `TeacherDep` 探针验证，
-待更多业务接口接入后补充真实路由验收。
+平台角色守卫（`ROLE_FORBIDDEN`）已由课程创建、资料上传/删除、重试解析等
+真实业务端点验证（`integration/test_courses_api.py`、`integration/test_materials_api.py`），
+并保留 `TeacherDep` 探针用例覆盖守卫本身。
 
 契约测试只校验请求与响应格式：契约 2.2 把令牌存放位置交给前端自行决定，
 因此测试反过来断言服务端不通过 Cookie 下发令牌，不假设也不约束前端的存储方式。
+
+课程问答（契约第 6 节 / 迁移 `0008_chat_qa`）交付验证，独立测试库
+`edu_ai_chat_verify_test` + MinIO 测试桶 `edu-ai-test`：**445 项收集，
+444 通过、1 跳过、0 失败**（unit 167 / contract 54 / integration 224）。
+唯一跳过是 `integration/test_storage_minio.py:289` 的契约允许分支
+（S3 实现未校验 `X-Amz-Expires`，该分支不适用），**不是**因缺少数据库或
+对象存储依赖而跳过；PostgreSQL 与对象存储相关用例全部真实执行。
+运行后复查 `pg_database`，测试库与迁移检查库均无残留。
+
+本步覆盖：
+
+- 检索与引用校验（`unit/test_chat_retrieval_and_answer.py`）：关键词构造
+  （ASCII 词 + 中文 2-gram、去重与上限）、提示词只含本次检索片段、
+  引用片段 ID 越界或摘录不在原文即丢弃、全部无效时降级为无依据、
+  模型未配置/输出非法/HTTP 错误/超时的异常分支；
+- 四接口契约（`contract/test_chat_contract.py`）：路径、成功状态码、
+  Bearer、`ChatSessionSchema` / `ChatMessageSchema` / `Citation` 字段集、
+  请求体只含 `content`、错误码枚举含 `CHAT_CONFLICT` 与 `SERVICE_UNAVAILABLE`；
+- 权限与隔离（`integration/test_chat_api.py`）：非成员与匿名、非所有者
+  统一 `404`，会话列表各看各的、归档后列表仍可读但创建/提问 `409`；
+- 检索边界（`integration/test_chat_scope.py`）：跨课程、`PROCESSING` 与
+  已删除资料的原文都不进入提示词；删除资料后回答转为无依据且不再调用模型；
+- 受约束生成：有依据时 `grounded=true` 且引用可回查（片段原文中确实存在该摘录）、
+  无依据时固定文案 + 空引用且仍是 `201`；刷新后对话与引用完整一致；
+- 并发与失败：并发提问恰好一个 `201`、一个 `409 CHAT_CONFLICT` 且只写入
+  一问一答（HTTP 层用两个客户端并发，断言"成功次数 × 2 == 消息数"以排除半组消息；
+  另有 service 层确定性用例，两个协程同时发送必得一个冲突、消息仍只有一组）；
+  模型超时 / 5xx / 无效输出 → `502`、未配置 → `503`，都不写消息、
+  只留一条安全尝试记录（不含提示词、原文或模型地址）；
+- 片段回填（`integration/test_materials_backfill.py`）：缺片段的 `READY`
+  资料被补建、重复执行结果一致、`--force` 全量重写不累积、
+  提交前复查拦截回填期间被删除的资料、对象缺失时输出安全摘要并保留原状态。
+
+**模型侧验收边界**：以上问答用例全部使用本地假模型 HTTP 服务
+（`httpx.MockTransport`），覆盖请求形状、引用校验与失败分支；
+**真实外部模型联调尚未验收**（当前环境未配置可用的 Chat Completions
+端点与密钥）。真实模型效果（回答质量、语言一致性）需在配置完成后
+单独验收，不以模拟服务通过代替。
+
+**前端**：聊天页面与引用跳转尚未接入，第 5 节 Learning 中涉及前端展示的
+条目保持未勾选。

@@ -115,6 +115,20 @@ Worker 依赖该环境的 `DATABASE_URL`、`STORAGE_*` 与模型 `AI_BASE_URL` /
 
 `AI_BASE_URL` / `AI_MODEL` 未配置时，Worker 会把领取到的任务置为 `FAILED`（安全提示"未配置模型端点"），不会崩溃或无限重试。
 
+**课程问答（RAG）配套**：首版使用 PostgreSQL `pg_trgm` 文本检索，因此
+
+- 数据库必须启用 `pg_trgm` 扩展；迁移 `0008_chat_qa` 会执行 `CREATE EXTENSION IF NOT EXISTS pg_trgm`，需要数据库超级用户或具备该扩展安装权限的角色。权限受限的环境由 DBA 预先执行 `CREATE EXTENSION pg_trgm;`。
+- **开放问答前必须回填已有资料**（片段是解析 Worker 之后才落库的，早先解析完成的 `READY` 资料没有片段、检索不到）：
+
+```bash
+python scripts/backfill_material_chunks.py            # 只补没有片段的资料
+python scripts/backfill_material_chunks.py --force    # 连已有片段的资料一并重做
+```
+
+该命令幂等：重复执行结果一致，失败只输出安全摘要并保留资料原状态，再次运行即可重试；资料在回填期间被删除或状态变化时不会留下可检索片段。它依赖 `DATABASE_URL` 与 `STORAGE_*`。
+
+问答复用 Worker 的模型配置（`AI_BASE_URL` / `AI_MODEL` / `AI_API_KEY`）；模型未配置时问答接口返回 `503 SERVICE_UNAVAILABLE`，不影响其他接口。
+
 开发、Preview 和 Production 使用独立配置。任何密钥都不能使用 `VITE_` 前缀，也不能提交到仓库。
 
 ### 数据库环境与责任分工

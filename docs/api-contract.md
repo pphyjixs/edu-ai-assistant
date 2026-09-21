@@ -734,7 +734,7 @@ Authorization: Bearer <access_token>
 - **归档课程的资料不能删除**：首次删除返回 `409 COURSE_ARCHIVED`；与上传接口不同，删除没有“已归档仍可读”的例外。
 - **幂等**：同一创建教师对已删除资料的再次删除返回 `204`，不报错、不重复处理。其他用户（含其他教师）对已删除资料视同不存在，统一 `404`。
 - 删除是**标记删除**：记录保留（上传会话与审计依赖它），`deleted_at` 被置为当前时间；此后该资料从资料列表（5.1）、资料详情（4.7）、重试解析（5.3）与大纲查询（5.4）中消失，其 `MATERIAL_PARSE` 任务也不可再通过 `GET /jobs/{job_id}` 读取（可见性等同已删除资料 → `404`）。
-- **同一事务**内完成四件事：标记 `deleted_at`（隐藏资料）→ 取消未完成解析（任务行锁内置 `CANCELLED`）→ 清空章节与知识点 → 写入**对象删除待办**。上传会话与资料行作为最小删除记录保留。
+- **同一事务**内完成五件事：标记 `deleted_at`（隐藏资料）→ 取消未完成解析（任务行锁内置 `CANCELLED`）→ 清空章节与知识点 → **清空可检索片段**（删除后的资料不得再被问答检索，见 6.1）→ 写入**对象删除待办**。上传会话与资料行作为最小删除记录保留。
 - **对象删除走独立维护命令**：待办记录关联对象的 PUT 地址过期时间；维护命令在「PUT 地址过期 + 缓冲期（`MATERIAL_DELETE_BUFFER_SECONDS`，默认 1 小时）」后删除对象并**再次核查晚到 PUT**——`If-None-Match: *` 在对象删除后放行晚到写入，因此删除后必须复查，仍有对象时保持待办继续重试，直到确认对象不再出现。删除失败（存储故障等）持续重试，不会留下永久孤立对象。
 - 删除与解析互斥：`PROCESSING` 中的资料同样可以删除；Worker 回写前发现资料已删除则放弃其结果（见 5.5），运行令牌校验同时防止过期 Worker 覆盖新一轮执行。
 
@@ -861,7 +861,9 @@ Authorization: Bearer <access_token>
 
 1. **领取**：以原子方式领取一个 `PENDING` 的 `MATERIAL_PARSE` 任务（`UPDATE ... WHERE status='PENDING' ... RETURNING` 或等价的行锁方案），置为 `RUNNING`、记录 `started_at`、`progress` 从 0 开始；同时递增执行**尝试次数**（`attempts`）、生成**运行令牌**（`run_token`）并设置**租约**（`lease_expires_at`，配置 `MATERIAL_PARSE_LEASE_SECONDS`）。
 2. **解析**：按资料的 `content_type` 流式下载对象并复核大小与 SHA-256（与资料声明比对，不符即拒绝）；用 `pypdf` / `python-pptx` / `python-docx` 提取带来源位置的文本并按来源顺序分块（默认全文 120,000 字符上限、每块 8,000 字符，由 `MATERIAL_PARSE_MAX_CHARS` / `MATERIAL_PARSE_CHUNK_CHARS` 配置；超限直接进入 `FAILED`，不截断后宣称成功；扫描版 PDF 无可提取文本时明确失败，不提供 OCR）；把分块全文送入 Chat Completions 兼容端点（`AI_BASE_URL` / `AI_MODEL`），生成**同原文主要语言**的章节标题与知识点；模型输出经 Pydantic 校验，原文摘录必须能在对应来源文本中找到（找不到视为幻觉、整体无效）。
-3. **成功**：章节与知识点在**同一事务**中落库并把任务置为 `SUCCEEDED`（`progress=100`、`finished_at`），资料状态置为 `READY`。资料状态与任务状态在成功路径上**允许短暂不一致**（先任务后资料或反之），读接口以资料状态为准（5.4 的分流表），不因此返回错误。
+3. **成功**：章节、知识点与**可检索原文片段**在**同一事务**中落库并把任务置为 `SUCCEEDED`（`progress=100`、`finished_at`），资料状态置为 `READY`。资料状态与任务状态在成功路径上**允许短暂不一致**（先任务后资料或反之），读接口以资料状态为准（5.4 的分流表），不因此返回错误。
+   - 片段是问答检索的单位（6.1）：同一批来源文本按约 **1,000** 字符切分、相邻片段重叠约 **100** 字符，并记录片段自身的来源位置区间（PDF 页码 / PPTX 幻灯片号 / DOCX 段落序号），供引用定位（6.6）。
+   - 片段与章节、知识点一样**先清后写**：`(material_id, order)` 唯一约束加上“同一事务内全量重写”，保证解析失败、旧执行者回写与重复解析都不会留下重复或半份片段。
 4. **失败**：任务置为 `FAILED`、资料状态置为 `FAILED`，`error` / `error_message` 写入**安全摘要**（不含堆栈、不含对象键、不含内部地址）；解析结果不落库，不产生部分章节。
 5. **回写校验**：成功与失败的回写都必须**同时满足**「运行令牌匹配」且「任务仍为 `RUNNING`」——二者任一不满足（任务已被 5.3 重置并清空令牌、被删除事务取消，或资料已被删除）即放弃回写，仅记日志。
 6. **崩溃安全**：Worker 中断后任务停留于 `RUNNING` 直到租约到期；5.3 的重试对“任务 `SUCCEEDED` 但资料未 `READY`”等异常窗口同样可重置（见 5.3 分流表），不要求 Worker 自身实现租约续期。
@@ -871,40 +873,254 @@ Authorization: Bearer <access_token>
 
 ## 6. 课程问答接口
 
-| 方法 | 路径 | 说明 | 权限 |
-| --- | --- | --- | --- |
-| POST | `/courses/{course_id}/chat-sessions` | 创建会话 | 课程成员 |
-| GET | `/courses/{course_id}/chat-sessions` | 我的会话列表 | 课程成员 |
-| GET | `/chat-sessions/{session_id}/messages` | 会话消息 | 会话所有者 |
-| POST | `/chat-sessions/{session_id}/messages` | 发送问题 | 会话所有者 |
+| 方法 | 路径 | 说明 | 权限 | 阶段 |
+| --- | --- | --- | --- | --- |
+| POST | `/courses/{course_id}/chat-sessions` | 创建会话 | 课程成员 | 已冻结，见 6.2 |
+| GET | `/courses/{course_id}/chat-sessions` | 我的会话列表 | 课程成员 | 已冻结，见 6.3 |
+| GET | `/chat-sessions/{session_id}/messages` | 会话消息 | 会话所有者 | 已冻结，见 6.4 |
+| POST | `/chat-sessions/{session_id}/messages` | 发送问题 | 会话所有者 | 已冻结，见 6.5 |
 
-提问请求：
+第一个版本只交付后端问答能力：不含聊天页面、引用跳转页面，也不含练习接口（第 7 节）。四个接口共用本节定义的 `ChatSession`、`ChatMessage` 与 `Citation`。
+
+### 6.1 通用规则与权限
+
+回答依据：
+
+- 回答**只依据当前课程中未删除、状态为 `READY` 的资料**。`PROCESSING` / `FAILED` 的资料不参与检索；已删除资料同样不参与——删除事务会同时清空其片段（5.2）；实现检索时还必须按"资料未删除且 `READY`"再过滤一次，两道防线都不依赖客户端行为。
+- 检索在资料的**原文片段**上进行（片段由解析 Worker 落库，见 5.5）；引用必须来自命中的片段，不得凭模型记忆编造来源。
+- **有依据**：返回回答正文、`grounded` 为 `true` 与至少一个引用。
+- **无依据**（课程没有 `READY` 资料、或检索不到相关内容）：`content` 固定为 `课程资料中未找到依据`，`grounded` 为 `false`，`citations` 为空数组；这不是错误，接口仍返回 `201`。
+- 回答不跨课程：只检索会话所属课程的资料。
+
+检索与生成（服务端实现约束）：
+
+- 首版使用 **PostgreSQL `pg_trgm` 文本检索**（未配置嵌入模型或 pgvector）：查询本身限定课程 ID、资料未删除且 `READY`，最多取 **5** 个相关片段；部署环境须提供 `pg_trgm` 扩展。
+- 片段是解析 Worker 落库的原文片段（5.5）——早于该功能解析完成的资料由维护命令回填（`scripts/backfill_material_chunks.py`，**开放问答前必须执行**）。
+- 模型由**可替换的适配层**调用 Chat Completions 兼容端点（复用 `AI_BASE_URL` / `AI_MODEL` / `AI_API_KEY`）；模型输出经 Pydantic 校验，**只允许引用本次检索到的片段**，服务端再校验片段 ID 与原文摘录后才生成引用。
+- 服务端记录每次生成的**尝试记录**（模型名称、提示词版本、检索片段数、耗时与安全失败摘要），便于事后回溯；日志与记录都不包含完整课件原文、提示词或密钥。
+
+会话与消息：
+
+- 创建会话者即**会话所有者**；会话列表只返回当前用户自己的会话，教师与学生各看各的。
+- 消息接口（列表与发送）**仅会话所有者可用**；不是所有者与会话不存在统一返回 `404 RESOURCE_NOT_FOUND`，不区分两者，避免用于枚举他人会话。
+- 课程成员（教师或学生）均可创建会话与读取自己的会话；本接口不适用 `ROLE_FORBIDDEN`。
+- 课程不存在，或当前用户不是该课程成员时，统一返回 `404 RESOURCE_NOT_FOUND`。
+- **归档课程**：会话列表（6.3）与消息列表（6.4）仍返回 `200`（读历史）；创建会话（6.2）与发送问题（6.5）返回 `409 COURSE_ARCHIVED`——归档只禁止写入。
+
+分页与排序（沿用第 1 节 `page` / `page_size`）：
+
+| 列表 | 排序 | 说明 |
+| --- | --- | --- |
+| 会话列表 | `last_message_at` **倒序**，同值按 `id` 倒序 | 最近有活动的会话在前；从未发言的会话以创建时间参与排序 |
+| 消息列表 | `created_at` **升序**，同值按 `id` 升序 | 按对话发生的顺序返回，不做倒序 |
+
+分页参数越界（`page` < 1 或 `page_size` 不在 1–100）返回 `422 VALIDATION_ERROR`，不做静默截断；未声明查询参数同样 `422 VALIDATION_ERROR`。
+
+### 6.2 创建会话
+
+```http
+POST /api/v1/courses/{course_id}/chat-sessions
+Authorization: Bearer <access_token>
+```
+
+**没有请求字段**：请求体可以省略或传空对象 `{}`；带任何未声明字段（或显式 `null`）返回 `422 VALIDATION_ERROR`。
+
+处理顺序固定为：认证（401）→ 课程存在且当前用户是课程成员（404）→ 课程未归档（409）→ 创建会话（201）。
+
+成功响应为 `201 Created`，Schema `ChatSession`：
+
+```json
+{
+  "id": "3f8a1c2e-9d4b-4c17-8e6a-1b2c3d4e5f60",
+  "course_id": "70d1bdfa-bb1a-4b22-9f13-9f1398aeb53c",
+  "created_at": "2026-09-21T08:30:00Z",
+  "last_message_at": "2026-09-21T08:30:00Z"
+}
+```
+
+### 6.3 我的会话列表
+
+```http
+GET /api/v1/courses/{course_id}/chat-sessions?page=1&page_size=20
+Authorization: Bearer <access_token>
+```
+
+查询参数沿用第 1 节的分页约定（`page` 默认 1、`page_size` 默认 20、最大 100）。
+
+成功响应为 `200`，Schema `Page<ChatSession>`（第 1 节的分页包装，`items` 为 `ChatSession` 数组）：
+
+```json
+{
+  "items": [
+    {
+      "id": "3f8a1c2e-9d4b-4c17-8e6a-1b2c3d4e5f60",
+      "course_id": "70d1bdfa-bb1a-4b22-9f13-9f1398aeb53c",
+      "created_at": "2026-09-21T08:30:00Z",
+      "last_message_at": "2026-09-21T09:12:00Z"
+    }
+  ],
+  "page": 1,
+  "page_size": 20,
+  "total": 1
+}
+```
+
+规则：只返回当前用户在该课程中创建的会话；课程成员但非创建者的会话不可见，也不计入 `total`。归档课程仍返回 `200`（6.1）。
+
+### 6.4 会话消息
+
+```http
+GET /api/v1/chat-sessions/{session_id}/messages?page=1&page_size=20
+Authorization: Bearer <access_token>
+```
+
+成功响应为 `200`，Schema `Page<ChatMessage>`：
+
+```json
+{
+  "items": [
+    {
+      "id": "b1e4d2c8-7f5a-4a19-8e2d-3c6b5a4f9e01",
+      "session_id": "3f8a1c2e-9d4b-4c17-8e6a-1b2c3d4e5f60",
+      "role": "USER",
+      "content": "软件生命周期包括哪些阶段？",
+      "grounded": null,
+      "citations": [],
+      "created_at": "2026-09-21T09:12:00Z"
+    }
+  ],
+  "page": 1,
+  "page_size": 20,
+  "total": 1
+}
+```
+
+规则：仅会话所有者可读；其余情况（不存在、不是所有者、会话已随课程归档但用户不是所有者）统一 `404`。归档课程的**本人**会话仍返回 `200`（6.1）。
+
+### 6.5 发送问题
+
+```http
+POST /api/v1/chat-sessions/{session_id}/messages
+Authorization: Bearer <access_token>
+```
+
+提问请求（Schema `ChatQuestionRequest`，保留既有的 `content` 字段）：
 
 ```json
 { "content": "软件生命周期包括哪些阶段？" }
 ```
 
-回答响应：
+| 字段 | 类型 | 必填 | 规则 |
+| --- | --- | --- | --- |
+| `content` | string | 是 | 去除首尾空白后为 1–2000 个字符，不能全为空白；不自动改写大小写 |
+
+请求体拒绝未声明字段与显式 `null`，否则 `422 VALIDATION_ERROR`；`content` 为空串、全空白、超长或非字符串同样 `422 VALIDATION_ERROR`。
+
+处理顺序固定为：认证（401）→ 会话存在且当前用户是所有者（404）→ 课程未归档（409）→ 检索与生成（201 / 502）。
+
+成功响应为 `201 Created`，Schema `ChatMessage`（**助手消息**；同一次提问保存的用户消息与助手消息都可在 6.4 中读到）：
 
 ```json
 {
-  "id": "uuid",
+  "id": "9c2f1e77-5b3a-4d18-9c1e-6f1a2b3c4d5e",
+  "session_id": "3f8a1c2e-9d4b-4c17-8e6a-1b2c3d4e5f60",
   "role": "ASSISTANT",
   "content": "回答正文",
   "grounded": true,
   "citations": [
     {
-      "material_id": "uuid",
+      "material_id": "7a1f2b3c-4d5e-4f60-8a9b-0c1d2e3f4a5b",
       "material_name": "chapter-1.pdf",
-      "section_id": "uuid",
+      "section_id": "1d3a9c11-8f2b-4c17-9d5e-2a7b6c8d1e02",
       "section_title": "1.2 软件生命周期",
+      "source_type": "PDF_PAGE",
+      "location_start": 3,
+      "location_end": 3,
       "page": 3,
       "quote": "用于展示的短引用"
     }
   ],
-  "created_at": "2026-09-18T08:30:00Z"
+  "created_at": "2026-09-21T09:12:05Z"
 }
 ```
+
+无依据时的响应（同一 `201`，不报错）：
+
+```json
+{
+  "id": "9c2f1e77-5b3a-4d18-9c1e-6f1a2b3c4d5e",
+  "session_id": "3f8a1c2e-9d4b-4c17-8e6a-1b2c3d4e5f60",
+  "role": "ASSISTANT",
+  "content": "课程资料中未找到依据",
+  "grounded": false,
+  "citations": [],
+  "created_at": "2026-09-21T09:12:05Z"
+}
+```
+
+规则：
+
+- 发送问题**不做幂等去重**：每次请求都新增一条用户消息与一条助手消息。
+- **并发保护**：生成期间会话若被其他请求写入（会话版本前进），本次请求返回 `409 CHAT_CONFLICT` 且**不写入任何消息**——一问一答要么都写入，要么都不写入。
+- 模型服务不可用或生成失败返回 `502 AI_JOB_FAILED`，`details` 只含可安全展示的说明（不含模型地址、提示词或密钥）；此时**不新增任何消息**，会话历史保持原样。
+- 模型端点或模型名称未配置返回 `503 SERVICE_UNAVAILABLE`，同样不新增任何消息。
+- 课程已归档返回 `409 COURSE_ARCHIVED`；不是会话所有者或会话不存在返回 `404`。
+
+### 6.6 响应 Schema
+
+`ChatSession`：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `id` | UUID string | 会话 ID |
+| `course_id` | UUID string | 所属课程 ID |
+| `created_at` | ISO 8601 UTC string | 创建时间 |
+| `last_message_at` | ISO 8601 UTC string | 最近一条消息的时间；无消息时等于 `created_at`，用于 6.3 的倒序排序 |
+
+`ChatMessage`：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `id` | UUID string | 消息 ID |
+| `session_id` | UUID string | 所属会话 ID |
+| `role` | `USER` / `ASSISTANT` | 发言角色 |
+| `content` | string | 消息正文；助手消息无依据时为 `课程资料中未找到依据` |
+| `grounded` | boolean 或 `null` | 助手消息是否有资料依据；**用户消息恒为 `null`** |
+| `citations` | `Citation[]` | 引用列表；无依据或用户消息时为空数组 |
+| `created_at` | ISO 8601 UTC string | 创建时间 |
+
+`Citation`：
+
+| 字段 | 类型 | 含义 |
+| --- | --- | --- |
+| `material_id` | UUID string | 被引用的资料 ID |
+| `material_name` | string | 资料文件名（冗余展示用，不另行查询资料接口） |
+| `section_id` | UUID string 或 `null` | 命中的章节 ID；**无法匹配章节时为 `null`** |
+| `section_title` | string 或 `null` | 命中的章节标题；同上，无法匹配时为 `null` |
+| `source_type` | `PDF_PAGE` / `PPTX_SLIDE` / `DOCX_PARAGRAPH` | 来源类型，与资料的 `content_type` 对应 |
+| `location_start` | integer | 片段起始位置（PDF 页码 / PPTX 幻灯片号 / DOCX 段落序号，从 1 开始） |
+| `location_end` | integer | 片段结束位置，≥ `location_start` |
+| `page` | integer 或 `null` | **仅 PDF 有值**（等于 `location_start`）；PPTX 与 DOCX 恒为 `null`，前端不得用它代替 `location_start` |
+| `quote` | string | 可核对的原文摘录，取自命中的片段 |
+
+章节匹配规则：片段的 `location_start` / `location_end` 落入某章节（5.4 的 `MaterialSection`）区间时带上该章节的 `section_id` 与 `section_title`；跨章节或落在章节外时两者为 `null`，`location_*` 仍取片段自身的值。
+
+### 6.7 课程问答错误响应
+
+| 场景 | HTTP | 错误码 |
+| --- | --- | --- |
+| 缺少、无效或过期的 Access Token | 401 | `AUTH_TOKEN_EXPIRED` |
+| 课程不存在，或当前用户不是课程成员（创建会话、会话列表） | 404 | `RESOURCE_NOT_FOUND` |
+| 会话不存在，或当前用户不是会话所有者（消息列表、发送问题） | 404 | `RESOURCE_NOT_FOUND` |
+| 归档课程创建会话或发送问题 | 409 | `COURSE_ARCHIVED` |
+| 发送问题期间会话被并发写入（不落库任何消息） | 409 | `CHAT_CONFLICT` |
+| `content` 缺失、为空/全空白、超长、非字符串；请求体含未声明字段或显式 `null`；分页参数越界 | 422 | `VALIDATION_ERROR` |
+| 模型服务不可用或回答生成失败（不落库任何消息） | 502 | `AI_JOB_FAILED` |
+| 模型端点或模型名称未配置（不落库任何消息） | 503 | `SERVICE_UNAVAILABLE` |
+| 方法不被路径支持 | 405 | `METHOD_NOT_ALLOWED` |
+| 其他未预期错误 | 500 | `INTERNAL_ERROR` |
+
+本节的四个接口**不返回** `403`：身份相关的拒绝一律按“不可见”处理为 `404`（6.1）。回答无依据不是错误，按 6.5 的 `201` 返回。
 
 ## 7. 练习接口
 
@@ -1054,6 +1270,7 @@ Dashboard 只返回页面首屏需要的摘要和最近记录，不返回完整�
 | `ASSIGNMENT_NOT_OPEN` | 409 | 任务未发布或已关闭 |
 | `GRADE_NOT_REVIEWED` | 409 | 未完成教师复核，不能发布 |
 | `AI_JOB_FAILED` | 502 | AI 或解析任务失败 |
+| `CHAT_CONFLICT` | 409 | 会话在回答生成期间被并发修改，本次发送未写入（见 6.1 / 6.5） |
 | `VALIDATION_ERROR` | 422 | 请求体或查询参数未通过校验，`details.errors` 为字段级说明 |
 | `METHOD_NOT_ALLOWED` | 405 | 请求方法不被该路径支持 |
 | `INTERNAL_ERROR` | 500 | 未预期的服务端错误，响应不含异常堆栈 |
