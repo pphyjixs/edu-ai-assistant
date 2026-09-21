@@ -26,6 +26,14 @@ from app.modules.materials.models import (
     MaterialSection,
     MaterialUploadSession,
 )
+from app.modules.practice.models import (
+    PracticeAttempt,
+    PracticeAttemptAnswer,
+    PracticeGenerationAttempt,
+    PracticeQuestion,
+    PracticeSet,
+    PracticeSetMaterial,
+)
 
 #: 供 Alembic 比较与自动生成迁移使用
 target_metadata: MetaData = Base.metadata
@@ -46,6 +54,12 @@ __all__ = [
     "MaterialKnowledgePoint",
     "MaterialSection",
     "MaterialUploadSession",
+    "PracticeAttempt",
+    "PracticeAttemptAnswer",
+    "PracticeGenerationAttempt",
+    "PracticeQuestion",
+    "PracticeSet",
+    "PracticeSetMaterial",
     "User",
     "target_metadata",
 ]

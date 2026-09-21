@@ -139,6 +139,12 @@ class Settings(BaseSettings):
     #: 送入模型的单块文本上限（字符）：全文按来源顺序切分为多块
     material_parse_chunk_chars: int = 8_000
 
+    # ---------------------- 课程练习（Practice）---------------------
+    #: 练习生成任务的租约（秒）；崩溃后超过租约的 RUNNING 任务可被重试回收
+    practice_generate_lease_seconds: int = 300
+    #: 送入模型的片段上下文上限（字符），按资料顺序轮询截断
+    practice_generate_max_chars: int = 60_000
+
     # ------------------------------ AI ------------------------------
     ai_provider: str = ""
     ai_api_key: str = ""
