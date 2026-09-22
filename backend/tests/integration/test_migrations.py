@@ -46,6 +46,9 @@ EXPECTED_TABLES = {
     "practice_attempts",
     "practice_attempt_answers",
     "practice_generation_attempts",
+    "assignments",
+    "assignment_rubric_versions",
+    "assignment_rubric_items",
 }
 
 #: 迁移引入的原生枚举类型，回滚时必须全部清理
@@ -64,12 +67,13 @@ EXPECTED_ENUMS: dict[str, list[str]] = {
     "practice_difficulty": ["EASY", "MEDIUM", "HARD"],
     "practice_question_type": ["SINGLE_CHOICE", "TRUE_FALSE", "SHORT_ANSWER"],
     "practice_generation_status": ["SUCCEEDED", "FAILED"],
+    "assignment_status": ["DRAFT", "PUBLISHED", "CLOSED", "ARCHIVED"],
 }
 
 COMPARE_OPTIONS = {"compare_type": True, "compare_server_default": True}
 
 #: head 对应的最新迁移
-REVISION = "0009_practice_sets"
+REVISION = "0010_assignments"
 
 
 @pytest.fixture(scope="module")

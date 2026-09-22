@@ -316,7 +316,9 @@ def truncate_all_tables(engine: Engine) -> None:
     with engine.begin() as connection:
         connection.execute(
             text(
-                "TRUNCATE TABLE jobs, practice_attempt_answers, practice_attempts,"
+                "TRUNCATE TABLE jobs, assignment_rubric_items,"
+                " assignment_rubric_versions, assignments,"
+                " practice_attempt_answers, practice_attempts,"
                 " practice_questions, practice_set_materials,"
                 " practice_generation_attempts, practice_sets,"
                 " chat_generation_attempts,"

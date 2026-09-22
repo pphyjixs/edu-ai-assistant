@@ -424,6 +424,11 @@ def test_cleanup_command_against_test_database_and_storage(
         backend_dir = Path(__file__).resolve().parents[2]
         command_env = {
             **os.environ,
+            # 子进程输出固定 UTF-8，并与下面的 ``encoding="utf-8"`` 一致：
+            # 否则在 zh-CN Windows 上，子进程按 ``PYTHONIOENCODING`` 写 UTF-8、
+            # 父进程按 gbk 解码会抛 UnicodeDecodeError，读取线程直接退出，
+            # ``capture_output`` 拿到的 stdout 会变成 None（与产品代码无关）
+            "PYTHONIOENCODING": "utf-8",
             "DATABASE_URL": pg_test_url,
             "STORAGE_ENDPOINT": config.endpoint,
             "STORAGE_BUCKET": config.bucket,
@@ -435,7 +440,7 @@ def test_cleanup_command_against_test_database_and_storage(
         command = [sys.executable, str(backend_dir / "scripts" / "cleanup_expired_uploads.py")]
         first = subprocess.run(
             command, cwd=backend_dir, env=command_env, capture_output=True, text=True,
-            timeout=30, check=False,
+            encoding="utf-8", timeout=30, check=False,
         )
         assert first.returncode == 0
         assert _session_row(pg_sync_engine, init["upload_id"])["expired_at"] is not None
@@ -444,7 +449,7 @@ def test_cleanup_command_against_test_database_and_storage(
 
         second = subprocess.run(
             command, cwd=backend_dir, env=command_env, capture_output=True, text=True,
-            timeout=30, check=False,
+            encoding="utf-8", timeout=30, check=False,
         )
         assert second.returncode == 0
         assert "0 条" in second.stdout
