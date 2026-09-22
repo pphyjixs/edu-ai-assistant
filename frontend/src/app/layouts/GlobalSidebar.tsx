@@ -7,8 +7,10 @@
 
 import { Link, NavLink, useNavigate } from "react-router-dom";
 
+import { Button } from "@/components/Button/Button";
 import { Icon, type IconName } from "@/components/Icon/Icon";
 import { Skeleton } from "@/components/Skeleton/Skeleton";
+import { useLogout } from "@/features/auth/hooks/useAuthActions";
 import { useCurrentUser } from "@/features/auth/hooks/useCurrentUser";
 import { useBuddyStore } from "@/features/buddy/store/buddyStore";
 import { useRecentChatSessions } from "@/features/buddy/hooks/useBuddyThread";
@@ -30,14 +32,17 @@ export function GlobalSidebar() {
 
   const courses = coursesQuery.data ?? [];
   const recentCourses = courses.slice(0, 3);
-  const { sessions, isPending: sessionsPending } = useRecentChatSessions(
-    courses.map((course) => course.id),
-    3,
-  );
 
   const openBuddy = useBuddyStore((state) => state.openBuddy);
   const clearChatSession = useBuddyStore((state) => state.clearChatSession);
   const openChatSession = useBuddyStore((state) => state.openChatSession);
+  const logout = useLogout();
+
+  // 需要先拿到课程 id 才能按课程取会话（契约 6 的会话列表是按课程分的）
+  const { sessions, isPending: sessionsPending } = useRecentChatSessions(
+    courses.map((course) => course.id),
+    3,
+  );
 
   function startNewConversation() {
     clearChatSession();
@@ -119,7 +124,7 @@ export function GlobalSidebar() {
               key={session.id}
               type="button"
               className={styles.courseLink}
-              title={session.title}
+              title={`对话 · ${session.activityLabel}`}
               onClick={() => {
                 openChatSession(session.id, session.courseId);
                 openBuddy();
@@ -127,7 +132,8 @@ export function GlobalSidebar() {
               }}
             >
               <Icon name="spark" size={12} />
-              <span className={styles.courseLinkText}>{session.title}</span>
+              {/* 契约的 ChatSession 没有标题，用最近活动时间做标识 */}
+              <span className={styles.courseLinkText}>对话 · {session.activityLabel}</span>
             </button>
           ))
         )}
@@ -141,6 +147,16 @@ export function GlobalSidebar() {
           <strong>{userQuery.data?.displayName ?? "加载中"}</strong>
           <span>{userQuery.data?.roleLabel ?? ""}</span>
         </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => logout.mutate()}
+          disabled={logout.isPending}
+          aria-label="退出登录"
+          title="退出登录"
+        >
+          {logout.isPending ? "退出中…" : "退出"}
+        </Button>
       </div>
     </aside>
   );

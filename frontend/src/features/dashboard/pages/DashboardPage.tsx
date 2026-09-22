@@ -13,8 +13,8 @@ import { ErrorState } from "@/components/ErrorState/ErrorState";
 import { useCurrentUser } from "@/features/auth/hooks/useCurrentUser";
 import { useAskBuddy, useSetBuddyContext } from "@/features/buddy/hooks/useBuddy";
 import { useCourses } from "@/features/courses/hooks/useCourses";
+import { CourseGrid } from "@/features/courses/components/CourseGrid/CourseGrid";
 import { BuddyOmnibox } from "@/features/dashboard/components/BuddyOmnibox/BuddyOmnibox";
-import { CourseGrid } from "@/features/dashboard/components/CourseGrid/CourseGrid";
 import { GreetingHero } from "@/features/dashboard/components/GreetingHero/GreetingHero";
 import { TaskGrid } from "@/features/dashboard/components/TaskGrid/TaskGrid";
 import { useDashboard } from "@/features/dashboard/hooks/useDashboard";
@@ -43,19 +43,22 @@ export function DashboardPage() {
   // 首页只需要声明「当前在跟哪门课对话」，不需要组装任何请求
   useSetBuddyContext({ courseId: selectedCourseId, route: "" });
 
-  const summary = dashboardQuery.data;
+  const summary = dashboardQuery.summary;
 
+  // role 同时决定数据形状，因此用 hook 返回的 role 做窄化，而不是页面上的 role
   const heading =
-    role === "teacher"
+    dashboardQuery.role === "teacher"
       ? {
-          title: "最近提交",
-          description: summary
-            ? `进行中课程 ${summary.primaryCount} 门 · 待批改 ${summary.reviewCount ?? 0} 份`
-            : "",
+          title: "需要我处理的",
+          description: `我创建的进行中课程 ${dashboardQuery.summary.activeCourseCount} 门 · 待发布任务 ${dashboardQuery.summary.draftCount} 个`,
         }
       : {
-          title: "今日待办",
-          description: summary ? `共 ${summary.primaryCount} 项待完成，优先处理临近截止的任务` : "",
+          title: "待办任务",
+          description: `共 ${dashboardQuery.summary.pendingCount} 项可提交${
+            dashboardQuery.summary.closedCount > 0
+              ? `，${dashboardQuery.summary.closedCount} 项已关闭`
+              : ""
+          }`,
         };
 
   return (

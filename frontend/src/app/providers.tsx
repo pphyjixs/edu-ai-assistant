@@ -1,13 +1,15 @@
 /**
  * 应用级 Provider 装配。
  *
- * 只放全局必需的三件事：路由、服务端状态缓存。
- * Buddy 的 UI 状态由 Zustand 自己的 store 管理，不需要 Provider。
+ * 只放全局必需的三件事：路由、服务端状态缓存，以及把 auth 的刷新逻辑
+ * 注入 HTTP 层。Buddy 的 UI 状态由 Zustand 自己的 store 管理，不需要 Provider。
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { BrowserRouter } from "react-router-dom";
+
+import { AuthSessionBridge } from "@/features/auth/components/AuthSessionBridge";
 
 /**
  * 默认策略：
@@ -30,7 +32,10 @@ const queryClient = new QueryClient({
 export function AppProviders({ children }: { children: ReactNode }) {
   return (
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>{children}</BrowserRouter>
+      <BrowserRouter>
+        <AuthSessionBridge />
+        {children}
+      </BrowserRouter>
     </QueryClientProvider>
   );
 }

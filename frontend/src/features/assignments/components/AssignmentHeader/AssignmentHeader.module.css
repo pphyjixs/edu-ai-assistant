@@ -29,6 +29,14 @@
   letter-spacing: -0.03em;
 }
 
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
 .deadlineCard {
   flex: 0 0 auto;
   min-width: 186px;

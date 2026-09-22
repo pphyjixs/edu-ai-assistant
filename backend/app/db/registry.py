@@ -9,6 +9,7 @@ from __future__ import annotations
 from sqlalchemy import MetaData
 
 from app.db.base import Base
+from app.modules.agent.models import AgentRun, AgentRunSource
 from app.modules.assignments.models import (
     Assignment,
     AssignmentRubricItem,
@@ -44,6 +45,8 @@ from app.modules.practice.models import (
 target_metadata: MetaData = Base.metadata
 
 __all__ = [
+    "AgentRun",
+    "AgentRunSource",
     "Assignment",
     "AssignmentRubricItem",
     "AssignmentRubricVersion",

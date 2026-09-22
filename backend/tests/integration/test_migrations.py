@@ -49,6 +49,8 @@ EXPECTED_TABLES = {
     "assignments",
     "assignment_rubric_versions",
     "assignment_rubric_items",
+    "agent_runs",
+    "agent_run_sources",
 }
 
 #: 迁移引入的原生枚举类型，回滚时必须全部清理
@@ -56,9 +58,10 @@ EXPECTED_ENUMS: dict[str, list[str]] = {
     "user_role": ["TEACHER", "STUDENT"],
     "course_status": ["ACTIVE", "ARCHIVED"],
     "course_role": ["TEACHER", "STUDENT"],
-    "job_type": ["MATERIAL_PARSE", "PRACTICE_GENERATE", "SUBMISSION_GRADE"],
+    "job_type": ["MATERIAL_PARSE", "PRACTICE_GENERATE", "SUBMISSION_GRADE", "AGENT_RUN"],
     "job_status": ["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"],
-    "job_resource_type": ["MATERIAL", "PRACTICE_SET", "SUBMISSION"],
+    # 0011 用 ALTER TYPE ADD VALUE 追加 AGENT_RUN，新值排在末尾
+    "job_resource_type": ["MATERIAL", "PRACTICE_SET", "SUBMISSION", "AGENT_RUN"],
     "material_status": ["UPLOADING", "UPLOADED", "PROCESSING", "READY", "FAILED"],
     "material_delete_todo_status": ["PENDING", "DONE"],
     "chat_message_role": ["USER", "ASSISTANT"],
@@ -68,12 +71,27 @@ EXPECTED_ENUMS: dict[str, list[str]] = {
     "practice_question_type": ["SINGLE_CHOICE", "TRUE_FALSE", "SHORT_ANSWER"],
     "practice_generation_status": ["SUCCEEDED", "FAILED"],
     "assignment_status": ["DRAFT", "PUBLISHED", "CLOSED", "ARCHIVED"],
+    "agent_run_action": [
+        "ASK",
+        "SUMMARIZE_CONTEXT",
+        "BREAK_DOWN_ASSIGNMENT",
+        "CHECK_SUBMISSION",
+    ],
+    "agent_entity_type": [
+        "COURSE",
+        "MATERIAL",
+        "MATERIAL_SECTION",
+        "ASSIGNMENT",
+        "SUBMISSION",
+        "GRADE",
+    ],
+    "agent_source_type": ["COURSE", "MATERIAL_CHUNK", "MATERIAL_OUTLINE", "ASSIGNMENT"],
 }
 
 COMPARE_OPTIONS = {"compare_type": True, "compare_server_default": True}
 
 #: head 对应的最新迁移
-REVISION = "0010_assignments"
+REVISION = "0011_agent_runs"
 
 
 @pytest.fixture(scope="module")

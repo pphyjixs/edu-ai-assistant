@@ -37,6 +37,8 @@ class JobType(str, enum.Enum):
     MATERIAL_PARSE = "MATERIAL_PARSE"
     PRACTICE_GENERATE = "PRACTICE_GENERATE"
     SUBMISSION_GRADE = "SUBMISSION_GRADE"
+    #: 上下文 Agent Run（异步对话与动作编排，见 docs/local-development-agent-backend.md 第 6 节）
+    AGENT_RUN = "AGENT_RUN"
 
 
 class JobStatusValue(str, enum.Enum):
@@ -62,6 +64,8 @@ class JobResourceType(str, enum.Enum):
     MATERIAL = "MATERIAL"
     PRACTICE_SET = "PRACTICE_SET"
     SUBMISSION = "SUBMISSION"
+    #: 关联 ``agent_runs.id``
+    AGENT_RUN = "AGENT_RUN"
 
 
 class Job(Base):

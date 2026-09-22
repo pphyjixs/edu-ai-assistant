@@ -1,18 +1,16 @@
 /**
  * 统一的 HTTP 边界。
  *
- * 现状：除 auth 外后端业务接口尚未实现，业务页面一律通过 feature 级
- * mock adapter 取数（见 docs/api-contract.md 与 API_INTEGRATION_NOTES.md）。
- * 该客户端先建立好协议边界，等后端补齐后只需在 feature 的 api/index.ts
- * 里把 mock 换成基于这里的实现，页面与组件不需要改动。
- *
- * 契约依据（docs/api-contract.md 第 1、2 节）：
- * - 基础路径由 VITE_API_BASE_URL 提供，形如 ``http://localhost:8000/api/v1``
+ * 契约依据：docs/api-contract.md 第 1、2 节。
+ * - 基础路径由 ``VITE_API_BASE_URL`` 提供，形如 ``http://localhost:8000/api/v1``
  * - 认证头 ``Authorization: Bearer <access_token>``
  * - 错误统一为 ``{ error: { code, message, details, request_id } }``
- * - 401 使用 AUTH_TOKEN_EXPIRED；Access Token 有效期 1 小时
+ * - 401 使用 AUTH_TOKEN_EXPIRED；Access Token 1 小时，Refresh Token 7 天不轮换
+ *
+ * 页面与组件不得直接使用 fetch（docs/architecture.md 第 5 节），一律经这里。
  */
 
+/** 契约第 12 节的稳定错误码全集 */
 export type ApiErrorCode =
   | "AUTH_INVALID_CREDENTIALS"
   | "AUTH_TOKEN_EXPIRED"
@@ -20,18 +18,25 @@ export type ApiErrorCode =
   | "AUTH_TOO_MANY_ATTEMPTS"
   | "ROLE_FORBIDDEN"
   | "COURSE_FORBIDDEN"
+  | "COURSE_ARCHIVED"
   | "RESOURCE_NOT_FOUND"
   | "INVITE_CODE_INVALID"
   | "UPLOAD_INVALID"
   | "RUBRIC_SCORE_MISMATCH"
   | "MATERIAL_NOT_READY"
+  | "MATERIAL_ALREADY_READY"
   | "ASSIGNMENT_NOT_OPEN"
   | "GRADE_NOT_REVIEWED"
   | "AI_JOB_FAILED"
+  | "CHAT_CONFLICT"
+  | "PRACTICE_NOT_READY"
+  | "PRACTICE_ALREADY_ATTEMPTED"
+  | "JOB_NOT_RETRYABLE"
   | "VALIDATION_ERROR"
   | "METHOD_NOT_ALLOWED"
   | "INTERNAL_ERROR"
   | "SERVICE_UNAVAILABLE"
+  /** 前端本地补充：请求未能到达服务端 */
   | "NETWORK_ERROR";
 
 export type AppError = {
@@ -40,7 +45,9 @@ export type AppError = {
   message: string;
   status?: number;
   requestId?: string;
-  /** 由调用方决定是否展示重试入口（见 API_INTEGRATION_NOTES 第 7 节） */
+  /** 后端 details，例如 UPLOAD_INVALID 的 reason、限流的 retry_after_seconds */
+  details: Record<string, unknown>;
+  /** 由调用方决定是否展示重试入口 */
   retryable: boolean;
 };
 
@@ -71,10 +78,26 @@ export class HttpError extends Error {
       message: this.message,
       status: this.status,
       requestId: this.requestId,
+      details: this.details,
       retryable: this.status >= 500 || this.code === "NETWORK_ERROR",
     };
   }
 }
+
+/** 未登录 / 令牌失效，由上层决定跳转登录页 */
+export class UnauthenticatedError extends HttpError {
+  constructor() {
+    super({
+      code: "AUTH_TOKEN_EXPIRED",
+      message: "登录状态已失效，请重新登录。",
+      status: 401,
+    });
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  令牌存取                                                           */
+/* ------------------------------------------------------------------ */
 
 export type TokenBundle = {
   accessToken: string;
@@ -82,8 +105,8 @@ export type TokenBundle = {
 };
 
 /**
- * 令牌读写。存放位置由前端自行决定（契约 2.2），
- * 这里先用 localStorage；后续接入真实登录时替换实现即可。
+ * 令牌存放位置由前端自行决定（契约 2.2），API 不作限制。
+ * 这里用 localStorage；契约测试反向断言服务端不下发 Cookie，因此不使用 Cookie。
  */
 const TOKEN_KEY = "studybuddy.tokens";
 
@@ -102,23 +125,22 @@ export const tokenStorage = {
   write(tokens: TokenBundle): void {
     window.localStorage.setItem(TOKEN_KEY, JSON.stringify(tokens));
   },
+  /** 刷新成功只更新 Access Token，保留原 Refresh Token（契约 2.4） */
+  updateAccessToken(accessToken: string): void {
+    const current = this.read();
+    if (!current) return;
+    this.write({ accessToken, refreshToken: current.refreshToken });
+  },
   clear(): void {
     window.localStorage.removeItem(TOKEN_KEY);
   },
 };
 
-/** 未登录时抛出的错误，由上层决定跳转登录页 */
-export class UnauthenticatedError extends HttpError {
-  constructor() {
-    super({
-      code: "AUTH_TOKEN_EXPIRED",
-      message: "登录状态已失效，请重新登录。",
-      status: 401,
-    });
-  }
-}
+/* ------------------------------------------------------------------ */
+/*  刷新与未认证回调                                                    */
+/* ------------------------------------------------------------------ */
 
-/** 刷新回调由 auth feature 注入，避免 http 层反向依赖业务模块 */
+/** 由 auth feature 注入，避免 http 层反向依赖业务模块 */
 let refreshHandler: (() => Promise<string | null>) | null = null;
 let onUnauthenticated: (() => void) | null = null;
 
@@ -126,8 +148,8 @@ export function configureHttp(options: {
   refresh?: () => Promise<string | null>;
   unauthenticated?: () => void;
 }): void {
-  refreshHandler = options.refresh ?? null;
-  onUnauthenticated = options.unauthenticated ?? null;
+  if (options.refresh) refreshHandler = options.refresh;
+  if (options.unauthenticated) onUnauthenticated = options.unauthenticated;
 }
 
 function baseUrl(): string {
@@ -135,11 +157,26 @@ function baseUrl(): string {
   return (value ?? "").replace(/\/+$/, "");
 }
 
-type RequestOptions = {
+/** 拼查询串；undefined / null 的键会被跳过 */
+export function buildQuery(params: Record<string, string | number | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined) continue;
+    search.set(key, String(value));
+  }
+  const query = search.toString();
+  return query ? `?${query}` : "";
+}
+
+/* ------------------------------------------------------------------ */
+/*  请求                                                               */
+/* ------------------------------------------------------------------ */
+
+export type RequestOptions = {
   method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
   body?: unknown;
   signal?: AbortSignal;
-  /** 是否需要携带 Bearer；如 /auth/refresh、/auth/login 传 false */
+  /** 是否需要携带 Bearer；登录、注册、刷新传 false */
   auth?: boolean;
   /** 内部使用：401 刷新后的重放标记，防止无限递归 */
   retried?: boolean;
@@ -156,7 +193,7 @@ async function parseError(response: Response): Promise<HttpError> {
       error?: {
         code?: ApiErrorCode;
         message?: string;
-        details?: Record<string, unknown>;
+        details?: Record<string, unknown> | null;
         request_id?: string;
       };
     };
@@ -174,10 +211,9 @@ async function parseError(response: Response): Promise<HttpError> {
 }
 
 /**
- * 唯一的请求入口。页面与组件不得直接使用 fetch（见 docs/architecture.md 第 5 节）。
- *
- * 401 处理策略：只重放一次，且刷新走 single-flight，避免多个并发请求
- * 同时触发刷新（契约 2.4 规定 Refresh Token 不轮换，重复刷新会放大请求量）。
+ * 401 处理策略：只重放一次，且刷新走 single-flight。
+ * 契约 2.4 规定 Refresh Token 不轮换，重复刷新会放大请求量，
+ * 因此多个并发 401 必须共用同一次刷新。
  */
 let refreshInFlight: Promise<string | null> | null = null;
 
@@ -214,7 +250,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
       });
       const next = await refreshInFlight;
       if (next) {
-        tokenStorage.write({ accessToken: next, refreshToken: tokens?.refreshToken ?? "" });
+        tokenStorage.updateAccessToken(next);
         return request<T>(path, { ...options, retried: true });
       }
     }
@@ -227,7 +263,9 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
 
   if (!response.ok) throw await parseError(response);
 
-  return (await response.json()) as T;
+  const text = await response.text();
+  if (!text) return undefined as T;
+  return JSON.parse(text) as T;
 }
 
 export const http = {
@@ -247,6 +285,7 @@ export function toAppError(error: unknown): AppError {
   return {
     code: "INTERNAL_ERROR",
     message: "发生了未预期的错误，请稍后重试。",
+    details: {},
     retryable: true,
   };
 }

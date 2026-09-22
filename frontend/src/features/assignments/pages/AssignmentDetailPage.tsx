@@ -2,43 +2,58 @@
  * 作业详情 Workspace。
  *
  * 内容顺序遵循 DEVELOPMENT_SPEC 第 14 节：Header → 作业要求 → 评分标准 → 我的提交。
- * 页面级 AI Action 直接调用 useAskBuddy，把预设问题送进右侧 Buddy，
- * 由 Buddy 自己从上下文里知道「这是哪门课的哪份作业」。
+ * 页面级 AI Action 把预设问题送进右侧 Buddy；教师额外拥有编辑/发布/关闭。
+ *
+ * 契约 8.1：状态只由发布/关闭接口推进，`due_at` 过期不会把任务变成 CLOSED，
+ * 因此「已截止」与「已关闭」在这里是两件事，分别由时间与状态表达。
  */
 
-import { useParams } from "react-router-dom";
+import { useState } from "react";
+import { Link, useParams } from "react-router-dom";
 
+import { Button } from "@/components/Button/Button";
 import { Card } from "@/components/Card/Card";
 import { ErrorState } from "@/components/ErrorState/ErrorState";
 import { Icon } from "@/components/Icon/Icon";
 import { Skeleton, SkeletonLines } from "@/components/Skeleton/Skeleton";
+import { AssignmentForm } from "@/features/assignments/components/AssignmentForm/AssignmentForm";
+import { AssignmentHeader } from "@/features/assignments/components/AssignmentHeader/AssignmentHeader";
+import { RubricList } from "@/features/assignments/components/RubricList/RubricList";
+import { SubmissionPanel } from "@/features/assignments/components/SubmissionPanel/SubmissionPanel";
+import {
+  useAssignment,
+  useCloseAssignment,
+  usePublishAssignment,
+  useUpdateAssignment,
+} from "@/features/assignments/hooks/useAssignments";
 import { AgentActionButton } from "@/features/buddy/components/AgentActionButton/AgentActionButton";
 import { useSetBuddyContext } from "@/features/buddy/hooks/useBuddy";
 import { assignmentActions } from "@/features/buddy/model/actions";
-import { AssignmentHeader } from "@/features/assignments/components/AssignmentHeader/AssignmentHeader";
-import { RubricList } from "@/features/assignments/components/RubricList/RubricList";
-import { SubmissionStatus } from "@/features/assignments/components/SubmissionStatus/SubmissionStatus";
-import { SubmissionUploader } from "@/features/assignments/components/SubmissionUploader/SubmissionUploader";
-import { useAssignment, useMySubmission } from "@/features/assignments/hooks/useAssignments";
+import { useCourse } from "@/features/courses/hooks/useCourses";
 import { toAppError } from "@/services/http";
 
 import styles from "./AssignmentDetailPage.module.css";
-
-const CHECK_PROMPT = "请帮我检查这份实验报告是否覆盖了评分项要求。";
 
 export function AssignmentDetailPage() {
   const { courseId, assignmentId } = useParams<{ courseId: string; assignmentId: string }>();
 
   const assignmentQuery = useAssignment(assignmentId);
-  const submissionQuery = useMySubmission(assignmentId);
+  const courseQuery = useCourse(courseId);
+  const [editing, setEditing] = useState(false);
 
-  // 声明「当前对象是谁」——上下文同步后 Buddy 才知道当前作业
+  const updateAssignment = useUpdateAssignment(courseId ?? "", assignmentId ?? "");
+  const publishAssignment = usePublishAssignment(courseId ?? "", assignmentId ?? "");
+  const closeAssignment = useCloseAssignment(courseId ?? "", assignmentId ?? "");
+
   useSetBuddyContext({
     courseId,
     entityType: "assignment",
     entityId: assignmentId,
     route: "",
   });
+
+  const isOwner = Boolean(courseQuery.data?.isOwner);
+  const readOnly = courseQuery.data?.status === "archived";
 
   if (assignmentQuery.isPending) {
     return (
@@ -48,16 +63,32 @@ export function AssignmentDetailPage() {
         <Card>
           <SkeletonLines lines={6} />
         </Card>
-        <div className={styles.skeletonGap} />
-        <Card>
-          <SkeletonLines lines={4} />
-        </Card>
       </div>
     );
   }
 
   if (assignmentQuery.isError) {
     const error = toAppError(assignmentQuery.error);
+
+    // 学生读草稿会得到 404（契约 8.1），文案上不要暗示「权限不足」
+    if (error.code === "RESOURCE_NOT_FOUND") {
+      return (
+        <div className={styles.page}>
+          <Card>
+            <div className={styles.stateCard}>
+              <p className={styles.stateTitle}>任务不存在或尚未发布</p>
+              <p className={styles.stateText}>
+                这个任务可能还是草稿，或者链接已经失效。
+              </p>
+              <Link className={styles.stateLink} to={`/courses/${courseId}/assignments`}>
+                回到任务列表
+              </Link>
+            </div>
+          </Card>
+        </div>
+      );
+    }
+
     return (
       <div className={styles.page}>
         <ErrorState
@@ -71,12 +102,79 @@ export function AssignmentDetailPage() {
   }
 
   const assignment = assignmentQuery.data;
-  const submission = submissionQuery.data ?? null;
-  const hasSubmission = submission !== null;
+  const actionError =
+    (updateAssignment.isError && toAppError(updateAssignment.error)) ||
+    (publishAssignment.isError && toAppError(publishAssignment.error)) ||
+    (closeAssignment.isError && toAppError(closeAssignment.error)) ||
+    null;
+
+  const teacherActions =
+    isOwner && !readOnly ? (
+      <>
+        {assignment.status === "draft" ? (
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={publishAssignment.isPending}
+            onClick={() => publishAssignment.mutate()}
+          >
+            {publishAssignment.isPending ? "发布中…" : "发布给学生"}
+          </Button>
+        ) : null}
+        {assignment.status === "published" ? (
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={closeAssignment.isPending}
+            onClick={() => closeAssignment.mutate()}
+          >
+            {closeAssignment.isPending ? "关闭中…" : "关闭提交"}
+          </Button>
+        ) : null}
+        {assignment.canEdit && !editing ? (
+          <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>
+            编辑任务
+          </Button>
+        ) : null}
+      </>
+    ) : null;
 
   return (
     <div className={styles.page}>
-      <AssignmentHeader assignment={assignment} />
+      <div className={styles.breadcrumb}>
+        <Link to={`/courses/${courseId}/assignments`} className={styles.back}>
+          实验任务
+        </Link>
+        <span aria-hidden="true">›</span>
+      </div>
+
+      <AssignmentHeader assignment={assignment} actions={teacherActions} />
+
+      {actionError ? (
+        <p className={styles.error} role="alert">
+          {actionError.message}
+        </p>
+      ) : null}
+
+      {editing && isOwner ? (
+        <Card className={styles.card}>
+          <h2 className={styles.sectionTitle}>编辑任务</h2>
+          <p className={styles.sectionHint}>
+            修改评分项或总分且内容确有变化时，后端会生成新的评分规则版本；
+            只改标题、说明或截止时间不会。
+          </p>
+          <AssignmentForm
+            assignment={assignment}
+            isPending={updateAssignment.isPending}
+            error={updateAssignment.error}
+            onSubmitCreate={() => undefined}
+            onSubmitUpdate={(body) =>
+              updateAssignment.mutate(body, { onSuccess: () => setEditing(false) })
+            }
+            onCancel={() => setEditing(false)}
+          />
+        </Card>
+      ) : null}
 
       <Card className={styles.card}>
         <div className={styles.toolbar}>
@@ -92,18 +190,28 @@ export function AssignmentDetailPage() {
 
           <div className={styles.actions}>
             {assignmentActions.map((action) => (
-              <AgentActionButton key={action.label} label={action.label} prompt={action.prompt} />
+              <AgentActionButton
+                key={action.label}
+                label={action.label}
+                prompt={action.prompt}
+                agentAction={action.agentAction}
+              />
             ))}
           </div>
         </div>
 
         <div className={styles.docBody}>
-          <p className={styles.docText}>{assignment.description}</p>
+          <p className={styles.docText}>
+            {assignment.description || "这份任务还没有填写说明。"}
+          </p>
         </div>
       </Card>
 
       <Card className={styles.card}>
         <h2 className={styles.sectionTitle}>评分标准</h2>
+        <p className={styles.sectionHint}>
+          当前评分规则版本 v{assignment.rubricVersion}，合计 {assignment.rubricScoreSum} 分。
+        </p>
         <RubricList
           rubric={assignment.rubric}
           totalScore={assignment.totalScore}
@@ -111,29 +219,9 @@ export function AssignmentDetailPage() {
         />
       </Card>
 
-      <Card className={styles.card}>
-        <div className={styles.submissionHead}>
-          <div>
-            <h2 className={styles.sectionTitle}>我的提交</h2>
-            <p className={styles.sectionHint}>
-              上传 PDF / Word 实验报告。提交前的自查由 Buddy 完成，与教师的正式批改是两回事。
-            </p>
-          </div>
-          {hasSubmission ? <AgentActionButton label="提交前检查" prompt={CHECK_PROMPT} /> : null}
-        </div>
-
-        <SubmissionStatus submission={submission} />
-
-        <SubmissionUploader
-          assignmentId={assignment.id}
-          disabled={!assignment.canSubmit}
-          disabledReason={
-            assignment.remaining.expired
-              ? "作业已过截止时间，且不允许补交。"
-              : "作业当前不接受提交。"
-          }
-        />
-      </Card>
+      <div className={styles.card}>
+        <SubmissionPanel assignment={assignment} isOwner={isOwner} />
+      </div>
     </div>
   );
 }

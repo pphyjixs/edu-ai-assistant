@@ -8,12 +8,13 @@
  */
 
 import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/Button/Button";
 import { Icon } from "@/components/Icon/Icon";
 import { Skeleton } from "@/components/Skeleton/Skeleton";
 import type { CourseVM } from "@/features/courses/model/types";
-import { dashboardQuickActions } from "@/features/buddy/model/actions";
+import { dashboardQuickActions, resolveActionRoute } from "@/features/buddy/model/actions";
 
 import styles from "./BuddyOmnibox.module.css";
 
@@ -33,6 +34,7 @@ export function BuddyOmnibox({
   onAsk,
 }: BuddyOmniboxProps) {
   const [value, setValue] = useState("");
+  const navigate = useNavigate();
 
   function submit() {
     const text = value.trim();
@@ -67,16 +69,28 @@ export function BuddyOmnibox({
 
       <div className={styles.bottom}>
         <div className={styles.chips}>
-          {dashboardQuickActions.map((action) => (
-            <button
-              key={action.label}
-              type="button"
-              className={styles.chip}
-              onClick={() => onAsk(action.prompt)}
-            >
-              {action.label}
-            </button>
-          ))}
+          {dashboardQuickActions.map((action) => {
+            // 领域动作（例如自动出题）跳转到真实流程，不在对话里伪造结果
+            const target = resolveActionRoute(action, selectedCourseId);
+            return (
+              <button
+                key={action.label}
+                type="button"
+                className={styles.chip}
+                title={action.hint ?? action.prompt ?? ""}
+                disabled={Boolean(action.route) && !target}
+                onClick={() => {
+                  if (action.route) {
+                    if (target) navigate(target);
+                    return;
+                  }
+                  if (action.prompt) onAsk(action.prompt);
+                }}
+              >
+                {action.label}
+              </button>
+            );
+          })}
         </div>
 
         <div className={styles.right}>

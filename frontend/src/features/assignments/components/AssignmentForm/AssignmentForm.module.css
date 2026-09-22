@@ -1,0 +1,160 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.row {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: var(--space-4);
+}
+
+.label {
+  font-size: var(--text-secondary);
+  font-weight: 650;
+  color: var(--color-text-secondary);
+}
+
+.hint {
+  font-size: var(--text-caption);
+  color: var(--color-text-tertiary);
+}
+
+.input,
+.textarea {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  font-size: 13.5px;
+}
+
+.textarea {
+  padding: 10px 12px;
+  line-height: 1.7;
+  resize: vertical;
+}
+
+.input:focus-visible,
+.textarea:focus-visible {
+  border-color: var(--color-focus);
+}
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+/* ------------------------------ 评分标准 ------------------------------ */
+.rubricBlock {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-muted);
+}
+
+.rubricHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.sum {
+  font-size: var(--text-secondary);
+  color: var(--color-text-secondary);
+}
+
+/* 合计不等于总分是后端会拒绝的硬错误，提前用橙色标出来 */
+.sumBad {
+  font-size: var(--text-secondary);
+  font-weight: 650;
+  color: var(--color-warn-ink);
+}
+
+.rubricList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.rubricItem {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 84px auto;
+  gap: var(--space-2);
+  align-items: start;
+}
+
+.rubricOrder {
+  padding-top: 10px;
+  font-size: var(--text-caption);
+  color: var(--color-text-tertiary);
+}
+
+.rubricFields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--space-2);
+}
+
+.scoreInput {
+  min-height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  font-size: 13.5px;
+}
+
+/* ------------------------------ 反馈 ------------------------------ */
+.problems {
+  padding: 10px 12px 10px 28px;
+  border-radius: var(--radius-sm);
+  background: var(--color-warn-soft);
+  list-style: disc;
+  font-size: var(--text-secondary);
+  line-height: 1.8;
+  color: var(--color-warn-ink);
+}
+
+.error {
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--color-danger-soft);
+  color: var(--color-danger-ink);
+  font-size: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+@media (max-width: 820px) {
+  .row,
+  .rubricFields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rubricItem {
+    grid-template-columns: 20px minmax(0, 1fr);
+  }
+}

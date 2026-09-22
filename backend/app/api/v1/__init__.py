@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from app.modules.agent.router import agent_router
 from app.modules.assignments.router import assignments_router
 from app.modules.auth.router import auth_router, me_router
 from app.modules.chat.router import chat_router
@@ -58,6 +59,9 @@ api_router.include_router(practice_router)
 
 # ----------------------------- assignments ----------------------------
 api_router.include_router(assignments_router)
+
+# -------------------------- agent（异步 Run）--------------------------
+api_router.include_router(agent_router)
 
 # -------------------------------- jobs -------------------------------
 api_router.include_router(jobs_router)
