@@ -150,8 +150,15 @@ python scripts/practice_worker.py
 写入 `FAILED`，配置完成后可通过 `POST /jobs/{job_id}/retry` 重新生成。
 
 发布顺序：**先执行数据库迁移，再启动两个 Worker，最后开放前端入口**。
-`0009_practice_sets` 只新增表与原生枚举，不与 `0008_chat_qa` 冲突，
-可与其在同一发布中按序执行。
+`0009_practice_sets` 与 `0010_assignments` 都只新增表与原生枚举，不与前序迁移冲突，
+可在同一发布中按序执行。
+
+**实验任务（Assignments）配套**：`0010_assignments` 只新增 `assignments`、
+`assignment_rubric_versions`、`assignment_rubric_items` 三张表与 `assignment_status`
+原生枚举。该模块**不新增环境变量、不需要对象存储、也不需要额外 Worker**——
+创建、修改、发布、关闭与查询都在 API 请求内同步完成（评分规则版本在写入事务内追加）。
+迁移可回退（`downgrade` 逐个删除表、索引与外键，最后删除枚举），
+`backend/tests/integration/test_migrations.py` 覆盖 `0009 → 0010 → 0009 → 0010` 往返。
 
 开发、Preview 和 Production 使用独立配置。任何密钥都不能使用 `VITE_` 前缀，也不能提交到仓库。
 

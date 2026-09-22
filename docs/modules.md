@@ -118,6 +118,18 @@ Access Token 有效期 1 小时，Refresh Token 自登录签发起有效 7 天�
 - 发布后允许修改说明，但评分规则发生变化时必须记录版本。
 - 截止后是否允许补交由任务字段控制。
 
+实现说明（第 8 节六个接口，迁移 `0010_assignments`）：
+
+- **状态机**：`创建 → DRAFT`、`DRAFT → PUBLISHED`、`PUBLISHED → CLOSED`；重复发布与重复关闭**幂等**（不覆盖 `published_at` / `closed_at`），`DRAFT` 不能关闭，`CLOSED`/`ARCHIVED` 不能修改或重新发布。`ARCHIVED` 本轮只作为兼容状态，没有单独归档接口；截止时间不会由查询接口自动把状态改成 `CLOSED`。
+- **三张表**：`assignments`（任务本体 + `current_rubric_version_id` 指针）、`assignment_rubric_versions`（评分版本，`(assignment_id, version)` 唯一、`version >= 1`、`total_score > 0`）、`assignment_rubric_items`（版本下的评分项，`(rubric_version_id, order)` 唯一、`max_score > 0`、`order > 0`）。`assignments` 与版本表互相引用（循环外键），因此创建时按"任务（指针 NULL）→ 版本 → 评分项 → 回填指针"逐步落库；删除任务时级联删除版本与评分项。
+- **评分规则版本策略**：创建时建立版本 1。版本一经写入**不原地修改**；只有 `total_score` 或评分项发生实质变化（标题/说明/分值/顺序的任一项不同）时才追加 `current_version + 1`，并生成**新的评分项 ID**；非评分字段修改与"提交完全相同规则"都不产生新版本。详情只返回当前版本，历史版本保留在库中供后续批改使用（暂无公开查询接口）。
+- **总分校验**：请求字段结构校验通过后才比较"评分项之和 == 总分"，使用 `Decimal` 精确比较（不使用二进制浮点），不匹配返回 `422 RUBRIC_SCORE_MISMATCH`；修改时用"数据库当前值 + 本次提供字段"组成候选结果再校验。
+- **权限与可见性**：创建/修改/发布/关闭仅课程创建教师（学生 `403 ROLE_FORBIDDEN`，其他教师 `403 COURSE_FORBIDDEN`，非成员 `404`）；学生列表与详情只看到 `PUBLISHED`/`CLOSED`/`ARCHIVED`，**草稿在 SQL 查询层排除**；归档课程可读历史但写操作 `409 COURSE_ARCHIVED`。
+- **错误优先级**：认证 → 资源可见性 → 角色 → 归档/状态 → 请求体结构与字段 → `RUBRIC_SCORE_MISMATCH` → 写入。实现方式与练习模块一致：路由只读原始 `Request`，守卫依赖先加锁并完成检查，再由服务手工解析请求体（OpenAPI 用显式 `requestBody` 声明）。
+- **统一锁顺序**：课程行 → 任务行 → 当前评分版本；读接口不加写锁。
+- **Submission 接入点**（第 9 节消费）：`service.can_submit(assignment, now)` 判断"是否允许提交"（`PUBLISHED` 且未截止或允许补交；`now == due_at` 视为已截止；手工关闭优先于 `allow_late_submission`），`service.current_rubric_version_id(assignment)` 给出批改应使用的评分版本。**报告上传、提交、AI 批改、教师复核与成绩发布属第 9 节，本轮未交付**，任务附件也没有公开接口定义。
+- **前端尚未接入**：任务创建/修改/发布/关闭页面；前端 mock 与正式契约的差异（分页包装、列表使用摘要 Schema）见 `docs/api-contract.md` 8.13。
+
 ## 7. Grading 模块
 
 职责：学生提交、报告解析、AI 分项批改、教师复核、结果发布。

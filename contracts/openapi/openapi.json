@@ -2896,6 +2896,627 @@
         }
       }
     },
+    "/api/v1/courses/{course_id}/assignments": {
+      "post": {
+        "tags": [
+          "assignments"
+        ],
+        "summary": "创建实验任务",
+        "description": "仅课程创建教师可调用。创建 `DRAFT` 任务，并在同一事务写入评分规则版本 1。评分项分值之和必须精确等于 `total_score`。",
+        "operationId": "create_assignment_api_v1_courses__course_id__assignments_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "course_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Course Id"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "创建成功，返回任务详情",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssignmentDetailSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "学生调用为 ROLE_FORBIDDEN；非创建教师为 COURSE_FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "课程/任务不存在，或当前用户不可见（RESOURCE_NOT_FOUND；学生视角下的草稿一律按不存在处理）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "课程已归档（COURSE_ARCHIVED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "请求结构、字段类型/长度不合法（VALIDATION_ERROR），或评分项之和不等于总分（RUBRIC_SCORE_MISMATCH）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignmentCreateRequest"
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "assignments"
+        ],
+        "summary": "课程实验任务列表",
+        "description": "课程成员可读；教师可见全部状态，学生只看到已发布/已关闭/已归档（草稿在 SQL 查询层排除）。按 `created_at DESC, id DESC` 排序。",
+        "operationId": "list_assignments_api_v1_courses__course_id__assignments_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "course_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Course Id"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "页码，从 1 开始",
+              "default": 1,
+              "title": "Page"
+            },
+            "description": "页码，从 1 开始"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "每页条数，最大 100",
+              "default": 20,
+              "title": "Page Size"
+            },
+            "description": "每页条数，最大 100"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_AssignmentSummarySchema_"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "课程不存在，或当前用户不是课程成员（RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "分页参数不合法（VALIDATION_ERROR）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/assignments/{assignment_id}": {
+      "get": {
+        "tags": [
+          "assignments"
+        ],
+        "summary": "实验任务详情",
+        "description": "课程教师可读全部状态；学生只能读已发布/已关闭/已归档，其余统一 404。返回当前评分规则版本与按 `order` 升序的评分项。",
+        "operationId": "get_assignment_api_v1_assignments__assignment_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "assignment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Assignment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssignmentDetailSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "课程/任务不存在，或当前用户不可见（RESOURCE_NOT_FOUND；学生视角下的草稿一律按不存在处理）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "assignments"
+        ],
+        "summary": "修改实验任务",
+        "description": "仅课程创建教师可调用，`DRAFT`/`PUBLISHED` 可修改。字段全部可省略，至少提供一个；`due_at: null` 清除截止时间；`rubric_items` 出现时完整替换评分规则。评分规则实际变化时追加新版本，相同内容不增加版本。",
+        "operationId": "update_assignment_api_v1_assignments__assignment_id__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "assignment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Assignment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "修改成功，返回任务详情",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssignmentDetailSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "学生调用为 ROLE_FORBIDDEN；非创建教师为 COURSE_FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "课程/任务不存在，或当前用户不可见（RESOURCE_NOT_FOUND；学生视角下的草稿一律按不存在处理）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "课程已归档（COURSE_ARCHIVED）或任务不可修改（ASSIGNMENT_NOT_OPEN）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "请求结构、字段类型/长度不合法或空对象（VALIDATION_ERROR），或评分项之和不等于总分（RUBRIC_SCORE_MISMATCH）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignmentUpdateRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/assignments/{assignment_id}/publish": {
+      "post": {
+        "tags": [
+          "assignments"
+        ],
+        "summary": "发布实验任务",
+        "description": "仅课程创建教师可调用。`DRAFT` 发布为 `PUBLISHED`；已发布幂等返回，不改变 `published_at`；`CLOSED`/`ARCHIVED` 返回 409。请求体可省略或传 {}。",
+        "operationId": "publish_assignment_api_v1_assignments__assignment_id__publish_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "assignment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Assignment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "发布成功（含幂等重放）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssignmentDetailSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "学生调用为 ROLE_FORBIDDEN；非创建教师为 COURSE_FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "课程/任务不存在，或当前用户不可见（RESOURCE_NOT_FOUND；学生视角下的草稿一律按不存在处理）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "课程已归档（COURSE_ARCHIVED）或状态不可发布（ASSIGNMENT_NOT_OPEN）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "请求体为显式 null 或含未声明字段（VALIDATION_ERROR）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "没有请求字段：可省略请求体或传空对象 {}"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/assignments/{assignment_id}/close": {
+      "post": {
+        "tags": [
+          "assignments"
+        ],
+        "summary": "关闭实验任务",
+        "description": "仅课程创建教师可调用。`PUBLISHED` 关闭为 `CLOSED`；已关闭幂等返回，不改变 `closed_at`；`DRAFT`/`ARCHIVED` 返回 409。请求体可省略或传 {}。",
+        "operationId": "close_assignment_api_v1_assignments__assignment_id__close_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "assignment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Assignment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "关闭成功（含幂等重放）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssignmentDetailSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "学生调用为 ROLE_FORBIDDEN；非创建教师为 COURSE_FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "课程/任务不存在，或当前用户不可见（RESOURCE_NOT_FOUND；学生视角下的草稿一律按不存在处理）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "课程已归档（COURSE_ARCHIVED）或状态不可关闭（ASSIGNMENT_NOT_OPEN）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "请求体为显式 null 或含未声明字段（VALIDATION_ERROR）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "没有请求字段：可省略请求体或传空对象 {}"
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/jobs/{job_id}": {
       "get": {
         "tags": [
@@ -3089,6 +3710,212 @@
   },
   "components": {
     "schemas": {
+      "AssignmentDetailSchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "course_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Course Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "total_score": {
+            "type": "number",
+            "title": "Total Score"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "allow_late_submission": {
+            "type": "boolean",
+            "title": "Allow Late Submission"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AssignmentStatus"
+          },
+          "rubric_version": {
+            "type": "integer",
+            "title": "Rubric Version"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "rubric_items": {
+            "items": {
+              "$ref": "#/components/schemas/RubricItemSchema"
+            },
+            "type": "array",
+            "title": "Rubric Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "course_id",
+          "title",
+          "total_score",
+          "due_at",
+          "allow_late_submission",
+          "status",
+          "rubric_version",
+          "published_at",
+          "closed_at",
+          "created_at",
+          "updated_at",
+          "description",
+          "rubric_items"
+        ],
+        "title": "AssignmentDetailSchema",
+        "description": "任务详情：摘要 + 说明 + 按 ``order`` 升序的当前评分项。"
+      },
+      "AssignmentStatus": {
+        "type": "string",
+        "enum": [
+          "DRAFT",
+          "PUBLISHED",
+          "CLOSED",
+          "ARCHIVED"
+        ],
+        "title": "AssignmentStatus",
+        "description": "任务状态（契约 8.1）。"
+      },
+      "AssignmentSummarySchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "course_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Course Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "total_score": {
+            "type": "number",
+            "title": "Total Score"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "allow_late_submission": {
+            "type": "boolean",
+            "title": "Allow Late Submission"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AssignmentStatus"
+          },
+          "rubric_version": {
+            "type": "integer",
+            "title": "Rubric Version"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "course_id",
+          "title",
+          "total_score",
+          "due_at",
+          "allow_late_submission",
+          "status",
+          "rubric_version",
+          "published_at",
+          "closed_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "AssignmentSummarySchema",
+        "description": "任务摘要（列表用，不含说明与评分项）。"
+      },
       "ChatMessageSchema": {
         "properties": {
           "id": {
@@ -4113,6 +4940,37 @@
         "title": "MaterialUploadInitResponse",
         "description": "初始化上传响应（契约 4.3）。"
       },
+      "Page_AssignmentSummarySchema_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AssignmentSummarySchema"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "page",
+          "page_size",
+          "total"
+        ],
+        "title": "Page[AssignmentSummarySchema]"
+      },
       "Page_ChatMessageSchema_": {
         "properties": {
           "items": {
@@ -4797,6 +5655,41 @@
         "title": "RegisterRequest",
         "description": "注册请求（契约 2.1）。"
       },
+      "RubricItemSchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "max_score": {
+            "type": "number",
+            "title": "Max Score"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "description",
+          "max_score",
+          "order"
+        ],
+        "title": "RubricItemSchema",
+        "description": "评分项响应。"
+      },
       "UserProfile": {
         "properties": {
           "id": {
@@ -4904,6 +5797,118 @@
         ],
         "title": "ValidationError"
       },
+      "AssignmentCreateRequest": {
+        "additionalProperties": false,
+        "description": "创建任务请求（契约 8.2）。",
+        "properties": {
+          "title": {
+            "description": "去除首尾空白后必须是 1–200 个字符",
+            "title": "Title",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "maxLength": 20000,
+            "title": "Description",
+            "type": "string"
+          },
+          "total_score": {
+            "description": "正数，最多 2 位小数（0.01 的整数倍）；只接受 JSON number（拒绝布尔、字符串、NaN 与 Infinity）",
+            "exclusiveMinimum": 0,
+            "maximum": 99999999.99,
+            "multipleOf": 0.01,
+            "title": "Total Score",
+            "type": "number"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Due At"
+          },
+          "allow_late_submission": {
+            "default": false,
+            "title": "Allow Late Submission",
+            "type": "boolean"
+          },
+          "rubric_items": {
+            "items": {
+              "$ref": "#/components/schemas/RubricItemRequest"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Rubric Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "title",
+          "total_score",
+          "rubric_items"
+        ],
+        "title": "AssignmentCreateRequest",
+        "type": "object"
+      },
+      "AssignmentUpdateRequest": {
+        "additionalProperties": false,
+        "description": "修改任务请求（契约 8.5）：全部字段可省略，至少提供一个。\n\n除 `due_at` 外字段都**不接受显式 ``null``**（省略表示\"不修改\"，\n`due_at: null` 表示\"清除截止时间\"），因此 JSON Schema 里它们都不是可空类型，\n整个对象声明 ``minProperties: 1``（空对象 `{}` 返回 422）。",
+        "minProperties": 1,
+        "properties": {
+          "title": {
+            "description": "去除首尾空白后必须是 1–200 个字符",
+            "title": "Title",
+            "type": "string"
+          },
+          "description": {
+            "maxLength": 20000,
+            "title": "Description",
+            "type": "string"
+          },
+          "total_score": {
+            "description": "正数，最多 2 位小数（0.01 的整数倍）；只接受 JSON number（拒绝布尔、字符串、NaN 与 Infinity）",
+            "exclusiveMinimum": 0,
+            "maximum": 99999999.99,
+            "multipleOf": 0.01,
+            "title": "Total Score",
+            "type": "number"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Due At"
+          },
+          "allow_late_submission": {
+            "title": "Allow Late Submission",
+            "type": "boolean"
+          },
+          "rubric_items": {
+            "items": {
+              "$ref": "#/components/schemas/RubricItemRequest"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Rubric Items",
+            "type": "array"
+          }
+        },
+        "title": "AssignmentUpdateRequest",
+        "type": "object"
+      },
       "PracticeAttemptAnswerRequest": {
         "additionalProperties": false,
         "description": "单题提交（契约 7.6）：单选为选项 ID、判断为布尔、简答为文本。\n\n类型严格：只接受 JSON 字符串或 JSON 布尔值，``0`` / ``1`` 不会被转成布尔值。",
@@ -4984,6 +5989,43 @@
           "difficulty"
         ],
         "title": "PracticeGenerateRequest",
+        "type": "object"
+      },
+      "RubricItemRequest": {
+        "additionalProperties": false,
+        "description": "评分项请求（契约 8.2）。",
+        "properties": {
+          "title": {
+            "description": "去除首尾空白后必须是 1–200 个字符",
+            "title": "Title",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Description",
+            "type": "string"
+          },
+          "max_score": {
+            "description": "正数，最多 2 位小数（0.01 的整数倍）；只接受 JSON number（拒绝布尔、字符串、NaN 与 Infinity）",
+            "exclusiveMinimum": 0,
+            "maximum": 99999999.99,
+            "multipleOf": 0.01,
+            "title": "Max Score",
+            "type": "number"
+          },
+          "order": {
+            "minimum": 1,
+            "title": "Order",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "title",
+          "max_score",
+          "order"
+        ],
+        "title": "RubricItemRequest",
         "type": "object"
       }
     },
