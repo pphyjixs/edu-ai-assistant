@@ -2,7 +2,7 @@
 
 import { Icon } from "@/components/Icon/Icon";
 import { Pill } from "@/components/Pill/Pill";
-import type { ChatMessageDto } from "@/features/buddy/api";
+import { citationsOf, isAssistantMessage, type ChatMessageDto } from "@/features/buddy/api";
 
 import { BuddySourceCitation } from "../BuddySourceCitation/BuddySourceCitation";
 
@@ -13,7 +13,8 @@ export type BuddyMessageProps = {
 };
 
 export function BuddyMessage({ message }: BuddyMessageProps) {
-  const isAssistant = message.role === "ASSISTANT";
+  const isAssistant = isAssistantMessage(message);
+  const citations = citationsOf(message);
 
   return (
     <article className={isAssistant ? styles.assistant : styles.user}>
@@ -26,13 +27,14 @@ export function BuddyMessage({ message }: BuddyMessageProps) {
       <div className={styles.bubble}>
         <p className={styles.content}>{message.content}</p>
 
-        {isAssistant && !message.grounded ? (
+        {/* grounded 为 null 表示这条不是问答回答（例如用户消息） */}
+        {isAssistant && message.grounded === false ? (
           <div className={styles.ungrounded}>
             <Pill tone="neutral">未在课程资料中找到依据</Pill>
           </div>
         ) : null}
 
-        {isAssistant ? <BuddySourceCitation citations={message.citations} /> : null}
+        {isAssistant ? <BuddySourceCitation citations={citations} /> : null}
       </div>
     </article>
   );

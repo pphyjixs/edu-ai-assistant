@@ -145,6 +145,23 @@ class Settings(BaseSettings):
     #: 送入模型的片段上下文上限（字符），按资料顺序轮询截断
     practice_generate_max_chars: int = 60_000
 
+    # ------------------- 上下文 Agent Run（Agent）---------------------
+    #: Agent Run 的租约（秒）。模型可能耗时数分钟，因此默认给到 15 分钟，
+    #: 并配合 Worker 的心跳续租（docs/local-development-agent-backend.md 6.8）
+    agent_run_lease_seconds: int = 900
+    #: 单次 Run 的模型调用超时（秒），独立于同步问答的 AI_TIMEOUT_SECONDS
+    agent_model_timeout_seconds: float = 600.0
+    #: 注入模型的总上下文字符预算（超出按检索片段 → 历史 → 实体摘要的顺序裁剪）
+    agent_context_max_chars: int = 120_000
+    #: 带进提示词的最近历史消息条数上限
+    agent_history_max_messages: int = 20
+    #: 上下文检索片段条数上限
+    agent_max_retrieved_chunks: int = 8
+    #: 用户附加 `selected_text` 的长度上限（字符）
+    agent_selected_text_max_chars: int = 4_000
+    #: 单条来源快照落库的字符上限（避免把整份课件写进审计表）
+    agent_source_snapshot_max_chars: int = 500
+
     # ------------------------------ AI ------------------------------
     ai_provider: str = ""
     ai_api_key: str = ""

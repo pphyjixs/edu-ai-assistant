@@ -3517,6 +3517,295 @@
         }
       }
     },
+    "/api/v1/chat-sessions/{session_id}/runs": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "创建 Agent Run",
+        "description": "在指定会话中创建一个异步 Agent Run：同一事务写入用户消息、`agent_runs` 与 `AGENT_RUN` 任务后立即返回 202，模型调用由独立 Worker 完成。`client_request_id` 在用户范围内唯一，网络重试会返回同一个 Run。第一版每个会话同时只允许一个未结束的 Run。",
+        "operationId": "create_agent_run_api_v1_chat_sessions__session_id__runs_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "已受理，返回 Run（状态为 PENDING）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRunSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "课程已归档时为 COURSE_ARCHIVED；上下文不可用见 409/422",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "会话不存在、不是所有者，或目标对象不属于本课程/不可见（RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "AGENT_RUN_IN_PROGRESS（该会话已有未结束的 Run）、COURSE_ARCHIVED（课程已归档）或 AGENT_CONTEXT_NOT_READY（资料未解析完成）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "AGENT_CONTEXT_UNSUPPORTED（实体类型或 action/context 组合未实现）或 VALIDATION_ERROR（字段结构、长度与未知字段校验失败）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentRunCreateRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-runs/{run_id}": {
+      "get": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "查询 Agent Run",
+        "description": "仅 Run 的所有者可读。`status` / `progress` / `error` 来自关联任务；成功后会带上 `output_message_id` 与本次实际注入的来源列表。",
+        "operationId": "get_agent_run_api_v1_agent_runs__run_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Run 当前状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRunSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "会话不存在、不是所有者，或目标对象不属于本课程/不可见（RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/agent-runs/{run_id}/cancel": {
+      "post": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "取消 Agent Run",
+        "description": "把尚未结束的任务置为 `CANCELLED`。正在执行模型调用的 Worker 会因为状态不再是 `RUNNING` 而放弃回写，因此不会出现取消后仍产生助手消息的情况。已结束的 Run 返回 409 AGENT_RUN_NOT_CANCELLABLE。请求体可省略或传 {}。",
+        "operationId": "cancel_agent_run_api_v1_agent_runs__run_id__cancel_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "已取消",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRunSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "会话不存在、不是所有者，或目标对象不属于本课程/不可见（RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "任务已结束（AGENT_RUN_NOT_CANCELLABLE）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "请求体为显式 null 或含未声明字段（VALIDATION_ERROR）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "没有请求字段：可省略请求体或传空对象 {}"
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/jobs/{job_id}": {
       "get": {
         "tags": [
@@ -3710,6 +3999,198 @@
   },
   "components": {
     "schemas": {
+      "AgentRunAction": {
+        "type": "string",
+        "enum": [
+          "ASK",
+          "SUMMARIZE_CONTEXT",
+          "BREAK_DOWN_ASSIGNMENT",
+          "CHECK_SUBMISSION"
+        ],
+        "title": "AgentRunAction",
+        "description": "Run 的动作（契约 6.3 的 ``action``）。"
+      },
+      "AgentRunSchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "session_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Session Id"
+          },
+          "action": {
+            "$ref": "#/components/schemas/AgentRunAction"
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatusValue"
+          },
+          "progress": {
+            "type": "integer",
+            "title": "Progress"
+          },
+          "input_message_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Input Message Id"
+          },
+          "output_message_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Message Id"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/AgentRunSourceSchema"
+            },
+            "type": "array",
+            "title": "Sources"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "session_id",
+          "action",
+          "status",
+          "progress",
+          "input_message_id",
+          "output_message_id",
+          "error",
+          "created_at",
+          "started_at",
+          "finished_at"
+        ],
+        "title": "AgentRunSchema",
+        "description": "Run 的响应（契约 6.4）。\n\n``status`` / ``progress`` / ``error`` 来自关联的 Job，而不是 ``agent_runs``。"
+      },
+      "AgentRunSourceSchema": {
+        "properties": {
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          },
+          "source_type": {
+            "type": "string",
+            "title": "Source Type"
+          },
+          "source_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Source Id"
+          },
+          "material_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material Id"
+          },
+          "chunk_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunk Id"
+          },
+          "location_start": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location Start"
+          },
+          "location_end": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Location End"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          }
+        },
+        "type": "object",
+        "required": [
+          "order",
+          "source_type",
+          "source_id",
+          "material_id",
+          "chunk_id",
+          "location_start",
+          "location_end",
+          "label"
+        ],
+        "title": "AgentRunSourceSchema",
+        "description": "来源快照的展示视图（不含 ``snapshot`` 原文）。"
+      },
       "AssignmentDetailSchema": {
         "properties": {
           "id": {
@@ -4402,6 +4883,10 @@
           "PRACTICE_NOT_READY",
           "PRACTICE_ALREADY_ATTEMPTED",
           "JOB_NOT_RETRYABLE",
+          "AGENT_RUN_IN_PROGRESS",
+          "AGENT_CONTEXT_UNSUPPORTED",
+          "AGENT_CONTEXT_NOT_READY",
+          "AGENT_RUN_NOT_CANCELLABLE",
           "VALIDATION_ERROR",
           "METHOD_NOT_ALLOWED",
           "INTERNAL_ERROR",
@@ -4463,7 +4948,8 @@
         "enum": [
           "MATERIAL",
           "PRACTICE_SET",
-          "SUBMISSION"
+          "SUBMISSION",
+          "AGENT_RUN"
         ],
         "title": "JobResourceType",
         "description": "任务关联的资源类型，与 ``JobType`` 一一对应。"
@@ -4564,7 +5050,8 @@
         "enum": [
           "MATERIAL_PARSE",
           "PRACTICE_GENERATE",
-          "SUBMISSION_GRADE"
+          "SUBMISSION_GRADE",
+          "AGENT_RUN"
         ],
         "title": "JobType",
         "description": "任务类型。"
@@ -5796,6 +6283,140 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "AgentEntityType": {
+        "description": "上下文对象类型（契约 6.3 的 ``entity_type``）。",
+        "enum": [
+          "COURSE",
+          "MATERIAL",
+          "MATERIAL_SECTION",
+          "ASSIGNMENT",
+          "SUBMISSION",
+          "GRADE"
+        ],
+        "title": "AgentEntityType",
+        "type": "string"
+      },
+      "AgentRunCreateRequest": {
+        "additionalProperties": false,
+        "description": "创建 Run 的请求（契约 6.3）。",
+        "properties": {
+          "input": {
+            "title": "Input",
+            "type": "string"
+          },
+          "action": {
+            "$ref": "#/components/schemas/AgentRunAction"
+          },
+          "context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentRunRequestContext"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "options": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentRunOptions"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "client_request_id": {
+            "maxLength": 64,
+            "title": "Client Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "input",
+          "action",
+          "client_request_id"
+        ],
+        "title": "AgentRunCreateRequest",
+        "type": "object"
+      },
+      "AgentRunOptions": {
+        "additionalProperties": false,
+        "description": "可选的调用选项。第一版只认 ``output_language``，其余字段一律拒绝。",
+        "properties": {
+          "output_language": {
+            "anyOf": [
+              {
+                "maxLength": 35,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Output Language"
+          }
+        },
+        "title": "AgentRunOptions",
+        "type": "object"
+      },
+      "AgentRunRequestContext": {
+        "additionalProperties": false,
+        "description": "上下文对象标识（契约 6.3）。\n\n这里**不校验** ``entity_id`` 是否必填：是否必填取决于 ``entity_type``，\n由服务层按 ``entity_type`` 逐类判断，避免把业务规则散落在两个地方。",
+        "properties": {
+          "entity_type": {
+            "$ref": "#/components/schemas/AgentEntityType"
+          },
+          "entity_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Entity Id"
+          },
+          "section_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Section Id"
+          },
+          "selected_text": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Selected Text"
+          }
+        },
+        "required": [
+          "entity_type"
+        ],
+        "title": "AgentRunRequestContext",
+        "type": "object"
       },
       "AssignmentCreateRequest": {
         "additionalProperties": false,

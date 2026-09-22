@@ -1,7 +1,15 @@
 /**
- * 会话消息的读取与发送。
+ * Buddy 的消息读取与「创建 Agent Run + 轮询」。
  *
- * 会话与消息属于服务端状态，因此走 TanStack Query；
+ * 为什么不再用同步发消息接口：
+ *
+ * - 同步接口会在 HTTP 请求内等待模型，模型耗时几分钟时既不适合 Serverless，
+ *   也会让用户面对一个没有反馈的请求（``docs/local-development-agent-backend.md`` 3.3）；
+ * - Run 接口先落库用户消息再返回 202，因此**用户消息立刻可见**，
+ *   助手消息等 Worker 完成后由轮询带回，刷新页面也能看到历史。
+ *
+ * 轮询节奏沿用契约建议：前 30 秒每 2 秒，之后每 5 秒，到达终态立即停止。
+ * 会话与消息属于服务端状态，全部交给 TanStack Query；
  * UI store 里只保留当前会话 id 及其所属课程。
  */
 
@@ -13,19 +21,25 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { useEffect, useRef } from "react";
 
 import { HttpError, toAppError, type AppError } from "@/services/http";
 import { queryKeys } from "@/services/queryKeys";
 
-import { buddyApi, buildSendRequest, type ChatSessionDto } from "../api";
+import {
+  buddyApi,
+  isTerminalRunStatus,
+  type AgentRunActionDto,
+  type ChatSessionDto,
+} from "../api";
+import { buildRunRequest, newClientRequestId } from "../model/runs";
 import { useBuddyStore } from "../store/buddyStore";
 
 export function useBuddyMessages(sessionId: string | undefined) {
   return useQuery({
     queryKey: queryKeys.messages(sessionId ?? "pending"),
-    queryFn: () => buddyApi.listMessages(sessionId as string),
+    queryFn: ({ signal }) => buddyApi.listMessages(sessionId as string, signal),
     enabled: Boolean(sessionId),
-    // 会话内容在本次交互内变化频繁，不做长时间缓存
     staleTime: 0,
   });
 }
@@ -36,23 +50,39 @@ export function useBuddyMessages(sessionId: string | undefined) {
  * 面板和页面按钮是两个不同的 useMutation 调用点，
  * 靠 mutationKey + useIsMutating 才能共享「正在发送」状态。
  */
-export const buddySendMutationKey = ["buddy", "send-message"] as const;
+export const buddyRunMutationKey = ["buddy", "run"] as const;
 
-export function useSendBuddyMessage() {
+const FAST_INTERVAL_MS = 2_000;
+const SLOW_INTERVAL_MS = 5_000;
+const FAST_WINDOW_MS = 30_000;
+
+export type SendRunInput = {
+  input: string;
+  action: AgentRunActionDto;
+};
+
+export type SendRunResult = {
+  sessionId: string;
+  runId: string;
+};
+
+/**
+ * 创建一次 Agent Run。
+ *
+ * 需要会话时先建会话（契约 6 的会话按课程创建，换课后必须换会话，
+ * 否则问题会发进旧课程），再把当前上下文与动作一起发给后端。
+ */
+export function useSendBuddyRun() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationKey: buddySendMutationKey,
+    mutationKey: buddyRunMutationKey,
 
-    mutationFn: async (content: string): Promise<string> => {
+    mutationFn: async (payload: SendRunInput): Promise<SendRunResult> => {
       // 读取最新状态，避免闭包里拿到旧值
       const { buddyContext, activeChatSessionId, activeChatCourseId, openChatSession } =
         useBuddyStore.getState();
 
-      // 把用户原文与当前上下文一起交给 adapter
-      const request = buildSendRequest(content, buddyContext);
-
-      // 契约 6 的会话按课程创建；换课后必须换会话，否则问题会发进旧课程
       const reusable =
         activeChatSessionId &&
         activeChatCourseId &&
@@ -73,50 +103,134 @@ export function useSendBuddyMessage() {
         openChatSession(sessionId, buddyContext.courseId);
       }
 
-      await buddyApi.sendMessage(sessionId, request.body, request.options);
-      return sessionId;
+      const run = await buddyApi.createRun(
+        sessionId,
+        buildRunRequest(buddyContext, {
+          input: payload.input,
+          action: payload.action,
+          selectedText: buddyContext.selectedText,
+        }),
+      );
+      return { sessionId, runId: run.id };
     },
 
-    onSuccess: (sessionId) => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.messages(sessionId) });
+    onSuccess: (result) => {
+      // 用户消息在创建 Run 时已经落库，立刻刷新让它出现在对话里
+      void queryClient.invalidateQueries({ queryKey: queryKeys.messages(result.sessionId) });
       void queryClient.invalidateQueries({ queryKey: ["recent-chat-sessions"] });
     },
   });
 }
 
-/**
- * 任意调用点触发的「正在发送」状态。
- * 面板与页面上的 AI Action 按钮是两个 useMutation 实例，靠 mutationKey 对齐。
- */
+/** 任意调用点触发的「正在提交」状态 */
 export function useIsBuddySending(): boolean {
-  return useIsMutating({ mutationKey: buddySendMutationKey }) > 0;
+  return useIsMutating({ mutationKey: buddyRunMutationKey }) > 0;
 }
 
 /**
- * 最近一次发送失败的错误。
- * 取 submittedAt 最新的那条，避免旧的失败记录在新一轮发送后仍然显示。
+ * 轮询一个 Run 到终态。
+ *
+ * 成功后刷新消息列表（助手消息此时才写入），失败则把安全错误摘要交给界面。
  */
-export function useBuddySendError(): AppError | null {
+export function useAgentRun(runId: string | undefined, sessionId: string | undefined) {
+  const queryClient = useQueryClient();
+  const startedAt = useRef(Date.now());
+
+  useEffect(() => {
+    startedAt.current = Date.now();
+  }, [runId]);
+
+  const query = useQuery({
+    queryKey: queryKeys.agentRun(runId ?? "none"),
+    queryFn: ({ signal }) => buddyApi.getRun(runId as string, signal),
+    enabled: Boolean(runId),
+    staleTime: 0,
+    retry: false,
+    refetchInterval: (current) => {
+      if (isTerminalRunStatus(current.state.data?.status)) return false;
+      const elapsed = Date.now() - startedAt.current;
+      return elapsed < FAST_WINDOW_MS ? FAST_INTERVAL_MS : SLOW_INTERVAL_MS;
+    },
+  });
+
+  const status = query.data?.status;
+
+  useEffect(() => {
+    if (status !== "SUCCEEDED" || !sessionId) return;
+    void queryClient.invalidateQueries({ queryKey: queryKeys.messages(sessionId) });
+    void queryClient.invalidateQueries({ queryKey: ["recent-chat-sessions"] });
+  }, [status, sessionId, queryClient]);
+
+  return query;
+}
+
+/**
+ * 最近一次提问的完整状态：会话、Run、进度与错误。
+ *
+ * 面板与页面按钮共用它，因此无论从哪触发，界面上的状态都是一致的。
+ */
+export function useActiveBuddyRun(): {
+  sessionId: string | undefined;
+  runId: string | undefined;
+  run: ReturnType<typeof useAgentRun>["data"];
+  isSubmitting: boolean;
+  error: AppError | null;
+} {
   const states = useMutationState({
-    filters: { mutationKey: buddySendMutationKey },
+    filters: { mutationKey: buddyRunMutationKey },
     select: (mutation) => ({
       status: mutation.state.status,
+      data: mutation.state.data as SendRunResult | undefined,
       error: mutation.state.error,
       submittedAt: mutation.state.submittedAt,
     }),
   });
 
   const latest = [...states].sort((a, b) => b.submittedAt - a.submittedAt)[0];
-  if (!latest || latest.status !== "error") return null;
-  return toAppError(latest.error);
+  const runQuery = useAgentRun(latest?.data?.runId, latest?.data?.sessionId);
+
+  const submitError =
+    latest?.status === "error" && latest.error ? toAppError(latest.error) : null;
+  const runError = runQuery.data?.error;
+  const error: AppError | null =
+    submitError ??
+    (runQuery.data?.status === "FAILED"
+      ? {
+          code: "AI_JOB_FAILED",
+          message: runError ?? "这次生成没有成功完成，可以重新提问。",
+          details: {},
+          retryable: true,
+        }
+      : null);
+
+  return {
+    sessionId: latest?.data?.sessionId,
+    runId: latest?.data?.runId,
+    run: runQuery.data,
+    isSubmitting: latest?.status === "pending",
+    error,
+  };
 }
 
 export type RecentChatSessionVM = {
   id: string;
   courseId: string;
-  title: string;
-  createdAt: string;
+  /** 契约里会话没有标题，只能用最近活动时间作为可读标识 */
+  activityLabel: string;
 };
+
+function activityLabelOf(session: ChatSessionDto): string {
+  const stamp = session.last_message_at ?? session.created_at;
+  const date = new Date(stamp);
+  if (Number.isNaN(date.getTime())) return "对话";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+}
 
 /**
  * 侧栏的「最近对话」。
@@ -135,20 +249,21 @@ export function useRecentChatSessions(courseIds: string[], limit = 3) {
   const sessions: RecentChatSessionVM[] = [];
   results.forEach((result, index) => {
     const courseId = courseIds[index];
-    (result.data ?? []).forEach((session: ChatSessionDto) => {
+    (result.data?.items ?? []).forEach((session) => {
       sessions.push({
         id: session.id,
         courseId,
-        title: session.title,
-        createdAt: session.created_at,
+        activityLabel: activityLabelOf(session),
       });
     });
   });
 
-  sessions.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  sessions.sort((a, b) => b.activityLabel.localeCompare(a.activityLabel));
 
   return {
     sessions: sessions.slice(0, limit),
     isPending: results.some((result) => result.isPending),
   };
 }
+
+export { newClientRequestId };

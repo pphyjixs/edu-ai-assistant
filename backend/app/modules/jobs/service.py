@@ -156,3 +156,33 @@ async def retry_practice_generate_job(
     return await practice_service.retry_practice_generate_job(
         session, target=target, now=now
     )
+
+
+# ------------------------- 上下文 Agent Run（Agent）------------------------- #
+
+
+def create_agent_run_job(
+    session: AsyncSession, *, run_id: uuid.UUID, now: datetime
+) -> Job:
+    """为 Agent Run 创建 ``AGENT_RUN`` 任务（``PENDING`` / 进度 0）。
+
+    与 Run 记录在同一事务内落库（文档 6.4）；状态、进度、错误、尝试次数与租约
+    只存在于这张任务表，``agent_runs`` 不复制一套竞争的状态字段（文档 6.5）。
+    """
+    return repo.add_job(
+        session,
+        job_id=uuid.uuid4(),
+        job_type=JobType.AGENT_RUN,
+        resource_type=JobResourceType.AGENT_RUN,
+        resource_id=run_id,
+        status=JobStatusValue.PENDING,
+        progress=0,
+        now=now,
+    )
+
+
+async def lock_agent_run_job(session: AsyncSession, *, run_id: uuid.UUID) -> Job | None:
+    """锁住某个 Run 对应的任务行（回写与取消的临界区）。"""
+    return await repo.get_job_for_resource_for_update(
+        session, job_type=JobType.AGENT_RUN, resource_id=run_id
+    )

@@ -1,0 +1,8 @@
+.skeletons {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.list {
+  display: block;
+}

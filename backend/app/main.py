@@ -26,6 +26,7 @@ from app.core.middleware import RequestContextMiddleware
 from app.core.openapi import install_explicit_schemas
 from app.core.schemas import ErrorResponse
 from app.db.session import dispose_engines
+from app.modules.agent.router import AGENT_REQUEST_MODELS
 from app.modules.assignments.router import ASSIGNMENT_REQUEST_MODELS
 from app.modules.practice.router import PRACTICE_REQUEST_MODELS
 
@@ -99,7 +100,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # 手工解析请求体的接口不会自动产生组件，这里显式补进 OpenAPI
     install_explicit_schemas(
-        app, (*PRACTICE_REQUEST_MODELS, *ASSIGNMENT_REQUEST_MODELS)
+        app,
+        (
+            *PRACTICE_REQUEST_MODELS,
+            *ASSIGNMENT_REQUEST_MODELS,
+            *AGENT_REQUEST_MODELS,
+        ),
     )
 
     return app

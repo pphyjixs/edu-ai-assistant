@@ -166,6 +166,30 @@ class JobNotRetryableError(ApiError):
     code = ErrorCode.JOB_NOT_RETRYABLE
 
 
+class AgentRunInProgressError(ApiError):
+    """同一会话已有未结束的 Agent Run（文档 6.5：第一版每会话最多一个）。"""
+
+    code = ErrorCode.AGENT_RUN_IN_PROGRESS
+
+
+class AgentContextUnsupportedError(ApiError):
+    """该 ``entity_type`` 或 action/context 组合尚未实现（文档 6.3 / 6.10）。"""
+
+    code = ErrorCode.AGENT_CONTEXT_UNSUPPORTED
+
+
+class AgentContextNotReadyError(ApiError):
+    """目标资料尚未解析完成，无法注入上下文（文档 6.6 / 6.10）。"""
+
+    code = ErrorCode.AGENT_CONTEXT_NOT_READY
+
+
+class AgentRunNotCancellableError(ApiError):
+    """Run 已结束，无法取消（文档 6.2 / 6.10）。"""
+
+    code = ErrorCode.AGENT_RUN_NOT_CANCELLABLE
+
+
 class ValidationError(ApiError):
     """请求参数未通过校验，details 内为 ``errors`` 字段级说明。"""
 

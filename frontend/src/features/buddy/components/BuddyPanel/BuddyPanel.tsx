@@ -9,7 +9,8 @@
  */
 
 import { cn } from "@/components/utils";
-import { useIsBuddySending } from "@/features/buddy/hooks/useBuddyThread";
+import { isRunInFlight } from "@/features/buddy/api";
+import { useActiveBuddyRun } from "@/features/buddy/hooks/useBuddyThread";
 import { useBuddyStore } from "@/features/buddy/store/buddyStore";
 import { buddyQuickPrompts } from "@/features/buddy/model/actions";
 
@@ -29,7 +30,10 @@ export function BuddyPanel({ variant = "docked" }: BuddyPanelProps) {
   const buddyOpen = useBuddyStore((state) => state.buddyOpen);
   const closeBuddy = useBuddyStore((state) => state.closeBuddy);
   const sessionId = useBuddyStore((state) => state.activeChatSessionId);
-  const isSending = useIsBuddySending();
+  // 「等待中」不只在提交那一刻：Run 从 PENDING 到终态都要显示进度，
+  // 否则用户会在两次轮询之间看到空档（文档 6.8）。
+  const { isSubmitting, run } = useActiveBuddyRun();
+  const isSending = isSubmitting || isRunInFlight(run?.status);
 
   if (!buddyOpen) return null;
 

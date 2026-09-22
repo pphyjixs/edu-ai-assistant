@@ -138,7 +138,7 @@
 .footer {
   margin-top: auto;
   display: grid;
-  grid-template-columns: 34px 1fr;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
   gap: 9px;
   align-items: center;
   padding: 10px 8px 2px;

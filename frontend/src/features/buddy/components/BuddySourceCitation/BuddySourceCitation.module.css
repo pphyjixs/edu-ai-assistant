@@ -28,5 +28,10 @@
   background: var(--color-surface);
   font-size: var(--text-caption);
   color: var(--color-info-ink);
-  cursor: help;
+  cursor: pointer;
+}
+
+.chip:hover {
+  border-color: var(--color-accent-blue);
+  background: var(--color-info-soft);
 }

@@ -42,6 +42,14 @@ class ErrorCode(str, Enum):
     PRACTICE_ALREADY_ATTEMPTED = "PRACTICE_ALREADY_ATTEMPTED"
     #: 任务当前状态不可重试（契约 10.1）
     JOB_NOT_RETRYABLE = "JOB_NOT_RETRYABLE"
+    #: 同一会话已有未结束的 Agent Run（docs/local-development-agent-backend.md 6.5）
+    AGENT_RUN_IN_PROGRESS = "AGENT_RUN_IN_PROGRESS"
+    #: 该实体类型或 action 与 context 的组合尚未实现（6.3）
+    AGENT_CONTEXT_UNSUPPORTED = "AGENT_CONTEXT_UNSUPPORTED"
+    #: 目标资料尚未解析完成，无法注入上下文（6.10）
+    AGENT_CONTEXT_NOT_READY = "AGENT_CONTEXT_NOT_READY"
+    #: Run 已结束，无法取消（6.2 / 6.10）
+    AGENT_RUN_NOT_CANCELLABLE = "AGENT_RUN_NOT_CANCELLABLE"
 
     # ---------------------------- 框架层错误码 ----------------------------
     #: 请求体或查询参数未通过 Pydantic 校验
@@ -76,6 +84,10 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.PRACTICE_NOT_READY: "练习尚未生成完成，暂时无法执行该操作",
     ErrorCode.PRACTICE_ALREADY_ATTEMPTED: "你已经提交过这套练习",
     ErrorCode.JOB_NOT_RETRYABLE: "该任务当前不可重试",
+    ErrorCode.AGENT_RUN_IN_PROGRESS: "这个会话还有一个进行中的任务，请等它结束",
+    ErrorCode.AGENT_CONTEXT_UNSUPPORTED: "当前对象类型暂不支持这个操作",
+    ErrorCode.AGENT_CONTEXT_NOT_READY: "目标资料尚未解析完成，暂时无法作为上下文",
+    ErrorCode.AGENT_RUN_NOT_CANCELLABLE: "该任务已经结束，无法取消",
     ErrorCode.VALIDATION_ERROR: "请求参数不合法",
     ErrorCode.METHOD_NOT_ALLOWED: "请求方法不被支持",
     ErrorCode.INTERNAL_ERROR: "服务内部错误，请稍后重试",
@@ -105,6 +117,10 @@ DEFAULT_STATUS_CODES: dict[ErrorCode, int] = {
     ErrorCode.PRACTICE_NOT_READY: 409,
     ErrorCode.PRACTICE_ALREADY_ATTEMPTED: 409,
     ErrorCode.JOB_NOT_RETRYABLE: 409,
+    ErrorCode.AGENT_RUN_IN_PROGRESS: 409,
+    ErrorCode.AGENT_CONTEXT_UNSUPPORTED: 422,
+    ErrorCode.AGENT_CONTEXT_NOT_READY: 409,
+    ErrorCode.AGENT_RUN_NOT_CANCELLABLE: 409,
     ErrorCode.VALIDATION_ERROR: 422,
     ErrorCode.METHOD_NOT_ALLOWED: 405,
     ErrorCode.INTERNAL_ERROR: 500,

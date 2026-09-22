@@ -9,9 +9,10 @@ import { useCallback, useEffect } from "react";
 import { useLocation } from "react-router-dom";
 
 import { useBuddyStore } from "../store/buddyStore";
+import type { AgentRunActionDto } from "../api";
 import type { BuddyContext } from "../model/types";
 
-import { useSendBuddyMessage } from "./useBuddyThread";
+import { useSendBuddyRun } from "./useBuddyThread";
 
 export function useBuddyOpen(): boolean {
   return useBuddyStore((state) => state.buddyOpen);
@@ -43,22 +44,29 @@ export function useSetBuddyContext(context: BuddyContext): void {
 }
 
 /**
- * AI Action 的统一入口：打开面板并把预设问题送进当前会话。
+ * AI Action 的统一入口：打开面板并创建一次 Agent Run。
  *
- * 顺序很重要——先写入上下文补丁，再发送，这样请求里带的是最新的上下文。
+ * 顺序很重要——先写入上下文补丁，再发送，这样请求里带的是最新的上下文
+ * （Run 的 ``context`` 字段就是从 store 里的 BuddyContext 翻译出来的）。
+ *
+ * ``action`` 决定后端加载什么上下文、用哪套提示词模板；省略时按 ``ASK``。
  */
 export function useAskBuddy() {
   const openBuddy = useBuddyStore((state) => state.openBuddy);
-  const send = useSendBuddyMessage();
+  const send = useSendBuddyRun();
 
   return useCallback(
-    (prompt: string, contextPatch?: Partial<BuddyContext>) => {
+    (
+      prompt: string,
+      contextPatch?: Partial<BuddyContext>,
+      action: AgentRunActionDto = "ASK",
+    ) => {
       if (contextPatch) {
         const current = useBuddyStore.getState().buddyContext;
         useBuddyStore.getState().setBuddyContext({ ...current, ...contextPatch });
       }
       openBuddy();
-      send.mutate(prompt);
+      send.mutate({ input: prompt, action });
     },
     [openBuddy, send],
   );
