@@ -1403,14 +1403,53 @@ Authorization: Bearer <access_token>
 
 | 方法 | 路径 | 说明 | 权限 |
 | --- | --- | --- | --- |
-| POST | `/courses/{course_id}/assignments` | 创建草稿 | 课程教师 |
+| POST | `/courses/{course_id}/assignments` | 创建草稿 | 课程创建教师 |
 | GET | `/courses/{course_id}/assignments` | 任务列表 | 课程成员 |
 | GET | `/assignments/{assignment_id}` | 任务详情 | 课程成员 |
-| PATCH | `/assignments/{assignment_id}` | 修改任务 | 课程教师 |
-| POST | `/assignments/{assignment_id}/publish` | 发布任务 | 课程教师 |
-| POST | `/assignments/{assignment_id}/close` | 关闭提交 | 课程教师 |
+| PATCH | `/assignments/{assignment_id}` | 修改任务 | 课程创建教师 |
+| POST | `/assignments/{assignment_id}/publish` | 发布任务 | 课程创建教师 |
+| POST | `/assignments/{assignment_id}/close` | 关闭提交 | 课程创建教师 |
 
-创建请求：
+本节只定义**任务本身**（创建、查询、修改、发布、关闭、评分规则与版本）。
+报告上传、提交、AI 批改、教师复核与成绩发布属于第 9 节；任务附件没有公开
+接口定义，本轮不实现。
+
+### 8.1 通用规则与权限
+
+任务状态机：
+
+```text
+创建 → DRAFT
+DRAFT → PUBLISHED
+PUBLISHED → CLOSED
+```
+
+| 状态 | 含义 |
+| --- | --- |
+| `DRAFT` | 草稿，仅教师可见，可修改、可发布 |
+| `PUBLISHED` | 已发布，学生可见；可修改（改评分规则会生成新版本）、可关闭 |
+| `CLOSED` | 已关闭，学生可见但不能提交；不可修改、不可重新发布 |
+| `ARCHIVED` | 兼容状态；本轮不提供单独归档接口 |
+
+规则：
+
+- 重复发布 `PUBLISHED` 任务**幂等**返回 `200`，不改变 `published_at`；重复关闭 `CLOSED` 任务同样幂等，不改变 `closed_at`。
+- `DRAFT` **不能**关闭（`409 ASSIGNMENT_NOT_OPEN`）；`CLOSED`、`ARCHIVED` 不能修改或重新发布（`409 ASSIGNMENT_NOT_OPEN`）。
+- `DRAFT`、`PUBLISHED` 可以修改。
+- 截止时间**不会**被查询接口自动改成 `CLOSED`；状态只由发布/关闭接口推进。
+- 权限与可见性：创建、修改、发布、关闭仅**课程创建教师**；其他教师 `403 COURSE_FORBIDDEN`，学生 `403 ROLE_FORBIDDEN`（学生调用写接口）。
+- 查询：课程教师可读课程内**全部状态**；学生只能读 `PUBLISHED`、`CLOSED`、`ARCHIVED`。学生读草稿、非成员访问、任务不存在统一 `404 RESOURCE_NOT_FOUND`。
+- **归档课程**：任务列表与详情仍返回 `200`（读历史）；创建、修改、发布、关闭返回 `409 COURSE_ARCHIVED`。
+- 分页沿用第 1 节（`page` / `page_size`，默认 20、最大 100，越界 `422`）；列表按 `created_at DESC, id DESC` 稳定排序。
+- **写接口检查顺序固定**：认证 → 课程/任务存在及成员可见性 → 角色与课程创建者 → 课程归档 → 任务状态 → 请求体结构与字段 → `RUBRIC_SCORE_MISMATCH` → 数据写入。因此带非法请求体的越权或归档请求返回 `401` / `404` / `403` / `409`，而不是 `422`；总分不匹配排在字段校验之后。
+- **统一锁顺序**：所有写事务按 **课程行 → Assignment 行 → 当前 RubricVersion** 加锁（`GET` 不加写锁）。
+
+### 8.2 创建任务
+
+```http
+POST /api/v1/courses/{course_id}/assignments
+Authorization: Bearer <access_token>
+```
 
 ```json
 {
@@ -1435,6 +1474,225 @@ Authorization: Bearer <access_token>
   ]
 }
 ```
+
+| 字段 | 类型 | 规则 |
+| --- | --- | --- |
+| `title` | string（**严格**） | 必填，去除首尾空白后 1–200 字符 |
+| `description` | string | 可省略，默认 `""`，最多 20,000 字符 |
+| `total_score` | number（**严格**） | 必填，正数，最多两位小数；拒绝布尔、字符串、`NaN`、`Infinity` |
+| `due_at` | string / `null` | 可省略或为 `null`；非空时必须是**带时区**的 ISO 8601 时间，服务端转为 UTC 存储 |
+| `allow_late_submission` | boolean（**严格**） | 可省略，默认 `false` |
+| `rubric_items` | 对象数组 | 必填，1–50 项 |
+
+评分项字段：
+
+| 字段 | 类型 | 规则 |
+| --- | --- | --- |
+| `title` | string（**严格**） | 去除首尾空白后 1–200 字符 |
+| `description` | string | 可为空字符串，最多 2,000 字符 |
+| `max_score` | number（**严格**） | 正数，最多两位小数 |
+| `order` | integer（**严格**） | 从 1 开始、连续且不重复 |
+
+校验：拒绝未知字段；**除 `due_at` 外**显式 `null` 一律 `422`；各评分项 `max_score` 之和必须**精确等于** `total_score`，否则 `422 RUBRIC_SCORE_MISMATCH`（内部用 `Decimal` 比较，不使用二进制浮点）。创建成功为 `201 Created`，返回 `AssignmentDetail`，同时写入**评分规则版本 1**，`rubric_version` 为 `1`。
+
+### 8.3 任务列表
+
+```http
+GET /api/v1/courses/{course_id}/assignments?page=1&page_size=20
+Authorization: Bearer <access_token>
+```
+
+- 课程成员可读；**学生视角下草稿由 SQL 查询层排除**（不是在响应层过滤）。
+- 未发布的草稿任务不会出现在学生列表里；教师列表包含全部状态。
+- 响应 `200`，`Page<AssignmentSummary>`：
+
+```json
+{
+  "items": [],
+  "page": 1,
+  "page_size": 20,
+  "total": 0
+}
+```
+
+### 8.4 任务详情
+
+```http
+GET /api/v1/assignments/{assignment_id}
+Authorization: Bearer <access_token>
+```
+
+- 课程教师可读全部状态；学生只能读 `PUBLISHED` / `CLOSED` / `ARCHIVED`，其余统一 `404`。
+- 响应 `200`，`AssignmentDetail`：含 `description` 与按 `order` 升序的**当前**评分规则项。
+
+### 8.5 修改任务
+
+```http
+PATCH /api/v1/assignments/{assignment_id}
+Authorization: Bearer <access_token>
+```
+
+请求字段与创建相同，但**全部可省略**：
+
+```json
+{
+  "title": "实验一 需求分析（修订）",
+  "total_score": 100,
+  "rubric_items": [
+    { "title": "需求完整性", "description": "", "max_score": 50, "order": 1 },
+    { "title": "建模规范", "description": "", "max_score": 50, "order": 2 }
+  ]
+}
+```
+
+- 空对象 `{}` 返回 `422 VALIDATION_ERROR`。
+- `due_at: null` **清除**截止时间（与"省略"不同：省略表示保持不变）。
+- `rubric_items` 出现时表示**完整替换**当前评分规则。
+- 服务端用"数据库当前值 + 本次提供字段"组成**候选结果**，再校验总分，因此只改 `total_score` 或只改部分评分项时仍能正确判断一致性。
+- 只有 `DRAFT`、`PUBLISHED` 可修改；`CLOSED` / `ARCHIVED` 返回 `409 ASSIGNMENT_NOT_OPEN`。
+- 响应 `200`，`AssignmentDetail`。
+
+### 8.6 发布任务
+
+```http
+POST /api/v1/assignments/{assignment_id}/publish
+Authorization: Bearer <access_token>
+```
+
+无请求字段（可省略请求体或传 `{}`；显式 `null`、数组、非法 JSON、非法 UTF-8 与多余字段返回 `422`）。
+
+| 当前状态 | 结果 |
+| --- | --- |
+| `DRAFT` | `200`，置为 `PUBLISHED` 并记录 `published_at` |
+| `PUBLISHED` | `200`，幂等返回（不改变 `published_at`） |
+| `CLOSED` / `ARCHIVED` | `409 ASSIGNMENT_NOT_OPEN` |
+
+响应 `200`，`AssignmentDetail`。
+
+### 8.7 关闭任务
+
+```http
+POST /api/v1/assignments/{assignment_id}/close
+Authorization: Bearer <access_token>
+```
+
+请求体规则同发布。
+
+| 当前状态 | 结果 |
+| --- | --- |
+| `PUBLISHED` | `200`，置为 `CLOSED` 并记录 `closed_at` |
+| `CLOSED` | `200`，幂等返回（不改变 `closed_at`） |
+| `DRAFT` | `409 ASSIGNMENT_NOT_OPEN`（草稿不能关闭） |
+| `ARCHIVED` | `409 ASSIGNMENT_NOT_OPEN` |
+
+响应 `200`，`AssignmentDetail`。
+
+### 8.8 响应 Schema
+
+`AssignmentSummary`：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | UUID | 任务 ID |
+| `course_id` | UUID | 所属课程 |
+| `title` | string | 标题 |
+| `total_score` | number | 总分（库中 `Numeric`，响应为 number） |
+| `due_at` | string / `null` | UTC 时间 |
+| `allow_late_submission` | boolean | 是否允许补交 |
+| `status` | 枚举 | `DRAFT` / `PUBLISHED` / `CLOSED` / `ARCHIVED` |
+| `rubric_version` | integer | 当前评分规则版本号，从 1 开始 |
+| `published_at` | string / `null` | 首次发布时间 |
+| `closed_at` | string / `null` | 关闭时间 |
+| `created_at` | string | 创建时间 |
+| `updated_at` | string | 最后修改时间 |
+
+`AssignmentDetail` = `AssignmentSummary` + `description`（string）+ `rubric_items`（`RubricItem[]`，按 `order` 升序）。
+
+`RubricItem`：`id`（UUID）、`title`、`description`、`max_score`（number）、`order`（integer）。
+
+列表统一为 `{items, page, page_size, total}`（第 1 节）。
+
+### 8.9 评分规则版本
+
+- 创建任务时建立**版本 1**（`assignment_rubric_versions`）与其评分项（`assignment_rubric_items`）。
+- 版本一旦写入**不可原地修改**：评分项与总分只读。
+- 修改请求导致 `total_score` 或 `rubric_items`（标题/说明/分值/顺序的任一实质变化）**实际变化**时，建立 `current_version + 1` 的新版本，并把任务的 `current_rubric_version_id` 指向它。
+- 每个新版本的评分项都是**新记录、新 ID**；旧版本与其评分项保持原样。
+- 非评分字段（`title` / `description` / `due_at` / `allow_late_submission`）的修改**不产生新版本**。
+- 提交与当前版本**完全相同**的评分规则**不产生新版本**。
+- 详情只返回当前版本；历史版本保留在库中供后续 Grading 使用，本轮不提供公开的历史查询接口。
+
+### 8.10 截止时间与补交判断（内部服务）
+
+供第 9 节 Submission 模块复用的判断（本轮只提供并测试该规则，不实现报告上传流程）：
+
+```text
+status == PUBLISHED
+且 (
+  due_at 为 null
+  或 now < due_at
+  或 allow_late_submission == true
+)
+```
+
+- `now == due_at` 视为**已经截止**。
+- `CLOSED`、`DRAFT`、`ARCHIVED` 始终不可提交。
+- **手工关闭优先于** `allow_late_submission`。
+
+### 8.11 错误响应
+
+| 场景 | HTTP | 错误码 |
+| --- | --- | --- |
+| 缺少、无效或过期的 Access Token | 401 | `AUTH_TOKEN_EXPIRED` |
+| 课程/任务不存在，或当前用户不可见（含学生读草稿） | 404 | `RESOURCE_NOT_FOUND` |
+| 学生调用写接口 | 403 | `ROLE_FORBIDDEN` |
+| 非创建教师调用写接口 | 403 | `COURSE_FORBIDDEN` |
+| 归档课程的创建、修改、发布、关闭 | 409 | `COURSE_ARCHIVED` |
+| 修改/重新发布 `CLOSED`、`ARCHIVED`，关闭 `DRAFT`，或发布 `ARCHIVED` | 409 | `ASSIGNMENT_NOT_OPEN` |
+| 评分项分值之和不等于 `total_score` | 422 | `RUBRIC_SCORE_MISMATCH` |
+| 请求结构、字段类型/长度、显式 `null`、未知字段、分页越界、修改空对象 | 422 | `VALIDATION_ERROR` |
+
+### 8.12 与第 9 节的边界
+
+| 能力 | 归属 |
+| --- | --- |
+| 任务创建、查询、修改、发布、关闭、评分规则与版本 | 第 8 节（本轮交付） |
+| 是否允许提交（`8.10`）与"当前评分规则版本"的内部服务 | 第 8 节提供，第 9 节消费 |
+| 报告上传、提交记录、AI 批改、教师复核、成绩发布与"引用旧评分版本" | **第 9 节，本轮未交付** |
+| 任务附件（无公开接口定义） | 本轮不实现 |
+
+### 8.13 前端 mock 与正式契约的差异
+
+第 8 节接口在前端当前由 mock adapter 提供数据（`frontend/src/features/assignments/api/mock.ts`），
+与正式后端契约存在以下差异，**前端真实接入不在本轮后端实施范围内**，但以正式契约为准：
+
+- 列表：mock 直接返回数组；正式接口返回**分页包装** `{items, page, page_size, total}`，并按 `created_at DESC, id DESC` 排序。
+- 列表元素：mock 返回含 `rubric_items` 的完整对象；正式接口的列表使用 **`AssignmentSummary`**，只有**详情**才返回 `description` 与 `rubric_items`。
+- mock 未实现创建、修改、发布与关闭；正式接口的写路径权限、状态机与错误码以本节为准。
+
+### 8.14 OpenAPI 请求声明与运行时校验的对应
+
+第 8 节三个请求组件（`AssignmentCreateRequest`、`AssignmentUpdateRequest`、
+`RubricItemRequest`）的 JSON Schema **必须与运行时的接受/拒绝范围一致**，
+下列对应关系由 `tests/contract/test_assignments_contract.py` 逐项回归
+（先用 Schema 声明的类型集合预测结果，再用 Pydantic 模型实际校验，两者必须相同）：
+
+| 运行时规则 | Schema 声明 |
+| --- | --- |
+| `total_score` / `max_score` 只接受 JSON number（拒绝字符串、布尔、`NaN`、`Infinity`） | `type: number`（**不是** Pydantic 默认的 `number \| string`），并声明 `exclusiveMinimum: 0` 与 `maximum` |
+| 分数最多两位小数（`decimal_places=2`） | `multipleOf: 0.01`（即以"分"为最小单位递增），并在 `description` 中说明 |
+| 修改接口除 `due_at` 外**拒绝显式 `null`** | 这些字段**不是**可空类型，也不声明 `default: null`（`None` 只是"省略"的内部哨兵） |
+| 修改请求空对象 `{}` 返回 `422` | `minProperties: 1` |
+| 发布、关闭请求体可省略或传 `{}` | 可省略的对象请求体（非 nullable） |
+| `rubric_items` 1–50 项 | `minItems: 1`、`maxItems: 50` |
+| `description` 长度上限 | `maxLength`（任务 20,000、评分项 2,000） |
+| 标题"去除首尾空白后 1–200 字符" | 只声明 `type: string` + 规则说明。**JSON Schema 无法表达 trim 语义**：声明 `maxLength: 200` 会拒掉运行时可接受的"首尾带空白、去除后恰好 200 字符"；用 `pattern` 会因 ECMA-262 与 Python 的空白字符集不同产生假拒绝。长度上限由服务端保证，客户端不能仅依赖 Schema 校验长度 |
+
+关于 `multipleOf` 的判定方式：它必须按**十进制**比较（`40.55` 是 `0.01` 的整数倍）。
+用二进制浮点做除法的工具会把它判错——例如 `40.55 / 0.01` 在双精度下是 `4054.999…`，
+Python `jsonschema` 因此把合法值 `40.55` 判为非法（实测 4.26.0）。生成客户端或做
+契约校验时应使用十进制比较或精度容差（例如 AJV 的 `multipleOfPrecision`）；
+**服务端始终以 `decimal_places=2` 为准**，`multipleOf: 0.01` 是它的等价声明。
 
 ## 9. 提交与批改接口
 

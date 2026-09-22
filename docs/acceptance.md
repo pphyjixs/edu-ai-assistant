@@ -148,10 +148,10 @@ cd backend
 
 | 层 | 数量 | 数据库 |
 | --- | --- | --- |
-| `tests/unit` | 257 | 不接触数据库与网络；外部依赖替换为 fake 或 `MockTransport` |
-| `tests/integration` | 293 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储与解析 Worker 端到端用例需配置 S3 端点 |
-| `tests/contract` | 69 | 同上（令牌格式、课程、课件上传、课程问答与课程练习契约、OpenAPI 一致性） |
-| 合计 | 619 | 连真实 PostgreSQL + 对象存储（配置 `TEST_S3_*`）时**全部通过，0 跳过**（模型为本地假 HTTP 服务） |
+| `tests/unit` | 308 | 不接触数据库与网络；外部依赖替换为 fake 或 `MockTransport` |
+| `tests/integration` | 341 | **专用测试库**（表结构由 Alembic 迁移创建）；对象存储与解析 Worker 端到端用例需配置 S3 端点 |
+| `tests/contract` | 95 | 同上（令牌格式、课程、课件上传、课程问答、课程练习与实验任务契约、OpenAPI 与运行时一致性） |
+| 合计 | 744 | 连真实 PostgreSQL + 对象存储（配置 `TEST_S3_*`）时**全部通过，0 跳过**（模型为本地假 HTTP 服务） |
 
 测试库规则（见 `backend/tests/pg_support.py`）：
 
@@ -255,6 +255,11 @@ cd backend
 | 错误优先级、严格类型、空对象请求体边界、三处一致 | `integration/test_practice_validation.py` |
 | 出题上下文的预算与逐资料覆盖 | `unit/test_practice_context_budget.py` |
 | 任务重试的关联资源可见性与权限优先级（`MATERIAL_PARSE` 不泄露存在性） | `integration/test_practice_retry_visibility.py` |
+| 实验任务请求校验、总分一致性、评分规则指纹与截止/补交规则 | `unit/test_assignments_schemas.py` |
+| 实验任务六接口路径/状态码、请求体与响应组件、状态枚举与错误码 | `contract/test_assignments_contract.py` |
+| 实验任务创建/列表/详情/修改/发布/关闭的权限、可见性、版本与归档只读 | `integration/test_assignments_api.py` |
+| 实验任务并发版本、修改与发布/关闭、四个写操作与归档的双向并发 | `integration/test_assignments_races.py` |
+| 实验任务三表、`assignment_status` 枚举的升级与回退 | `integration/test_migrations.py` |
 | `pg_trgm` 扩展、chat 四表、片段 GIN 索引的升级与回退 | `integration/test_migrations.py` |
 
 本次查询与清理交付验证：334 项（128 unit / 165 integration / 41 contract），
@@ -566,6 +571,116 @@ Worker 领取任务时改为**只写任务行**（练习状态用普通读校验
 结果为 **619 项收集，619 通过、0 失败、0 错误、0 跳过**（unit 257 / contract 69 /
 integration 293），真实 PUT、校验和、CORS 预检与真实对象清理均已执行。
 
+### 实验任务交付验证（契约第 8 节 / 迁移 `0010_assignments`）
+
+实验任务模块（创建 → 查询 → 修改 → 发布 → 关闭，含不可变评分规则版本）的交付验证。
+本轮**只交付后端 Assignments**：报告上传、提交、AI 批改、教师复核与成绩发布属第 9 节，
+未交付；任务附件没有公开接口定义，也未实现。
+
+本轮实测数量（配置真实 PostgreSQL + MinIO 后运行完整套件，见下方"契约修复验收"）：
+
+| 层 | 收集 | 通过 | 失败 | 跳过 |
+| --- | ---: | ---: | ---: | ---: |
+| unit | 308 | 308 | 0 | 0 |
+| contract | 95 | 95 | 0 | 0 |
+| integration | 341 | 341 | 0 | 0 |
+| **合计** | **744** | **744** | **0** | **0** |
+
+新增 Assignments 用例 125 项：单元 51（`unit/test_assignments_schemas.py`）、
+契约 26（`contract/test_assignments_contract.py`）、集成 34（`integration/test_assignments_api.py`）、
+并发 14（`integration/test_assignments_races.py`）。
+
+本步覆盖：
+
+- **请求与校验**（`unit/test_assignments_schemas.py`）：标题**先去除首尾空白再判 1–200 字符**
+  （"首尾带空白、去除后恰好 200 字符"必须被接受）、
+  说明与评分项说明长度、分数字段**严格 number**（拒绝布尔/字符串/`NaN`/`Infinity`、
+  最多两位小数，浮点经 `str()` 转 `Decimal` 无二进制误差）、`order` 从 1 连续且唯一、
+  1–50 项、未知字段与显式 `null`（`due_at` 除外）、`due_at` 时区归一与清除语义、
+  修改请求空对象、总分**精确相等**（含 `0.1 + 0.2 == 0.3`）、评分规则指纹与
+  `can_submit` 截止/补交规则（`now == due_at` 视为已截止、手工关闭优先）；
+- **契约**（`contract/test_assignments_contract.py`）：六个接口路径与成功状态码
+  （`201/200/200/200/200/200`）、Bearer、请求体 `$ref` 与字段集（创建必填三项、
+  修改全部可选）、发布/关闭声明为**可省略对象**、摘要/详情/评分项组件字段、
+  状态枚举、`Page<AssignmentSummarySchema>`、`RUBRIC_SCORE_MISMATCH` 与
+  `ASSIGNMENT_NOT_OPEN` 出现在错误码枚举；OpenAPI 导出物一致性由
+  `contract/test_openapi_contract.py` 守卫；
+  **并且把 Schema 的语义与运行时校验对齐**（可空性、分数只接受 number、
+  分数精度 `multipleOf: 0.01`、`minProperties`、标题不声明长度约束）：
+  先按 Schema 声明的类型集合预测结果，再用 Pydantic 模型实际校验，两者必须一致；
+- **创建**：写入 `DRAFT` + 评分版本 1 + 评分项（当前版本指针已回填）；
+  总分不匹配返回 `422 RUBRIC_SCORE_MISMATCH` 且**数据库零副作用**；
+  权限矩阵（匿名 `401`、非成员 `404`、学生 `403 ROLE_FORBIDDEN`、
+  课程内其他教师 `403 COURSE_FORBIDDEN`）；
+- **列表与可见性**：教师可见草稿、学生列表在 **SQL 层**排除草稿（发布后可见）；
+  `created_at DESC, id DESC` 排序与分页（含 `page_size` 越界 `422`）、
+  列表使用**摘要 Schema**（不含 `description` 与 `rubric_items`）；
+- **详情**：教师可读全部状态、学生读草稿 `404`、匿名 `401`、不存在 `404`，
+  返回当前版本号与按 `order` 升序的评分项；
+- **修改与版本**：非评分字段修改**不增加版本**；评分规则变化追加版本 2 并生成
+  新评分项 ID，**版本 1 的评分项逐字段保持不变**；提交完全相同规则或相同总分
+  **不增加版本**；只改 `total_score` 时用"当前评分项"作候选（不匹配 → `422`）；
+  `due_at: null` 清除截止时间；`CLOSED` 后修改 `409 ASSIGNMENT_NOT_OPEN`；
+- **发布与关闭**：发布写入 `published_at` 且重复发布**幂等**（时间不变）、
+  关闭写入 `closed_at` 且重复关闭幂等、`DRAFT` 关闭 `409`、`CLOSED` 后重新发布 `409`；
+  请求体为 `null`/数组/数字/非法 JSON/非法 UTF-8/多余字段一律 `422` 且不改状态；
+  权限与匿名校验同上；
+- **归档课程只读**：列表与详情 `200`，创建/修改/发布/关闭 `409 COURSE_ARCHIVED`；
+  且"归档 + 畸形请求体"返回 `409` 而非 `422`（**错误优先级**）；
+- **并发与锁序**（真实 PostgreSQL、事件门控、无固定休眠）：
+  两个并发评分规则修改产生**连续且唯一**的版本号（`[1, 2, 3]`）；
+  修改与发布并发只产生符合串行顺序的状态；修改与关闭并发时"关闭先生效则修改被
+  `409` 拒绝、修改先生效则标题更新但状态仍为 `CLOSED`"；
+  创建/修改/发布/关闭**分别**与课程归档并发覆盖两个方向——操作先持课程锁时归档
+  被行锁挡住、操作提交后归档完成；归档先持课程锁时操作在时限内无法完成、
+  归档提交后操作 `409 COURSE_ARCHIVED` 且**逐字段无副作用**；
+- **迁移**（`integration/test_migrations.py`）：`0009 → 0010 → 0009 → 0010` 往返，
+  ORM 元数据与迁移结构一致，`assignment_status` 枚举在回退后不残留；
+  唯一约束、检查约束（`version >= 1`、`total_score > 0`、`max_score > 0`、`order > 0`）
+  与外键约束生效。
+
+**内部服务（第 9 节接入点）**：`can_submit` 与 `current_rubric_version_id` 由集成测试
+直接调用真实数据库验证（`DRAFT` 不可提交、发布后可提交、`now == due_at` 不可提交、
+允许补交后可提交、关闭后不可提交）。**报告上传、真实提交、AI 批改与"已有批改结果
+引用旧评分版本"仍明确属于第 9 节未交付范围。**
+
+### 实验任务契约修复验收（代码审查后的复查修复）
+
+本轮修复复查中确认的 1 个 P1 契约缺陷与 2 个 P2 实现缺陷，
+**不新增接口、不改成功状态码与响应 Schema、不新增迁移**（数据库仍为 `0010_assignments`）。
+
+| 缺陷 | 修复 |
+| --- | --- |
+| **P1** OpenAPI 请求声明与运行时不一致：`total_score` / `max_score` 被声明为 `number \| string`；修改接口的五个字段被声明为可空；`AssignmentUpdateRequest` 缺少 `minProperties: 1`（Schema 接受空对象） | 分数字段用 `WithJsonSchema` 显式声明为 `type: number`（含 `exclusiveMinimum` / `maximum`）；可省略字段用 `default_factory` + 去掉 `null` 分支，既不声明可空也不声明 `default: null`；修改对象声明 `minProperties: 1`；补齐 `minItems` / `maxItems` / `maxLength` 等可表达的边界 |
+| **P2** 分数只声明了 `type` / 上下限，Schema 接受三位小数（`100.001`）而运行时 `decimal_places=2` 拒绝 | 三个分数字段都声明 `multipleOf: 0.01`（对应"最多两位小数"），并在 `description` 中说明；契约测试逐字段断言 `multipleOf` 并验证 `40.55` / `33.33` 合法、`100.001` / `1.001` / `0.005` 双方都拒绝 |
+| **P2** 标题先按**原始值**做 `max_length=200`，再去空白，导致"首尾带空白、去除后恰好 200 字符"的合法标题返回 `422` | 长度校验移入 `mode="before"` 校验器，对 **strip 之后**的值执行；创建、修改与评分项标题共用同一段逻辑 |
+| **P2** 发布、关闭写事务没有锁当前 `RubricVersion`，修改走的是普通 `session.get()` | 新增 `repository.lock_rubric_version`（`FOR UPDATE`）与 `service.lock_current_rubric_version`；修改、发布、关闭（含幂等返回）都按 **课程 → 任务 → 当前评分版本** 取锁 |
+
+回归测试与**变异验证**（临时改动实现后，对应用例必须失败）：
+
+| 变异 | 失败的用例 |
+| --- | --- |
+| 分数字段退回 Pydantic 默认的 `number \| string`、去掉 `minProperties`、可省略字段退回 `default=None`、标题退回原始长度约束 | 7 项契约用例（`test_score_fields_accept_only_json_number`、`test_update_fields_are_not_nullable_except_due_at`、`test_update_request_body_is_all_optional`、`test_title_schema_does_not_declare_length_limits`、`test_declared_nullability_matches_runtime[update]`、`test_declared_score_types_match_runtime`、`test_declared_min_properties_matches_runtime`） |
+| 删掉分数 Schema 的 `multipleOf` | 2 项契约用例（`test_score_fields_declare_multiple_of_one_cent`、`test_declared_score_precision_matches_runtime`） |
+| 把 `lock_current_rubric_version` 与 `lock_rubric_version` 退回普通读取 | 3 项并发用例（`test_write_operation_waits_for_rubric_version_lock[patch/publish/close]`，断言"请求未被行锁挡住，提前完成"） |
+
+三处变异恢复实现后，完整套件重新全绿。本次实测：
+**744 项收集，744 通过、0 失败、0 错误、0 跳过**（unit 308 / contract 95 / integration 341），
+真实 PostgreSQL + MinIO（`minio-edu-ai` 容器）运行时真实执行了 PUT、存储侧校验和与 CORS 预检；
+测试库与 `_migration_check` 库无残留，`alembic_version` 仍为 `0010_assignments` 且与代码 head 一致。
+
+补充说明：修好前的"标题去空白与 1–200 边界"覆盖记录**不准确**——当时只覆盖了普通空白标题
+与 201 字符标题，没有覆盖"带空白、去除后恰好 200 字符"的边界值，本轮已补齐创建、修改与
+评分项三处的该边界用例。
+
+**测试脚手架的一处环境相关缺陷（非产品缺陷，已修）**：`integration/test_upload_cleanup.py`
+用 `subprocess.run(..., text=True)` 读取清理脚本输出并断言其中包含中文。若进程环境设置了
+`PYTHONIOENCODING=utf-8`（本项目在 zh-CN Windows 上跑测试时常设），子进程按 UTF-8 输出、
+父进程按 `gbk` 解码，`subprocess` 的读取线程抛 `UnicodeDecodeError` 退出，
+`capture_output` 拿到的 `stdout` 变成 `None`，断言报 `TypeError`。修法：给该子进程显式
+指定 `PYTHONIOENCODING=utf-8` 并用 `encoding="utf-8"` 解码，使父子两端编码固定一致。
+修复后完整套件在**设置与不设置** `PYTHONIOENCODING` 两种环境下都是 744 项全绿。
+
 ### 环境验收（本地开发库升级 + 端到端问答 + 回填）
 
 本地开发库 `edu_ai_dev` 已完成 `0004 → 0008` 升级并做了端到端验证。
@@ -608,6 +723,22 @@ exit=0
 | `alembic_version` | `0008_chat_qa` | `0009_practice_sets` |
 | 表数量 | 17 | 23（+ `practice_sets`、`practice_set_materials`、`practice_questions`、`practice_attempts`、`practice_attempt_answers`、`practice_generation_attempts`） |
 | practice 枚举 | 无 | `practice_status`、`practice_difficulty`、`practice_question_type`、`practice_generation_status` |
+
+实验任务迁移 `0009_practice_sets → 0010_assignments` 同样已在本地开发库执行并复核
+（执行前留库级快照 `edu_ai_dev_before_0010_backup`）：
+
+```
+$ python -m alembic upgrade head
+INFO  [alembic.runtime.migration] Running upgrade 0009_practice_sets -> 0010_assignments, 实验任务：assignments 三表与原生枚举
+exit=0
+```
+
+| 项目 | 迁移前 | 迁移后 |
+| --- | --- | --- |
+| `alembic_version` | `0009_practice_sets` | `0010_assignments`（与代码 head 一致） |
+| 表数量 | 23 | 26（+ `assignments`、`assignment_rubric_versions`、`assignment_rubric_items`） |
+| assignment 枚举 | 无 | `assignment_status` |
+| 新增环境变量 / Worker | — | **无**（模块不使用对象存储与模型） |
 
 **2. 课程问答接口端到端验证**（真实 uvicorn + 独立解析 Worker + 真实 PostgreSQL/MinIO）
 
@@ -678,7 +809,11 @@ $ python scripts/backfill_material_chunks.py          # 第二次（幂等）
 - **真实模型联调与效果**：问答与练习的环境验证都使用本地模拟端点，
   真实 Chat Completions 端点的**回答质量、语言一致性与出题质量**仍未验收，
   不以模拟服务通过代替；
-- **前端展示**：聊天页面、引用跳转、练习生成/答题/结果页均未接入；
+- **前端展示**：聊天页面、引用跳转、练习生成/答题/结果页、实验任务页面均未接入；
+- **第 9 节提交与批改**：报告上传、真实提交、AI 批改、教师复核、成绩发布，
+  以及"已有批改结果引用旧评分版本"的兼容行为**均未交付**；本轮只提供
+  `can_submit` 与"当前评分规则版本"两个内部服务；
+- **任务附件**：没有公开接口定义，未实现；
 - **练习 Worker 的独立进程部署**：`scripts/practice_worker.py` 的常驻运行与
   优雅退出（SIGINT）尚未在真实部署环境演练，本地以测试驱动同一入口验证。
 

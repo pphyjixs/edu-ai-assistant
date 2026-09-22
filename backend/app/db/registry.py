@@ -9,6 +9,11 @@ from __future__ import annotations
 from sqlalchemy import MetaData
 
 from app.db.base import Base
+from app.modules.assignments.models import (
+    Assignment,
+    AssignmentRubricItem,
+    AssignmentRubricVersion,
+)
 from app.modules.auth.models import AuthSession, LoginAttempt, User
 from app.modules.chat.models import (
     ChatGenerationAttempt,
@@ -39,6 +44,9 @@ from app.modules.practice.models import (
 target_metadata: MetaData = Base.metadata
 
 __all__ = [
+    "Assignment",
+    "AssignmentRubricItem",
+    "AssignmentRubricVersion",
     "AuthSession",
     "ChatGenerationAttempt",
     "ChatMessage",
