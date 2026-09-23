@@ -87,6 +87,7 @@ from app.storage import (
     StorageUnavailableError,
     as_service_unavailable,
     build_submission_object_key,
+    presign_download,
 )
 
 logger = logging.getLogger("app.grading")
@@ -972,13 +973,14 @@ async def get_submission_detail(
 def _presign_download(
     storage: S3Storage, object_key: str, *, settings: Settings
 ) -> PresignedDownload:
-    """签发临时下载地址；存储不可用时统一转 503（契约 9.12）。"""
-    try:
-        return storage.create_presigned_get(
-            object_key, expires_in=settings.storage_upload_url_ttl_seconds
-        )
-    except StorageUnavailableError as exc:
-        raise as_service_unavailable(exc) from exc
+    """签发临时下载地址；存储不可用时统一转 503（契约 9.12）。
+
+    与资料、作业附件共用 ``app.storage.downloads.presign_download``，
+    保证三处的有效期来源与错误语义完全一致。
+    """
+    return presign_download(
+        storage, object_key, ttl_seconds=settings.storage_upload_url_ttl_seconds
+    )
 
 
 # --------------------------------------------------------------------------- #

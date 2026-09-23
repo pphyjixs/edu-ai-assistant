@@ -1,0 +1,157 @@
+.card {
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.titleRow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.order {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+  color: var(--color-text-tertiary);
+}
+
+.title {
+  font-size: var(--text-card-title);
+  font-weight: 650;
+}
+
+.scores {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.finalScore {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.scoreLabel,
+.label {
+  font-size: var(--text-caption);
+  font-weight: 650;
+  color: var(--color-text-tertiary);
+}
+
+.scoreValue {
+  font-size: var(--text-card-title);
+  font-weight: 700;
+}
+
+.scoreInput {
+  width: 72px;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-xs);
+  background: var(--color-surface);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.scoreInvalid {
+  border-color: var(--color-danger-ink);
+}
+
+.maxScore {
+  font-size: var(--text-caption);
+  color: var(--color-text-tertiary);
+}
+
+.problem {
+  margin-top: var(--space-2);
+  font-size: var(--text-caption);
+  color: var(--color-danger-ink);
+}
+
+.aiComment,
+.teacherComment {
+  margin-top: var(--space-3);
+  font-size: var(--text-secondary);
+  line-height: 1.7;
+  color: var(--color-text-secondary);
+}
+
+.aiComment .label,
+.teacherComment .label {
+  margin-right: 6px;
+}
+
+.findings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: var(--space-3);
+}
+
+.finding {
+  font-size: var(--text-secondary);
+  line-height: 1.7;
+  color: var(--color-text-secondary);
+}
+
+.finding .label {
+  margin-right: 6px;
+}
+
+.evidence {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: var(--space-3) 0 0;
+  padding: var(--space-3);
+  border-left: 2px solid var(--color-border-strong);
+  border-radius: var(--radius-xs);
+  background: var(--color-surface-muted);
+}
+
+.evidenceHead {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-caption);
+  color: var(--color-text-tertiary);
+}
+
+.evidenceText {
+  font-size: var(--text-secondary);
+  line-height: 1.7;
+  color: var(--color-text-primary);
+}
+
+.commentField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: var(--space-3);
+}
+
+.commentInput {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-xs);
+  background: var(--color-surface);
+  font: inherit;
+  font-size: var(--text-secondary);
+  line-height: 1.6;
+  resize: vertical;
+}

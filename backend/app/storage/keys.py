@@ -39,6 +39,12 @@ SUBMISSION_KEY_TEMPLATE = (
     f"/submissions/{{upload_id}}{{extension}}"
 )
 
+#: 作业附件对象的键模板；同样只含 UUID，前缀与提交报告分开，两者互不覆盖
+ATTACHMENT_KEY_TEMPLATE = (
+    f"{OBJECT_KEY_NAMESPACE}/{{course_id}}/assignments/{{assignment_id}}"
+    f"/attachments/{{upload_id}}{{extension}}"
+)
+
 #: 允许出现在对象键中的扩展名格式：小写字母数字，1–10 位
 _EXTENSION_PATTERN = re.compile(r"^\.[a-z0-9]{1,10}$")
 
@@ -89,6 +95,25 @@ def build_submission_object_key(
     包含任务 UUID 使同一课程下不同任务的报告互不覆盖。
     """
     return SUBMISSION_KEY_TEMPLATE.format(
+        course_id=course_id,
+        assignment_id=assignment_id,
+        upload_id=upload_id,
+        extension=normalize_extension(extension),
+    )
+
+
+def build_attachment_object_key(
+    course_id: uuid.UUID | str,
+    assignment_id: uuid.UUID | str,
+    upload_id: uuid.UUID | str,
+    extension: str,
+) -> str:
+    """构造一次**作业附件**上传的对象键（契约 8.15）。
+
+    与实验报告同一层级，但走 ``/attachments/`` 前缀：同一份作业的附件与
+    学生报告因此不会互相覆盖，清理与审计也能按前缀区分。
+    """
+    return ATTACHMENT_KEY_TEMPLATE.format(
         course_id=course_id,
         assignment_id=assignment_id,
         upload_id=upload_id,

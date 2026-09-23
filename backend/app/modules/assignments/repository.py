@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.assignments.models import (
     STUDENT_VISIBLE_STATUSES,
     Assignment,
+    AssignmentAttachment,
     AssignmentRubricItem,
     AssignmentRubricVersion,
     AssignmentStatus,
@@ -235,8 +236,116 @@ async def max_rubric_version(
     return int(value or 0)
 
 
+# --------------------------------------------------------------------------- #
+# 作业附件（契约 8.15）
+# --------------------------------------------------------------------------- #
+async def add_attachment(
+    session: AsyncSession,
+    *,
+    attachment_id: uuid.UUID,
+    assignment_id: uuid.UUID,
+    upload_id: uuid.UUID,
+    object_key: str,
+    filename: str,
+    content_type: str,
+    size: int,
+    sha256: str,
+    uploaded_by: uuid.UUID,
+    upload_url_expires_at: datetime,
+    confirm_deadline_at: datetime,
+    now: datetime,
+) -> AssignmentAttachment:
+    """新建一次附件上传的待完成记录。"""
+    attachment = AssignmentAttachment(
+        id=attachment_id,
+        assignment_id=assignment_id,
+        upload_id=upload_id,
+        object_key=object_key,
+        filename=filename,
+        content_type=content_type,
+        size=size,
+        sha256=sha256,
+        uploaded_by=uploaded_by,
+        upload_url_expires_at=upload_url_expires_at,
+        confirm_deadline_at=confirm_deadline_at,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(attachment)
+    return attachment
+
+
+async def get_pending_attachment(
+    session: AsyncSession, *, assignment_id: uuid.UUID, filename: str
+) -> AssignmentAttachment | None:
+    """读同名的**未完成**记录（重复初始化时复用它，pending 行才不会越堆越多）。"""
+    result = await session.execute(
+        select(AssignmentAttachment).where(
+            AssignmentAttachment.assignment_id == assignment_id,
+            AssignmentAttachment.filename == filename,
+            AssignmentAttachment.completed_at.is_(None),
+        )
+    )
+    return result.scalars().first()
+
+
+async def get_completed_attachment_by_filename(
+    session: AsyncSession, *, assignment_id: uuid.UUID, filename: str
+) -> AssignmentAttachment | None:
+    """读同名的**已完成**附件（判重：同一作业下不允许两个同名附件）。"""
+    result = await session.execute(
+        select(AssignmentAttachment).where(
+            AssignmentAttachment.assignment_id == assignment_id,
+            AssignmentAttachment.filename == filename,
+            AssignmentAttachment.completed_at.is_not(None),
+        )
+    )
+    return result.scalars().first()
+
+
+async def get_attachment_by_upload_id(
+    session: AsyncSession, *, assignment_id: uuid.UUID, upload_id: uuid.UUID
+) -> AssignmentAttachment | None:
+    """按上传会话读记录（完成确认用）；同时匹配任务，避免跨任务确认。"""
+    result = await session.execute(
+        select(AssignmentAttachment).where(
+            AssignmentAttachment.assignment_id == assignment_id,
+            AssignmentAttachment.upload_id == upload_id,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_attachment_by_id(
+    session: AsyncSession, attachment_id: uuid.UUID
+) -> AssignmentAttachment | None:
+    """按 ID 读附件（不加锁）。"""
+    return await session.get(AssignmentAttachment, attachment_id)
+
+
+async def list_completed_attachments(
+    session: AsyncSession, *, assignment_id: uuid.UUID
+) -> list[AssignmentAttachment]:
+    """列出已完成的附件，按创建时间正序（保持教师上传的先后顺序）。"""
+    result = await session.execute(
+        select(AssignmentAttachment)
+        .where(
+            AssignmentAttachment.assignment_id == assignment_id,
+            AssignmentAttachment.completed_at.is_not(None),
+        )
+        .order_by(AssignmentAttachment.created_at.asc(), AssignmentAttachment.id.asc())
+    )
+    return list(result.scalars().all())
+
+
 __all__ = [
     "add_assignment",
+    "add_attachment",
+    "get_attachment_by_id",
+    "get_attachment_by_upload_id",
+    "get_completed_attachment_by_filename",
+    "get_pending_attachment",
+    "list_completed_attachments",
     "add_rubric_item",
     "add_rubric_version",
     "get_assignment_by_id",

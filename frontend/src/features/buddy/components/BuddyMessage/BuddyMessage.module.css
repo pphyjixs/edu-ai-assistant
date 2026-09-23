@@ -17,7 +17,7 @@
   place-items: center;
   border-radius: var(--radius-xs);
   background: var(--color-brand-dark);
-  color: #ffffff;
+  color: var(--color-text-on-brand);
 }
 
 .bubble {
@@ -33,7 +33,7 @@
 .user .bubble {
   background: var(--color-brand-dark);
   border-color: var(--color-brand-dark);
-  color: #ffffff;
+  color: var(--color-text-on-brand);
 }
 
 .content {

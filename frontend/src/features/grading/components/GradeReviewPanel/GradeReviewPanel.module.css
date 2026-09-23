@@ -1,0 +1,119 @@
+.head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-4);
+}
+
+.title {
+  font-size: var(--text-card-title);
+  font-weight: 650;
+}
+
+.subtitle {
+  margin-top: 6px;
+  font-size: var(--text-secondary);
+  color: var(--color-text-secondary);
+}
+
+.subtitle strong {
+  color: var(--color-text-primary);
+}
+
+.pills {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.aiSummary {
+  padding: var(--space-3);
+  margin-bottom: var(--space-4);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-muted);
+}
+
+.aiSummary p {
+  margin-top: 6px;
+  font-size: var(--text-secondary);
+  line-height: 1.7;
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+}
+
+.label {
+  font-size: var(--text-caption);
+  font-weight: 650;
+  color: var(--color-text-tertiary);
+}
+
+.locked {
+  padding: 8px 10px;
+  margin-bottom: var(--space-4);
+  border-radius: var(--radius-xs);
+  background: var(--color-success-soft);
+  color: var(--color-success-ink);
+  font-size: var(--text-secondary);
+}
+
+.error {
+  padding: 8px 10px;
+  margin-bottom: var(--space-4);
+  border-radius: var(--radius-xs);
+  background: var(--color-danger-soft);
+  color: var(--color-danger-ink);
+  font-size: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.summaryField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: var(--space-4);
+}
+
+.hint {
+  font-size: var(--text-caption);
+  color: var(--color-text-tertiary);
+}
+
+.summaryInput {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-xs);
+  background: var(--color-surface);
+  font: inherit;
+  font-size: var(--text-secondary);
+  line-height: 1.7;
+  resize: vertical;
+}
+
+.problem {
+  font-size: var(--text-caption);
+  color: var(--color-danger-ink);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+}
+
+.actionHint {
+  font-size: var(--text-caption);
+  color: var(--color-text-tertiary);
+}

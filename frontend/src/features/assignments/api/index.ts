@@ -19,6 +19,9 @@ export type RubricItemDto = Schemas["RubricItemSchema"];
 export type RubricItemRequestDto = Schemas["RubricItemRequest"];
 export type AssignmentCreateRequestDto = Schemas["AssignmentCreateRequest"];
 export type AssignmentUpdateRequestDto = Schemas["AssignmentUpdateRequest"];
+export type AssignmentAttachmentDto = Schemas["AssignmentAttachmentSchema"];
+export type AttachmentUploadInitRequestDto = Schemas["AttachmentUploadInitRequest"];
+export type AttachmentUploadInitResponseDto = Schemas["AttachmentUploadInitResponse"];
 
 export const assignmentsApi = {
   /**
@@ -60,5 +63,58 @@ export const assignmentsApi = {
   /** 契约 8.7：POST /assignments/{assignment_id}/close —— PUBLISHED→CLOSED，草稿不能关闭 */
   close(assignmentId: string): Promise<AssignmentDetailDto> {
     return http.post<AssignmentDetailDto>(`/assignments/${assignmentId}/close`, {});
+  },
+
+  /**
+   * 契约 8.16：POST /assignments/{assignment_id}/reopen —— CLOSED→PUBLISHED。
+   *
+   * 关闭只是停止收作业，不是把任务作废，因此允许重新开启；
+   * 重新开启清除 `closed_at`，但保留首次 `published_at`，
+   * 也不会产生新的评分规则版本、不会清除已有提交。
+   */
+  reopen(assignmentId: string): Promise<AssignmentDetailDto> {
+    return http.post<AssignmentDetailDto>(`/assignments/${assignmentId}/reopen`, {});
+  },
+
+  /* ------------------------- 8.15 作业附件 ------------------------- */
+
+  /** 契约 8.15：GET /assignments/{assignment_id}/attachments —— 课程成员可读 */
+  attachments(
+    assignmentId: string,
+    signal?: AbortSignal,
+  ): Promise<AssignmentAttachmentDto[]> {
+    return http.get<AssignmentAttachmentDto[]>(
+      `/assignments/${assignmentId}/attachments`,
+      { signal },
+    );
+  },
+
+  /** 契约 8.15：POST /assignments/{assignment_id}/attachments/uploads */
+  initAttachmentUpload(
+    assignmentId: string,
+    body: AttachmentUploadInitRequestDto,
+  ): Promise<AttachmentUploadInitResponseDto> {
+    return http.post<AttachmentUploadInitResponseDto>(
+      `/assignments/${assignmentId}/attachments/uploads`,
+      body,
+    );
+  },
+
+  /** 契约 8.15：完成附件上传；同一 upload_id 幂等 */
+  completeAttachmentUpload(
+    assignmentId: string,
+    uploadId: string,
+  ): Promise<AssignmentAttachmentDto> {
+    return http.post<AssignmentAttachmentDto>(
+      `/assignments/${assignmentId}/attachments/uploads/${uploadId}/complete`,
+      {},
+    );
+  },
+
+  /** 契约 8.15：DELETE /assignments/{assignment_id}/attachments/{attachment_id} */
+  deleteAttachment(assignmentId: string, attachmentId: string): Promise<void> {
+    return http.delete<void>(
+      `/assignments/${assignmentId}/attachments/${attachmentId}`,
+    );
   },
 };

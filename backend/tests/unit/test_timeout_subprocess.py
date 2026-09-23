@@ -16,7 +16,13 @@ import time
 from pathlib import Path
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
-INNER_TEST_PATH = BACKEND_DIR / "tests" / "unit" / "_timeout_inner_tmp_test.py"
+#: 内层用例的存放目录。**必须放在 pytest 不会收集的地方**（点开头的目录是隐藏目录，
+#: 默认在 ``norecursedirs`` 里被跳过）。以前它写在 ``tests/unit/`` 下，
+#: 一旦某次运行没能删掉（受限环境的删除拦截、进程被杀等），下一次全量收集就会把
+#: ``test_hangs_forever`` 一起收进来并永久阻塞，最后由超时机制杀掉整个 pytest 进程——
+#: 症状是"跑到一半没有汇总就没了"。放到隐藏目录后，残留文件不再影响任何一次收集。
+INNER_TEST_DIR = BACKEND_DIR / "tests" / ".inner_tmp"
+INNER_TEST_PATH = INNER_TEST_DIR / "_timeout_inner_tmp_test.py"
 
 #: 内层用例：生效超时值必须等于 TEST_TIMEOUT_SECONDS（而非 PYTEST_TIMEOUT）
 _INNER_EFFECTIVE = """\
@@ -46,6 +52,8 @@ def _run_inner(
     *extra_args: str,
 ) -> subprocess.CompletedProcess[str]:
     """以项目 conftest 生效的方式在子进程运行内层用例。"""
+    # 目录可能被清理掉，每次写入前确保存在（隐藏目录不会被收集）
+    INNER_TEST_DIR.mkdir(parents=True, exist_ok=True)
     INNER_TEST_PATH.write_text(textwrap.dedent(source), encoding="utf-8")
     basetemp = tmp_path / "basetemp"
     env = {

@@ -20,13 +20,17 @@ const routeLabels: Array<[RegExp, string]> = [
   [/^\/courses$/, "我的课程"],
   [/^\/tasks$/, "任务"],
   [/^\/workspace$/, "学习空间"],
+  // 提交与批改页面要先于作业详情匹配，否则会被更宽的规则吃掉
+  [/\/assignments\/[^/]+\/submissions$/, "提交列表"],
+  [/\/submissions\/[^/]+$/, "提交详情"],
   [/\/assignments\/[^/]+$/, "作业详情"],
   [/\/assignments$/, "作业列表"],
   [/\/materials\/[^/]+$/, "资料阅读"],
   [/\/materials$/, "课程资料"],
   [/\/learn/, "学习空间"],
   [/\/grades$/, "成绩与反馈"],
-  [/\/grading\//, "AI 批改"],
+  // 路由是 /courses/:id/grading（没有尾斜杠），旧规则要求尾斜杠因此永远不命中
+  [/\/grading$/, "AI 批改"],
   [/\/manage/, "课程管理"],
   [/^\/courses\/[^/]+$/, "课程概览"],
 ];

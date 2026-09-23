@@ -9,7 +9,7 @@
   place-items: center;
   border-radius: 15px;
   background: var(--color-brand-dark);
-  color: #ffffff;
+  color: var(--color-text-on-brand);
   box-shadow: var(--shadow-raised);
   transition: transform var(--duration-fast) var(--ease-out);
 }

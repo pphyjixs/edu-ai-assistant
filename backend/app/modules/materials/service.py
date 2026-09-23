@@ -25,6 +25,7 @@ import logging
 import re
 import uuid
 from datetime import timedelta
+from collections.abc import Sequence
 from typing import NamedTuple
 
 from sqlalchemy.exc import IntegrityError
@@ -42,6 +43,9 @@ from app.core.errors import (
 )
 from app.core.pagination import PaginationParams
 from app.core.time import isoformat_z, utc_now
+from app.core.uploads import upload_invalid as shared_upload_invalid
+from app.core.uploads import verify_stored_object as shared_verify_stored_object
+from app.modules.auth import repository as auth_repo
 from app.modules.auth.models import User, UserRole
 from app.modules.courses import service as courses_service
 from app.modules.jobs import service as jobs_service
@@ -66,6 +70,7 @@ from app.modules.materials.schemas import (
     MaterialUploadInitRequest,
 )
 from app.storage import (
+    PresignedDownload,
     PresignedUpload,
     S3Storage,
     StorageConfigError,
@@ -73,6 +78,7 @@ from app.storage import (
     StorageUnavailableError,
     as_service_unavailable,
     build_upload_object_key,
+    presign_download,
 )
 
 logger = logging.getLogger("app.materials")
@@ -107,6 +113,32 @@ class CompletionResult(NamedTuple):
     created: bool
 
 
+async def material_details(
+    session: AsyncSession, materials: Sequence[Material]
+) -> list[MaterialDetail]:
+    """把 ORM 资料转成响应模型，并批量补上**上传者显示名**。
+
+    详情、列表与上传完成三处都走这里，是为了让同一个 ``MaterialDetail``
+    在哪个接口里字段都有值：如果只有详情补了上传者，前端就得对同一份
+    响应模型写两套判断。
+
+    上传者已注销时留空（``None``），由前端决定不显示 —— 把 UUID 当成
+    「上传者」摆给用户看没有意义。
+    """
+    uploader_ids = {
+        item.uploaded_by for item in materials if item.uploaded_by is not None
+    }
+    names = await auth_repo.get_users_public_summaries(session, uploader_ids)
+
+    details: list[MaterialDetail] = []
+    for material in materials:
+        detail = MaterialDetail.model_validate(material)
+        summary = names.get(material.uploaded_by)
+        detail.uploaded_by_name = summary.display_name if summary else None
+        details.append(detail)
+    return details
+
+
 def _upload_invalid(
     reason: str,
     message: str,
@@ -114,12 +146,11 @@ def _upload_invalid(
     field: str | None = None,
     **extra: object,
 ) -> UploadInvalidError:
-    """构造带稳定原因码的 ``UPLOAD_INVALID`` 错误（契约 4.8）。"""
-    details: dict[str, object] = {"reason": reason}
-    if field is not None:
-        details["field"] = field
-    details.update(extra)
-    return UploadInvalidError(message, details=details)
+    """构造带稳定原因码的 UPLOAD_INVALID 错误（契约 4.8）。
+
+    实现放在 app.core.uploads，与实验报告、作业附件的上传共用同一套原因码。
+    """
+    return shared_upload_invalid(reason, message, field=field, **extra)
 
 
 def split_extension(filename: str) -> str:
@@ -326,7 +357,7 @@ async def complete_upload(
 
     # 完成响应快照：重复确认（含资料删除/状态变化后）一律回填首次结果
     snapshot = MaterialUploadCompleteResponse(
-        material=MaterialDetail.model_validate(material),
+        material=(await material_details(session, [material]))[0],
         job=JobStatus.model_validate(job),
     )
     repo.save_completion_snapshot(
@@ -353,48 +384,16 @@ async def complete_upload(
 def _verify_stored_object(storage: S3Storage, upload: MaterialUploadSession) -> None:
     """对象确认：核对存在性、大小、内容类型与存储侧校验值（契约 4.5）。
 
-    不接收文件内容，只读取对象元数据；**不使用 ETag 代替 SHA-256**。
-    存储侧未返回校验值时只记日志（部分兼容实现不返回该头），不因此拒绝上传。
+    实现放在 ``app.core.uploads``：作业附件与实验报告用的是同一套核对规则
+    与原因码，集中一处保证三处不会各自漂移。
     """
-    try:
-        stored = storage.head_object(upload.object_key)
-    except StorageObjectNotFoundError as exc:
-        raise _upload_invalid(
-            "OBJECT_MISSING",
-            "对象存储中未找到已上传的文件，请先按预签名地址上传",
-        ) from exc
-    except StorageUnavailableError as exc:
-        raise as_service_unavailable(exc) from exc
-
-    if stored.size != upload.size:
-        raise _upload_invalid(
-            "OBJECT_SIZE_MISMATCH",
-            "已上传对象的大小与初始化声明不一致",
-            declared_size=upload.size,
-            actual_size=stored.size,
-        )
-
-    if stored.content_type and stored.content_type != upload.content_type:
-        raise _upload_invalid(
-            "OBJECT_TYPE_MISMATCH",
-            "已上传对象的类型与初始化声明不一致",
-            declared_content_type=upload.content_type,
-            actual_content_type=stored.content_type,
-        )
-
-    stored_sha256 = stored.checksum_sha256_hex()
-    if stored_sha256 is None:
-        logger.warning(
-            "对象存储未返回 x-amz-checksum-sha256，跳过内容摘要比对（key=%s）",
-            upload.object_key,
-        )
-    elif stored_sha256 != upload.sha256:
-        raise _upload_invalid(
-            "CHECKSUM_MISMATCH",
-            "已上传对象的 SHA-256 与初始化声明不一致",
-            declared_sha256=upload.sha256,
-            actual_sha256=stored_sha256,
-        )
+    shared_verify_stored_object(
+        storage,
+        object_key=upload.object_key,
+        size=upload.size,
+        content_type=upload.content_type,
+        sha256=upload.sha256,
+    )
 
 
 async def _load_completed(
@@ -419,7 +418,7 @@ async def _load_completed(
     if job is None:  # pragma: no cover - 同一事务内创建
         raise InternalError()
     response = MaterialUploadCompleteResponse(
-        material=MaterialDetail.model_validate(material),
+        material=(await material_details(session, [material]))[0],
         job=JobStatus.model_validate(job),
     )
     repo.save_completion_snapshot(
@@ -768,6 +767,24 @@ async def cleanup_expired_uploads(
     return cleaned
 
 
+async def presign_material_download(
+    storage: S3Storage, *, material: Material, settings: Settings
+) -> PresignedDownload:
+    """签发资料**原文**的临时下载地址（契约 4.9）。
+
+    读路径不发网络请求，纯本地签名；对象存储未配置或不可达时由
+    :func:`app.storage.downloads.presign_download` 统一转成 503。
+
+    资料的解析产物（章节、知识点）走大纲接口，这里给的是教师当初上传的
+    原始文件 —— 两者用途不同，页面上也不该混在一个入口里。
+    """
+    return presign_download(
+        storage,
+        material.storage_key,
+        ttl_seconds=settings.storage_upload_url_ttl_seconds,
+    )
+
+
 __all__ = [
     "CompletionResult",
     "ValidatedUpload",
@@ -778,6 +795,8 @@ __all__ = [
     "get_material_outline",
     "init_upload",
     "list_course_materials",
+    "material_details",
+    "presign_material_download",
     "require_upload_teacher",
     "retry_parse",
     "split_extension",

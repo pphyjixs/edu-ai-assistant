@@ -134,6 +134,12 @@ class AssignmentNotOpenError(ApiError):
     code = ErrorCode.ASSIGNMENT_NOT_OPEN
 
 
+class AttachmentAlreadyExistsError(ApiError):
+    """同一份任务下已有同名附件（契约 8.15），需先删除旧附件。"""
+
+    code = ErrorCode.ATTACHMENT_ALREADY_EXISTS
+
+
 class SubmissionAlreadyExistsError(ApiError):
     """同一学生对同一任务已有正式提交（契约 9.2）。"""
 
