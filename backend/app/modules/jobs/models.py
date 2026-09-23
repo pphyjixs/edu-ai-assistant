@@ -18,7 +18,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Index, Integer, String, UniqueConstraint, func
+from sqlalchemy import CheckConstraint, Index, Integer, String, UniqueConstraint, func
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import Uuid
@@ -29,6 +29,19 @@ from app.db.types import UtcDateTime
 
 #: 失败原因列长度：只保存可安全展示的摘要，不保存堆栈
 JOB_ERROR_MAX_LENGTH = 500
+
+#: ``progress`` 的取值域约束（契约 10.0：0–100 的整数百分比）。
+#: 迁移 ``0013_jobs_contract`` 使用**完全相同的表达式**，保证 ORM 元数据与库侧一致。
+JOB_PROGRESS_CHECK = "progress BETWEEN 0 AND 100"
+
+#: 任务类型与资源类型必须正确配对（契约 10.0）。
+#: 含三类公开任务以及内部 ``AGENT_RUN``；未知组合在写入时即被数据库拒绝。
+JOB_TYPE_RESOURCE_CHECK = (
+    "(type = 'MATERIAL_PARSE' AND resource_type = 'MATERIAL')"
+    " OR (type = 'PRACTICE_GENERATE' AND resource_type = 'PRACTICE_SET')"
+    " OR (type = 'SUBMISSION_GRADE' AND resource_type = 'SUBMISSION')"
+    " OR (type = 'AGENT_RUN' AND resource_type = 'AGENT_RUN')"
+)
 
 
 class JobType(str, enum.Enum):
@@ -128,6 +141,10 @@ class Job(Base):
     __table_args__ = (
         # 同一资源上同类任务只有一条：重复触发解析不会创建第二个任务
         UniqueConstraint("type", "resource_id", name="uq_jobs_type_resource_id"),
+        # 进度必须是 0–100 的整数（契约 10.0）
+        CheckConstraint(JOB_PROGRESS_CHECK, name="ck_jobs_progress_range"),
+        # 任务类型与资源类型必须配对（含内部 AGENT_RUN，契约 10.0）
+        CheckConstraint(JOB_TYPE_RESOURCE_CHECK, name="ck_jobs_type_resource_match"),
         Index("ix_jobs_resource_type_resource_id", "resource_type", "resource_id"),
         Index("ix_jobs_status", "status"),
     )

@@ -24,7 +24,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import NamedTuple
 
 from sqlalchemy.exc import IntegrityError
@@ -475,12 +475,14 @@ async def list_course_materials(
     )
 
 
-async def _require_material_manager(
+async def require_material_manager(
     session: AsyncSession, *, user: User, material: Material
 ) -> None:
-    """删除/重试解析共用的角色检查（契约 5.2、5.3）：仅创建教师。
+    """资料管理权限（契约 5.2、5.3）：仅创建教师，且课程未归档。
 
     调用前提：资料存在、当前用户是资料所属课程成员（否则先抛 404）。
+    供删除、重试解析与 Jobs 重试分派（契约 10.2 的 `MATERIAL_PARSE` 分支）复用：
+    顺序固定为 **成员可见性 → 角色 → 归档**，因此非成员无法借重试接口探测任务类型。
     """
     if user.role == UserRole.STUDENT:
         raise RoleForbiddenError()
@@ -524,7 +526,7 @@ async def delete_material(
             raise ResourceNotFoundError()
         return False
 
-    await _require_material_manager(session, user=user, material=material)
+    await require_material_manager(session, user=user, material=material)
 
     locked = await repo.get_visible_material_for_update(session, material_id)
     if locked is None:  # pragma: no cover - 并发删除的兜底，按幂等处理
@@ -580,7 +582,7 @@ async def retry_parse(
     ):
         raise ResourceNotFoundError()
 
-    await _require_material_manager(session, user=user, material=material)
+    await require_material_manager(session, user=user, material=material)
 
     locked = await repo.get_visible_material_for_update(session, material_id)
     if locked is None:  # pragma: no cover - 并发删除后按 404 处理
@@ -776,6 +778,7 @@ __all__ = [
     "get_material_outline",
     "init_upload",
     "list_course_materials",
+    "require_material_manager",
     "require_upload_teacher",
     "retry_parse",
     "split_extension",

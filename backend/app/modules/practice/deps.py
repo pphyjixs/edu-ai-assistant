@@ -23,7 +23,6 @@ from app.modules.auth.permissions import CurrentUserDep
 from app.modules.courses.models import Course
 from app.modules.practice import service
 from app.modules.practice.models import PracticeSet
-from app.modules.practice.service import RetryTarget
 
 
 async def _locked_teacher_course(
@@ -47,25 +46,16 @@ async def _locked_submit_set(
     return await service.lock_set_for_submit(session, user=user, set_id=set_id)
 
 
-async def _locked_retry_job(
-    job_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
-) -> RetryTarget:
-    """重试接口的前置：锁课程 → 锁练习 → 锁任务 → 可重试。"""
-    return await service.lock_retryable_job(session, user=user, job_id=job_id)
-
-
 #: 已锁定的课程（生成接口）
 LockedCourseDep = Annotated[Course, Depends(_locked_teacher_course)]
 #: 已锁定的练习（发布接口）
 LockedPublishSetDep = Annotated[PracticeSet, Depends(_locked_publish_set)]
 #: 已锁定的练习（提交接口）
 LockedSubmitSetDep = Annotated[PracticeSet, Depends(_locked_submit_set)]
-#: 已锁定的重试目标（重试接口）
-RetryTargetDep = Annotated[RetryTarget, Depends(_locked_retry_job)]
 
+#: 重试接口的守卫已上移到 :mod:`app.modules.jobs.deps`（契约 10.2 的统一分派）
 __all__ = [
     "LockedCourseDep",
     "LockedPublishSetDep",
     "LockedSubmitSetDep",
-    "RetryTargetDep",
 ]
