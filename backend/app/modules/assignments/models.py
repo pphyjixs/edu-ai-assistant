@@ -33,6 +33,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column
@@ -64,6 +65,21 @@ SCORE_TYPE = Numeric(SCORE_PRECISION, SCORE_SCALE)
 
 #: 分数上限（与列精度一致，超出由请求校验先拦下）
 MAX_SCORE = Decimal("99999999.99")
+
+# ---------------------------- 作业附件（契约 8.15） ----------------------------
+
+#: 附件文件名长度上限（去除首尾空白后校验）
+ATTACHMENT_FILENAME_MAX_LENGTH = 255
+
+#: 附件 sha256 十六进制摘要长度
+ATTACHMENT_SHA256_HEX_LENGTH = 64
+
+#: 附件对象键长度上限
+ATTACHMENT_OBJECT_KEY_MAX_LENGTH = 512
+
+#: 附件允许的文件类型：与课件上传同一套白名单（PDF / PPTX / DOCX）。
+#: 这里只声明"规范 MIME → 扩展名"，具体校验在 attachments 服务里做。
+ATTACHMENT_EXTENSIONS = (".pdf", ".pptx", ".docx")
 
 
 class AssignmentStatus(str, enum.Enum):
@@ -260,11 +276,116 @@ class AssignmentRubricItem(Base):
         return f"<AssignmentRubricItem id={self.id} order={self.order}>"
 
 
+class AssignmentAttachment(Base):
+    """作业附件（契约 8.15）。
+
+    教师给任务附一份参考文件（实验指导、数据集说明等），学生可下载。
+
+    **一行同时承担"上传会话"与"附件"两种身份**：``completed_at`` 为空表示
+    这次上传还没确认（pending），确认成功后即为有效附件。这样做的理由是
+    附件的上传只需要**一个**待完成记录（不像提交报告那样要按学生、按提交
+    复用同一条记录），因此不需要额外再建一张会话表；代价是"同一作业同名附件"
+    的判重必须带上 ``completed_at IS NOT NULL`` 条件（见部分唯一索引）。
+
+    ``object_key`` 由课程、任务与上传 UUID 推导，**不含用户文件名**；
+    重复初始化会签发新的 ``upload_id``，旧对象由维护命令按同一套清理协议处理。
+    """
+
+    __tablename__ = "assignment_attachments"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+
+    assignment_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "assignments.id",
+            ondelete="CASCADE",
+            name="fk_assignment_attachments_assignment_id_assignments",
+        ),
+        nullable=False,
+    )
+
+    #: 上传会话 UUID：既用于定位对象，也是完成确认时的凭据
+    upload_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, unique=True)
+
+    object_key: Mapped[str] = mapped_column(
+        String(ATTACHMENT_OBJECT_KEY_MAX_LENGTH), nullable=False, unique=True
+    )
+
+    #: 展示给用户看的原始文件名（含扩展名）
+    filename: Mapped[str] = mapped_column(
+        String(ATTACHMENT_FILENAME_MAX_LENGTH), nullable=False
+    )
+
+    content_type: Mapped[str] = mapped_column(String(128), nullable=False)
+
+    size: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    sha256: Mapped[str] = mapped_column(
+        String(ATTACHMENT_SHA256_HEX_LENGTH), nullable=False
+    )
+
+    uploaded_by: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "users.id",
+            ondelete="RESTRICT",
+            name="fk_assignment_attachments_uploaded_by_users",
+        ),
+        nullable=False,
+    )
+
+    #: 预签名 PUT 的到期时间：确认窗口以它为准（契约 8.15）
+    upload_url_expires_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, nullable=False
+    )
+
+    #: 确认截止时间：超过则不能再确认（与课件、报告一致，默认 24 小时）
+    confirm_deadline_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, nullable=False
+    )
+
+    #: 确认成功的时间；为空表示这次上传还没有完成（pending，对读接口不可见）
+    completed_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, nullable=False, default=utc_now, server_default=func.now()
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, nullable=False, default=utc_now, server_default=func.now()
+    )
+
+    __table_args__ = (
+        # 同一作业下**已完成**的附件不允许同名：未完成的 pending 行可以有多条
+        # （重复初始化会留下多条），因此唯一性必须带 WHERE 条件
+        Index(
+            "uq_assignment_attachments_completed_filename",
+            "assignment_id",
+            "filename",
+            unique=True,
+            postgresql_where=text("completed_at IS NOT NULL"),
+        ),
+        Index("ix_assignment_attachments_assignment_id", "assignment_id"),
+        # 只写短名：命名约定会补成 ck_assignment_attachments_size，
+        # 与迁移里显式写的名字一致（写全名会被约定再前缀一次）
+        CheckConstraint("size > 0", name="size"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - 仅用于调试
+        return f"<AssignmentAttachment id={self.id} filename={self.filename!r}>"
+
+
 __all__ = [
     "Assignment",
+    "AssignmentAttachment",
     "AssignmentRubricItem",
     "AssignmentRubricVersion",
     "AssignmentStatus",
+    "ATTACHMENT_EXTENSIONS",
+    "ATTACHMENT_FILENAME_MAX_LENGTH",
+    "ATTACHMENT_OBJECT_KEY_MAX_LENGTH",
+    "ATTACHMENT_SHA256_HEX_LENGTH",
     "DESCRIPTION_MAX_LENGTH",
     "MAX_RUBRIC_ITEMS",
     "MAX_SCORE",

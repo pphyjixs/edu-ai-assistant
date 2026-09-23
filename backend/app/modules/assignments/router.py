@@ -27,6 +27,7 @@ from app.modules.assignments.deps import (
     CreatorCourseDep,
     EditableAssignmentDep,
     PublishableAssignmentDep,
+    ReopenableAssignmentDep,
 )
 from app.modules.assignments.models import Assignment, AssignmentRubricItem
 from app.modules.assignments.schemas import (
@@ -411,6 +412,52 @@ async def close_assignment(
 ) -> AssignmentDetailSchema:
     await validate_empty_object_body(request)
     assignment = await service.close_assignment(session, assignment=locked)
+    return await _detail(session, assignment=assignment)
+
+
+# --------------------------------------------------------------------------- #
+# 8.8 重新开启任务
+# --------------------------------------------------------------------------- #
+@assignments_router.post(
+    "/assignments/{assignment_id}/reopen",
+    status_code=status.HTTP_200_OK,
+    response_model=AssignmentDetailSchema,
+    summary="重新开启实验任务",
+    description=(
+        "仅课程创建教师可调用。`CLOSED` 重新开启为 `PUBLISHED` 并清除 `closed_at`；"
+        "已发布幂等返回（且不改变 `published_at`）；`DRAFT`/`ARCHIVED` 与归档课程返回 409。"
+        "重新开启不改变评分规则版本，也不清除学生此前的提交。请求体可省略或传 {}。"
+    ),
+    responses={
+        200: {"description": "重新开启成功（含幂等重放）"},
+        403: {
+            "model": ErrorResponse,
+            "description": "学生调用为 ROLE_FORBIDDEN；非创建教师为 COURSE_FORBIDDEN",
+        },
+        404: _NOT_FOUND_UNIFIED,
+        409: {
+            "model": ErrorResponse,
+            "description": (
+                "课程已归档（COURSE_ARCHIVED）或状态不可重新开启（ASSIGNMENT_NOT_OPEN）"
+            ),
+        },
+        422: {
+            "model": ErrorResponse,
+            "description": "请求体为显式 null 或含未声明字段（VALIDATION_ERROR）",
+        },
+        **_AUTH_ERRORS,
+    },
+    openapi_extra=EMPTY_OBJECT_REQUEST_BODY,
+)
+async def reopen_assignment(
+    assignment_id: uuid.UUID,
+    request: Request,
+    user: CurrentUserDep,
+    session: SessionDep,
+    locked: ReopenableAssignmentDep,
+) -> AssignmentDetailSchema:
+    await validate_empty_object_body(request)
+    assignment = await service.reopen_assignment(session, assignment=locked)
     return await _detail(session, assignment=assignment)
 
 

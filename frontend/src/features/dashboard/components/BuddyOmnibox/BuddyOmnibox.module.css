@@ -23,7 +23,7 @@
   place-items: center;
   border-radius: 12px;
   background: var(--color-brand-dark);
-  color: #ffffff;
+  color: var(--color-text-on-brand);
 }
 
 .input {

@@ -9,6 +9,30 @@
   background: var(--color-surface-sunken);
 }
 
+/*
+ * 拖拽手柄：贴在面板左缘的一条窄带。
+ * 平时几乎不可见，hover / 聚焦时给出明确反馈，保证"能被发现、也能用键盘操作"。
+ * 容器是 sticky（已定位），因此这里的 absolute 直接相对面板定位。
+ */
+.resizeHandle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  background: transparent;
+  touch-action: none;
+}
+
+.resizeHandle:hover,
+.resizeHandle:focus-visible {
+  background: var(--color-accent-blue);
+  opacity: 0.35;
+  outline: none;
+}
+
 /* 首页按需弹出的右侧抽屉（非模态，不遮挡页面交互） */
 .overlay {
   position: fixed;

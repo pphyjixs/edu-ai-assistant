@@ -50,8 +50,17 @@ export function MaterialRow({ material, courseId, canManage, readOnly }: Materia
             <span>{material.sizeLabel}</span>
             <span>上传于 {material.createdAtLabel}</span>
           </div>
-          {material.errorMessage ? (
+          {/* 失败时说清「哪一步失败」，而不是只给一句笼统的原因（评审文档「一、#4.8」） */}
+          {material.failureStageLabel ? (
+            <p className={styles.errorMessage}>
+              失败阶段：{material.failureStageLabel}
+              {material.errorMessage ? ` · ${material.errorMessage}` : null}
+            </p>
+          ) : material.errorMessage ? (
             <p className={styles.errorMessage}>{material.errorMessage}</p>
+          ) : null}
+          {material.failureHint ? (
+            <p className={styles.errorMessage}>{material.failureHint}</p>
           ) : null}
           {retryError ? <p className={styles.errorMessage}>{retryError.message}</p> : null}
           {deleteError ? <p className={styles.errorMessage}>{deleteError.message}</p> : null}

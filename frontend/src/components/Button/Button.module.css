@@ -48,11 +48,11 @@
 /* ------------------------------- 变体 ------------------------------- */
 .primary {
   background: var(--color-brand-dark);
-  color: #ffffff;
+  color: var(--color-text-on-brand);
 }
 
 .primary:hover:not(:disabled) {
-  background: #1f1f1e;
+  background: var(--color-brand-dark-hover);
 }
 
 .secondary {

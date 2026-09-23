@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from app.storage.downloads import presign_download
 from app.storage.errors import (
     StorageError,
     StorageObjectNotFoundError,
@@ -22,6 +23,7 @@ from app.storage.errors import (
 )
 from app.storage.keys import (
     InvalidExtensionError,
+    build_attachment_object_key,
     build_submission_object_key,
     build_upload_object_key,
     normalize_extension,
@@ -51,10 +53,12 @@ __all__ = [
     "StorageVerificationError",
     "StoredObject",
     "as_service_unavailable",
+    "build_attachment_object_key",
     "build_submission_object_key",
     "build_upload_object_key",
     "close_storages",
     "get_storage",
     "normalize_extension",
+    "presign_download",
     "sha256_base64",
 ]

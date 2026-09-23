@@ -100,6 +100,9 @@ class JobStatus(BaseModel):
     resource_id: uuid.UUID
     #: 失败原因的安全摘要；非 FAILED 时为 null，最长 500 字符
     error: Annotated[str | None, Field(max_length=JOB_ERROR_MAX_LENGTH)]
+    #: 失败阶段码（``DOWNLOAD`` / ``NATIVE_EXTRACT`` / ``OUTLINE_GENERATION`` …）；
+    #: 非 FAILED 时为 null。前端据此区分「文件读不出来」与「模型侧失败」。
+    failure_stage: str | None = None
     created_at: UtcTimestampWithFormat
     started_at: UtcTimestampWithFormat | None
     finished_at: UtcTimestampWithFormat | None

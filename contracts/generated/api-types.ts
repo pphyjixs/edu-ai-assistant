@@ -333,6 +333,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/materials/{material_id}/download-url": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 资料原文的临时下载地址
+         * @description 课程成员（教师或学生）可申请，归档课程同样可以；返回短时有效的预签名 GET 地址。地址是纯本地签名，每次请求都会拿到新的有效地址，过期后重新请求即可。资料不存在、已删除或当前用户不是课程成员时统一 404 RESOURCE_NOT_FOUND；对象存储未配置或不可达返回 503 SERVICE_UNAVAILABLE。
+         */
+        get: operations["get_material_download_url_api_v1_materials__material_id__download_url_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/courses/{course_id}/materials": {
         parameters: {
             query?: never;
@@ -649,7 +669,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/chat-sessions/{session_id}/runs": {
+    "/api/v1/assignments/{assignment_id}/reopen": {
         parameters: {
             query?: never;
             header?: never;
@@ -659,10 +679,134 @@ export interface paths {
         get?: never;
         put?: never;
         /**
+         * 重新开启实验任务
+         * @description 仅课程创建教师可调用。`CLOSED` 重新开启为 `PUBLISHED` 并清除 `closed_at`；已发布幂等返回（且不改变 `published_at`）；`DRAFT`/`ARCHIVED` 与归档课程返回 409。重新开启不改变评分规则版本，也不清除学生此前的提交。请求体可省略或传 {}。
+         */
+        post: operations["reopen_assignment_api_v1_assignments__assignment_id__reopen_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assignments/{assignment_id}/attachments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 作业附件列表
+         * @description 课程成员（教师或学生）可读；草稿任务对学生按不存在处理（404）。只返回**已完成**上传的附件，未完成的草稿态不可见；每个附件都带现场签发的短时下载地址。
+         */
+        get: operations["list_attachments_api_v1_assignments__assignment_id__attachments_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assignments/{assignment_id}/attachments/uploads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 初始化附件上传
+         * @description 仅课程创建教师可调用。返回预签名 PUT 地址与必须原样携带的请求头；只接受 PDF、PPTX、DOCX，单文件不超过 `ASSIGNMENT_ATTACHMENT_MAX_UPLOAD_BYTES`。同一任务下已有**同名**附件时返回 409 ATTACHMENT_ALREADY_EXISTS（请先删除旧附件）；重复初始化会复用未完成的上传记录并换发新的地址。
+         */
+        post: operations["init_attachment_upload_api_v1_assignments__assignment_id__attachments_uploads_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assignments/{assignment_id}/attachments/uploads/{upload_id}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 完成附件上传
+         * @description 仅课程创建教师可调用。确认对象存在且大小、类型、摘要与初始化声明一致后，附件正式生效并对课程成员可见；同一 `upload_id` 重复确认**幂等**返回。请求体可省略或传 {}。
+         */
+        post: operations["complete_attachment_upload_api_v1_assignments__assignment_id__attachments_uploads__upload_id__complete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assignments/{assignment_id}/attachments/{attachment_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 删除作业附件
+         * @description 仅课程创建教师可调用。删除后附件立即从列表消失；对象存储中的文件尽力删除，删除失败不影响本次删除结果。附件不存在或不属于该任务时返回 404。
+         */
+        delete: operations["delete_attachment_api_v1_assignments__assignment_id__attachments__attachment_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/chat-sessions/{session_id}/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 会话内的 Agent Run 列表
+         * @description 按创建时间倒序返回本会话的 Run（新→旧），含状态、失败阶段与错误摘要。前端用它把 FAILED / CANCELLED 的原因显示在对应提问下面，因此刷新页面后用户仍然知道上一次为什么没有回答。只返回自己的会话。
+         */
+        get: operations["list_agent_runs_api_v1_chat_sessions__session_id__runs_get"];
+        put?: never;
+        /**
          * 创建 Agent Run
-         * @description 在指定会话中创建一个异步 Agent Run：同一事务写入用户消息、`agent_runs` 与 `AGENT_RUN` 任务后立即返回 202，模型调用由独立 Worker 完成。`client_request_id` 在用户范围内唯一，网络重试会返回同一个 Run。第一版每个会话同时只允许一个未结束的 Run。
+         * @description 在指定会话中创建一个异步 Agent Run：同一事务写入用户消息、`agent_runs` 与 `AGENT_RUN` 任务后立即返回 202，模型调用由独立 Worker 完成。`client_request_id` 在用户范围内唯一，网络重试会返回同一个 Run；把同一个编号用于**不同内容**会返回 409 AGENT_IDEMPOTENCY_CONFLICT。`action` 与 `context` 的组合必须落在允许矩阵内，否则 422。第一版每个会话同时只允许一个未结束的 Run。
          */
         post: operations["create_agent_run_api_v1_chat_sessions__session_id__runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/chat-sessions/{session_id}/active-run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 会话中尚未结束的 Run
+         * @description 打开会话时先调用它：`run` 非空则按正常节奏恢复轮询，因此刷新页面不会让「正在生成」的提示消失，也不会丢掉已经发出的提问。没有进行中的 Run 时返回 200 且 `run` 为 null——这是常规状态，不是错误。
+         */
+        get: operations["get_active_agent_run_api_v1_chat_sessions__session_id__active_run_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -678,7 +822,7 @@ export interface paths {
         };
         /**
          * 查询 Agent Run
-         * @description 仅 Run 的所有者可读。`status` / `progress` / `error` 来自关联任务；成功后会带上 `output_message_id` 与本次实际注入的来源列表。
+         * @description 仅 Run 的所有者可读。`status` / `progress` / `error` / `failure_stage` 来自关联任务；成功后会带上 `output_message_id`、`evidence_level` 与本次实际注入的来源列表。
          */
         get: operations["get_agent_run_api_v1_agent_runs__run_id__get"];
         put?: never;
@@ -914,6 +1058,17 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * AgentActiveRunSchema
+         * @description ``GET /chat-sessions/{session_id}/active-run`` 的响应。
+         *
+         *     刻意**不用 404** 表示「没有进行中的 Run」：页面打开时这是常规情况，
+         *     用 200 + ``run: null`` 可以让前端一条路径处理，也避免把正常状态记进
+         *     错误监控（评审文档「一、#11」）。
+         */
+        AgentActiveRunSchema: {
+            run?: components["schemas"]["AgentRunSchema"] | null;
+        };
+        /**
          * AgentRunAction
          * @description Run 的动作（契约 6.3 的 ``action``）。
          * @enum {string}
@@ -949,6 +1104,10 @@ export interface components {
             output_message_id: string | null;
             /** Error */
             error: string | null;
+            /** Failure Stage */
+            failure_stage?: string | null;
+            /** Evidence Level */
+            evidence_level?: string | null;
             /** Created At */
             created_at: string;
             /** Started At */
@@ -982,6 +1141,43 @@ export interface components {
             location_end: number | null;
             /** Label */
             label: string;
+        };
+        /**
+         * AssignmentAttachmentSchema
+         * @description 作业附件（对课程成员可见，含临时下载地址）。
+         */
+        AssignmentAttachmentSchema: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Assignment Id
+             * Format: uuid
+             */
+            assignment_id: string;
+            /** Filename */
+            filename: string;
+            /** Content Type */
+            content_type: string;
+            /** Size */
+            size: number;
+            /** Sha256 */
+            sha256: string;
+            /**
+             * Uploaded By
+             * Format: uuid
+             */
+            uploaded_by: string;
+            /** Uploaded By Name */
+            uploaded_by_name?: string | null;
+            /** Download Url */
+            download_url: string;
+            /** Download Expires At */
+            download_expires_at: string;
+            /** Created At */
+            created_at: string;
         };
         /**
          * AssignmentDetailSchema
@@ -1064,6 +1260,43 @@ export interface components {
             updated_at: string;
         };
         /**
+         * AttachmentUploadInitRequest
+         * @description 初始化附件上传（契约 8.15），字段与课件上传完全一致。
+         */
+        AttachmentUploadInitRequest: {
+            /** Filename */
+            filename: string;
+            /** Content Type */
+            content_type: string;
+            /** Size */
+            size: number;
+            /** Sha256 */
+            sha256: string;
+        };
+        /**
+         * AttachmentUploadInitResponse
+         * @description 初始化响应：与课件上传同形的三段式凭据。
+         */
+        AttachmentUploadInitResponse: {
+            /**
+             * Upload Id
+             * Format: uuid
+             */
+            upload_id: string;
+            /** Upload Url */
+            upload_url: string;
+            /** Method */
+            method: string;
+            /** Headers */
+            headers: {
+                [key: string]: string;
+            };
+            /** Expires At */
+            expires_at: string;
+            /** Confirm Deadline At */
+            confirm_deadline_at: string;
+        };
+        /**
          * ChatMessageSchema
          * @description 消息（契约 6.6）。``citations`` 由服务端按消息聚合填充。
          */
@@ -1120,25 +1353,36 @@ export interface components {
         /**
          * Citation
          * @description 引用（契约 6.6）：取自命中片段，带可核对的原文摘录。
+         *
+         *     引用**不限于资料**（评审文档「一、#2」）：``source_kind`` 为 ``MATERIAL`` 时
+         *     指向资料片段/章节，前端可跳转到阅读器；为 ``ASSIGNMENT`` 时指向作业与评分标准，
+         *     这类业务对象没有页码，``material_*`` / ``location_*`` 为空，前端只做展示。
+         *     统一用 ``source_id`` 表示来源自身的 ID，``source_label`` 表示可直接展示的名称。
          */
         Citation: {
             /**
-             * Material Id
-             * Format: uuid
+             * Source Kind
+             * @default MATERIAL
              */
-            material_id: string;
+            source_kind: string;
+            /** Source Id */
+            source_id?: string | null;
+            /** Source Label */
+            source_label?: string | null;
+            /** Material Id */
+            material_id?: string | null;
             /** Material Name */
-            material_name: string;
+            material_name?: string | null;
             /** Section Id */
-            section_id: string | null;
+            section_id?: string | null;
             /** Section Title */
-            section_title: string | null;
+            section_title?: string | null;
             /** Source Type */
             source_type: string;
             /** Location Start */
-            location_start: number;
+            location_start?: number | null;
             /** Location End */
-            location_end: number;
+            location_end?: number | null;
             /** Page */
             page: number | null;
             /** Quote */
@@ -1303,7 +1547,7 @@ export interface components {
          * @description 机器可读的错误标识。
          * @enum {string}
          */
-        ErrorCode: "AUTH_INVALID_CREDENTIALS" | "AUTH_TOKEN_EXPIRED" | "AUTH_EMAIL_TAKEN" | "AUTH_TOO_MANY_ATTEMPTS" | "ROLE_FORBIDDEN" | "COURSE_FORBIDDEN" | "COURSE_ARCHIVED" | "RESOURCE_NOT_FOUND" | "INVITE_CODE_INVALID" | "UPLOAD_INVALID" | "RUBRIC_SCORE_MISMATCH" | "MATERIAL_NOT_READY" | "MATERIAL_ALREADY_READY" | "ASSIGNMENT_NOT_OPEN" | "SUBMISSION_ALREADY_EXISTS" | "SUBMISSION_NOT_READY" | "GRADE_NOT_REVIEWED" | "GRADE_ALREADY_PUBLISHED" | "AI_JOB_FAILED" | "CHAT_CONFLICT" | "PRACTICE_NOT_READY" | "PRACTICE_ALREADY_ATTEMPTED" | "JOB_NOT_RETRYABLE" | "AGENT_RUN_IN_PROGRESS" | "AGENT_CONTEXT_UNSUPPORTED" | "AGENT_CONTEXT_NOT_READY" | "AGENT_RUN_NOT_CANCELLABLE" | "VALIDATION_ERROR" | "METHOD_NOT_ALLOWED" | "INTERNAL_ERROR" | "SERVICE_UNAVAILABLE";
+        ErrorCode: "AUTH_INVALID_CREDENTIALS" | "AUTH_TOKEN_EXPIRED" | "AUTH_EMAIL_TAKEN" | "AUTH_TOO_MANY_ATTEMPTS" | "ROLE_FORBIDDEN" | "COURSE_FORBIDDEN" | "COURSE_ARCHIVED" | "RESOURCE_NOT_FOUND" | "INVITE_CODE_INVALID" | "UPLOAD_INVALID" | "RUBRIC_SCORE_MISMATCH" | "MATERIAL_NOT_READY" | "MATERIAL_ALREADY_READY" | "ASSIGNMENT_NOT_OPEN" | "ATTACHMENT_ALREADY_EXISTS" | "SUBMISSION_ALREADY_EXISTS" | "SUBMISSION_NOT_READY" | "GRADE_NOT_REVIEWED" | "GRADE_ALREADY_PUBLISHED" | "AI_JOB_FAILED" | "CHAT_CONFLICT" | "PRACTICE_NOT_READY" | "PRACTICE_ALREADY_ATTEMPTED" | "JOB_NOT_RETRYABLE" | "AGENT_RUN_IN_PROGRESS" | "AGENT_CONTEXT_UNSUPPORTED" | "AGENT_CONTEXT_NOT_READY" | "AGENT_RUN_NOT_CANCELLABLE" | "AGENT_IDEMPOTENCY_CONFLICT" | "VALIDATION_ERROR" | "METHOD_NOT_ALLOWED" | "INTERNAL_ERROR" | "SERVICE_UNAVAILABLE";
         /**
          * ErrorResponse
          * @description 所有非 2xx 响应的统一结构。
@@ -1437,6 +1681,8 @@ export interface components {
             resource_id: string;
             /** Error */
             error: string | null;
+            /** Failure Stage */
+            failure_stage?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -1528,12 +1774,31 @@ export interface components {
              * Format: uuid
              */
             uploaded_by: string;
+            /** Uploaded By Name */
+            uploaded_by_name?: string | null;
+            /** Sha256 */
+            sha256?: string | null;
             /** Error Message */
             error_message: string | null;
+            /** Failure Stage */
+            failure_stage?: string | null;
             /** Created At */
             created_at: string;
             /** Updated At */
             updated_at: string;
+        };
+        /**
+         * MaterialDownloadUrl
+         * @description 资料原文的临时下载地址（契约 4.9）。
+         *
+         *     地址是预签名 ``GET``，**纯本地计算**生成：每次请求都会拿到新的有效地址，
+         *     过期后前端重新请求一次即可，服务端不缓存也不需要额外的会话记录。
+         */
+        MaterialDownloadUrl: {
+            /** Download Url */
+            download_url: string;
+            /** Download Expires At */
+            download_expires_at: string;
         };
         /**
          * MaterialKnowledgePoint
@@ -1664,6 +1929,17 @@ export interface components {
             expires_at: string;
             /** Confirm Deadline At */
             confirm_deadline_at: string;
+        };
+        /** Page[AgentRunSchema] */
+        Page_AgentRunSchema_: {
+            /** Items */
+            items: components["schemas"]["AgentRunSchema"][];
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+            /** Total */
+            total: number;
         };
         /** Page[AssignmentSummarySchema] */
         Page_AssignmentSummarySchema_: {
@@ -3593,6 +3869,73 @@ export interface operations {
             };
         };
     };
+    get_material_download_url_api_v1_materials__material_id__download_url_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                material_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MaterialDownloadUrl"];
+                };
+            };
+            /** @description Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 资料不存在、已删除，或当前用户不是课程成员（RESOURCE_NOT_FOUND） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description 未预期的服务端错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 对象存储未配置或不可达（SERVICE_UNAVAILABLE） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     list_materials_api_v1_courses__course_id__materials_get: {
         parameters: {
             query?: {
@@ -4954,6 +5297,458 @@ export interface operations {
             };
         };
     };
+    reopen_assignment_api_v1_assignments__assignment_id__reopen_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assignment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description 重新开启成功（含幂等重放） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssignmentDetailSchema"];
+                };
+            };
+            /** @description Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 学生调用为 ROLE_FORBIDDEN；非创建教师为 COURSE_FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 课程/任务不存在，或当前用户不可见（RESOURCE_NOT_FOUND；学生视角下的草稿一律按不存在处理） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 课程已归档（COURSE_ARCHIVED）或状态不可重新开启（ASSIGNMENT_NOT_OPEN） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 请求体为显式 null 或含未声明字段（VALIDATION_ERROR） */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 未预期的服务端错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_attachments_api_v1_assignments__assignment_id__attachments_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assignment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 查询成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssignmentAttachmentSchema"][];
+                };
+            };
+            /** @description Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 任务或附件不存在、对当前用户不可见，或不是课程成员（统一 RESOURCE_NOT_FOUND） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description 未预期的服务端错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    init_attachment_upload_api_v1_assignments__assignment_id__attachments_uploads_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assignment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AttachmentUploadInitRequest"];
+            };
+        };
+        responses: {
+            /** @description 已签发上传地址 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttachmentUploadInitResponse"];
+                };
+            };
+            /** @description Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 学生调用为 ROLE_FORBIDDEN；非创建教师为 COURSE_FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 任务或附件不存在、对当前用户不可见，或不是课程成员（统一 RESOURCE_NOT_FOUND） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 课程或任务已归档（COURSE_ARCHIVED / ASSIGNMENT_NOT_OPEN），或已有同名附件（ATTACHMENT_ALREADY_EXISTS） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 文件类型、MIME、大小、sha256 不满足规则，或对象缺失/不一致、确认窗口已过（UPLOAD_INVALID） */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 未预期的服务端错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 对象存储未配置或不可达（SERVICE_UNAVAILABLE） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    complete_attachment_upload_api_v1_assignments__assignment_id__attachments_uploads__upload_id__complete_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                upload_id: string;
+                assignment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description 附件已生效（含幂等重放） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssignmentAttachmentSchema"];
+                };
+            };
+            /** @description Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 学生调用为 ROLE_FORBIDDEN；非创建教师为 COURSE_FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 任务或附件不存在、对当前用户不可见，或不是课程成员（统一 RESOURCE_NOT_FOUND） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 课程或任务已归档，或已有同名附件（ATTACHMENT_ALREADY_EXISTS） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 对象缺失或与初始化声明不一致、确认窗口已过（UPLOAD_INVALID），或请求体不为空对象（VALIDATION_ERROR） */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 未预期的服务端错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 对象存储未配置或不可达（SERVICE_UNAVAILABLE） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_attachment_api_v1_assignments__assignment_id__attachments__attachment_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                attachment_id: string;
+                assignment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 删除成功 */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 学生调用为 ROLE_FORBIDDEN；非创建教师为 COURSE_FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 任务或附件不存在、对当前用户不可见，或不是课程成员（统一 RESOURCE_NOT_FOUND） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 课程已归档（COURSE_ARCHIVED）或任务已归档（ASSIGNMENT_NOT_OPEN） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description 未预期的服务端错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_agent_runs_api_v1_chat_sessions__session_id__runs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Run 列表（最多 limit 条） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_AgentRunSchema_"];
+                };
+            };
+            /** @description Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 会话不存在、不是所有者，或目标对象不属于本课程/不可见（RESOURCE_NOT_FOUND） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description limit 超出范围（VALIDATION_ERROR） */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 未预期的服务端错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     create_agent_run_api_v1_chat_sessions__session_id__runs_post: {
         parameters: {
             query?: never;
@@ -5005,7 +5800,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description AGENT_RUN_IN_PROGRESS（该会话已有未结束的 Run）、COURSE_ARCHIVED（课程已归档）或 AGENT_CONTEXT_NOT_READY（资料未解析完成） */
+            /** @description AGENT_RUN_IN_PROGRESS（该会话已有未结束的 Run）、AGENT_IDEMPOTENCY_CONFLICT（同一请求编号被用于不同内容）、COURSE_ARCHIVED（课程已归档）或 AGENT_CONTEXT_NOT_READY（资料未解析完成） */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -5021,6 +5816,64 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 未预期的服务端错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_active_agent_run_api_v1_chat_sessions__session_id__active_run_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 进行中的 Run，或 null */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentActiveRunSchema"];
+                };
+            };
+            /** @description Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 会话不存在、不是所有者，或目标对象不属于本课程/不可见（RESOURCE_NOT_FOUND） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
             /** @description 未预期的服务端错误 */

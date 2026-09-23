@@ -28,12 +28,19 @@ export function fileExtension(filename: string): string {
   return index === -1 ? "" : filename.slice(index + 1).toLowerCase();
 }
 
+/**
+ * 契约 9.2：**提交报告只接受 PDF 与 DOCX**（不像课件上传还允许 PPTX）。
+ *
+ * 因此允许的扩展名做成参数而不是写死一份。
+ */
+export const SUBMISSION_EXTENSIONS = ["pdf", "docx"] as const;
+
 export type LocalFileProblem =
   | { kind: "ok"; contentType: string }
   | { kind: "empty-name" }
   | { kind: "too-long" }
   | { kind: "bad-chars" }
-  | { kind: "unsupported-type" }
+  | { kind: "unsupported-type"; allowed: string[] }
   | { kind: "empty-file" }
   | { kind: "too-large"; maxBytes: number };
 
@@ -42,10 +49,13 @@ export type LocalFileProblem =
  *
  * 这不是「前端代替后端校验」——后端仍会独立校验并返回 UPLOAD_INVALID；
  * 这里提前拦住只是为了避免把 50 MB 的文件白传一遍。
+ *
+ * @param allowedExtensions 允许的扩展名（小写、不含点）；省略时用课件上传的清单
  */
 export function checkLocalFile(
   file: File,
   maxBytes = DEFAULT_MAX_UPLOAD_BYTES,
+  allowedExtensions: readonly string[] = ACCEPTED_EXTENSIONS,
 ): LocalFileProblem {
   const name = file.name.trim();
 
@@ -53,8 +63,11 @@ export function checkLocalFile(
   if (name.length > 255) return { kind: "too-long" };
   if (/[/\\\u0000]/.test(name)) return { kind: "bad-chars" };
 
-  const contentType = CANONICAL_MIME_BY_EXTENSION[fileExtension(name)];
-  if (!contentType) return { kind: "unsupported-type" };
+  const extension = fileExtension(name);
+  const contentType = CANONICAL_MIME_BY_EXTENSION[extension];
+  if (!contentType || !allowedExtensions.includes(extension)) {
+    return { kind: "unsupported-type", allowed: [...allowedExtensions] };
+  }
 
   if (file.size < 1) return { kind: "empty-file" };
   if (file.size > maxBytes) return { kind: "too-large", maxBytes };
@@ -71,7 +84,8 @@ export function describeLocalProblem(problem: LocalFileProblem): string {
     case "bad-chars":
       return "文件名不能包含 / 、\\ 等路径分隔符。";
     case "unsupported-type":
-      return "只支持 PDF、PPTX、DOCX 三种格式。";
+      // 文案按调用方给的白名单生成：提交页不能出现"只支持 PPTX"这种错误提示
+      return `只支持 ${problem.allowed.map((item) => item.toUpperCase()).join("、")} 格式。`;
     case "empty-file":
       return "文件内容为空，无法上传。";
     case "too-large":

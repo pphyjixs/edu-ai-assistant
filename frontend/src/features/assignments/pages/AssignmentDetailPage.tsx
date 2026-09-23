@@ -18,18 +18,20 @@ import { Icon } from "@/components/Icon/Icon";
 import { Skeleton, SkeletonLines } from "@/components/Skeleton/Skeleton";
 import { AssignmentForm } from "@/features/assignments/components/AssignmentForm/AssignmentForm";
 import { AssignmentHeader } from "@/features/assignments/components/AssignmentHeader/AssignmentHeader";
+import { AttachmentPanel } from "@/features/assignments/components/AttachmentPanel/AttachmentPanel";
 import { RubricList } from "@/features/assignments/components/RubricList/RubricList";
-import { SubmissionPanel } from "@/features/assignments/components/SubmissionPanel/SubmissionPanel";
 import {
   useAssignment,
   useCloseAssignment,
   usePublishAssignment,
+  useReopenAssignment,
   useUpdateAssignment,
 } from "@/features/assignments/hooks/useAssignments";
 import { AgentActionButton } from "@/features/buddy/components/AgentActionButton/AgentActionButton";
 import { useSetBuddyContext } from "@/features/buddy/hooks/useBuddy";
 import { assignmentActions } from "@/features/buddy/model/actions";
 import { useCourse } from "@/features/courses/hooks/useCourses";
+import { SubmissionPanel } from "@/features/grading/components/SubmissionPanel/SubmissionPanel";
 import { toAppError } from "@/services/http";
 
 import styles from "./AssignmentDetailPage.module.css";
@@ -44,6 +46,7 @@ export function AssignmentDetailPage() {
   const updateAssignment = useUpdateAssignment(courseId ?? "", assignmentId ?? "");
   const publishAssignment = usePublishAssignment(courseId ?? "", assignmentId ?? "");
   const closeAssignment = useCloseAssignment(courseId ?? "", assignmentId ?? "");
+  const reopenAssignment = useReopenAssignment(courseId ?? "", assignmentId ?? "");
 
   useSetBuddyContext({
     courseId,
@@ -106,6 +109,7 @@ export function AssignmentDetailPage() {
     (updateAssignment.isError && toAppError(updateAssignment.error)) ||
     (publishAssignment.isError && toAppError(publishAssignment.error)) ||
     (closeAssignment.isError && toAppError(closeAssignment.error)) ||
+    (reopenAssignment.isError && toAppError(reopenAssignment.error)) ||
     null;
 
   const teacherActions =
@@ -129,6 +133,20 @@ export function AssignmentDetailPage() {
             onClick={() => closeAssignment.mutate()}
           >
             {closeAssignment.isPending ? "关闭中…" : "关闭提交"}
+          </Button>
+        ) : null}
+        {/*
+          契约 8.16：关闭只是停止收作业，不是把任务作废，所以要能重新开启。
+          重新开启后任务回到 PUBLISHED，也就可以继续修改了。
+        */}
+        {assignment.status === "closed" ? (
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={reopenAssignment.isPending}
+            onClick={() => reopenAssignment.mutate()}
+          >
+            {reopenAssignment.isPending ? "开启中…" : "重新开启提交"}
           </Button>
         ) : null}
         {assignment.canEdit && !editing ? (
@@ -211,6 +229,9 @@ export function AssignmentDetailPage() {
         <h2 className={styles.sectionTitle}>评分标准</h2>
         <p className={styles.sectionHint}>
           当前评分规则版本 v{assignment.rubricVersion}，合计 {assignment.rubricScoreSum} 分。
+          {assignment.status === "closed"
+            ? "任务已关闭：要改评分标准请先「重新开启提交」（重新开启不会产生新的评分版本）。"
+            : ""}
         </p>
         <RubricList
           rubric={assignment.rubric}
@@ -218,6 +239,15 @@ export function AssignmentDetailPage() {
           mismatch={assignment.rubricMismatch}
         />
       </Card>
+
+      {/* 契约 8.15：教师上传参考资料，学生可下载 */}
+      <div className={styles.card}>
+        <AttachmentPanel
+          assignmentId={assignment.id}
+          isOwner={isOwner}
+          readOnly={readOnly || assignment.status === "archived"}
+        />
+      </div>
 
       <div className={styles.card}>
         <SubmissionPanel assignment={assignment} isOwner={isOwner} />

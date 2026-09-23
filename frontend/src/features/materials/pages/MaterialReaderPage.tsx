@@ -1,11 +1,21 @@
 /**
  * 资料阅读页。
  *
- * 契约只提供解析产物（章节 + 知识点 + 原文摘录 + 来源定位），
- * 不提供资料正文与下载地址，因此这里展示的就是大纲本身，
- * 不做「伪造原文」或「伪造页码」的事。
+ * 页面由两块组成：
+ *
+ * 1. **文件本身**：上传者、类型、大小、上传时间与校验和，以及原文的下载入口
+ *    （契约 4.9 的预签名地址）；
+ * 2. **解析产物**：章节 + 知识点 + 原文摘录 + 来源定位（契约 5.4）。
+ *
+ * 解析产物不是原文，因此这里不伪造正文；下载按钮给的是教师当初上传的原始文件，
+ * 两者用途不同，界面上也分开呈现。
+ *
+ * 上下文按**当前是否停在某一节**分流（评审文档「一、#3」）：
+ * 有 `?section=` 时声明 `MATERIAL_SECTION` 并把 section_id 一起发出去，
+ * 否则才声明整份 `MATERIAL`。
  */
 
+import { useCallback } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 
 import { Button } from "@/components/Button/Button";
@@ -15,28 +25,48 @@ import { ErrorState } from "@/components/ErrorState/ErrorState";
 import { Skeleton, SkeletonLines } from "@/components/Skeleton/Skeleton";
 import { AgentActionButton } from "@/features/buddy/components/AgentActionButton/AgentActionButton";
 import { useSetBuddyContext } from "@/features/buddy/hooks/useBuddy";
+import { MaterialDownloadLink } from "@/features/materials/components/MaterialDownloadLink/MaterialDownloadLink";
 import { MaterialOutlineView } from "@/features/materials/components/MaterialOutlineView/MaterialOutlineView";
 import { MaterialStatusBadge } from "@/features/materials/components/MaterialStatusBadge/MaterialStatusBadge";
-import { useMaterial, useMaterialOutline } from "@/features/materials/hooks/useMaterials";
+import {
+  useMaterial,
+  useMaterialOutline,
+  useRetryParse,
+} from "@/features/materials/hooks/useMaterials";
 import { toAppError } from "@/services/http";
 
 import styles from "./MaterialReaderPage.module.css";
 
 export function MaterialReaderPage() {
   const { courseId, materialId } = useParams<{ courseId: string; materialId: string }>();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const activeSectionId = searchParams.get("section") ?? undefined;
 
   const materialQuery = useMaterial(materialId);
   const outlineQuery = useMaterialOutline(materialId);
+  const retry = useRetryParse(courseId ?? "", materialId ?? "");
 
+  // 有活动章节就是「这一节」，否则是「整份资料」——两者注入的范围不同
   useSetBuddyContext({
     courseId,
-    entityType: "material",
+    entityType: activeSectionId ? "material-section" : "material",
     entityId: materialId,
     sectionId: activeSectionId,
     route: "",
   });
+
+  /**
+   * 点目录选中某一节：写进 URL。
+   *
+   * 这是「总结本节」的前提——没有活动章节，页面就没有办法表达
+   * "用户正在看哪一节"（评审文档「一、#3」）。
+   */
+  const selectSection = useCallback(
+    (sectionId: string) => {
+      setSearchParams({ section: sectionId }, { replace: true });
+    },
+    [setSearchParams],
+  );
 
   const backTo = `/courses/${courseId}/materials`;
 
@@ -67,6 +97,9 @@ export function MaterialReaderPage() {
   }
 
   const material = materialQuery.data;
+  const activeSectionTitle = activeSectionId
+    ? outlineQuery.data?.sections.find((section) => section.id === activeSectionId)?.title
+    : undefined;
 
   return (
     <div className={styles.page}>
@@ -86,26 +119,60 @@ export function MaterialReaderPage() {
             <MaterialStatusBadge material={material} />
             <span>{material.typeLabel}</span>
             <span>{material.sizeLabel}</span>
+            {/* 上传者已注销时后端给 null：此时不显示，而不是把 UUID 摆出来 */}
+            {material.uploadedByName ? (
+              <span>上传者：{material.uploadedByName}</span>
+            ) : null}
             <span>上传于 {material.createdAtLabel}</span>
+            {material.sha256 ? (
+              <span
+                className={styles.sha}
+                title={`SHA-256：${material.sha256}`}
+              >
+                校验和 {material.sha256.slice(0, 12)}…
+              </span>
+            ) : null}
+          </div>
+
+          <div className={styles.fileActions}>
+            <MaterialDownloadLink materialId={material.id} filename={material.filename} />
           </div>
         </div>
 
         {material.isReady ? (
-          <AgentActionButton
-            label="总结这份资料"
-            prompt={`请总结《${material.filename}》的主要内容与知识点。`}
-            // 文档 6.9：这个按钮应当创建 SUMMARIZE_CONTEXT + MATERIAL 的 Run，
-            // 而不是把意图写进文本让模型猜
-            agentAction="SUMMARIZE_CONTEXT"
-          />
+          activeSectionId ? (
+            <div className={styles.actions}>
+              <AgentActionButton
+                label="总结本节"
+                prompt={`请总结「${activeSectionTitle ?? "这一节"}」这一节的主要内容。`}
+                // 章节上下文必须带 section_id，后端才会只注入这一节及相邻章节
+                agentAction="SUMMARIZE_CONTEXT"
+              />
+              <AgentActionButton
+                label="总结整份资料"
+                prompt={`请总结《${material.filename}》的主要内容与知识点。`}
+                agentAction="SUMMARIZE_CONTEXT"
+                contextPatch={{ entityType: "material", sectionId: undefined }}
+              />
+            </div>
+          ) : (
+            <AgentActionButton
+              label="总结这份资料"
+              prompt={`请总结《${material.filename}》的主要内容与知识点。`}
+              // 文档 6.9：这个按钮应当创建 SUMMARIZE_CONTEXT + MATERIAL 的 Run，
+              // 而不是把意图写进文本让模型猜
+              agentAction="SUMMARIZE_CONTEXT"
+            />
+          )
         ) : null}
       </header>
 
       {!material.isReady ? (
         <MaterialNotReady
-          status={material.status}
-          statusLabel={material.statusLabel}
-          errorMessage={material.errorMessage}
+          material={material}
+          isRetrying={retry.isPending}
+          retryError={retry.isError ? toAppError(retry.error).message : null}
+          onRetry={() => retry.mutate()}
           backTo={backTo}
         />
       ) : outlineQuery.isPending ? (
@@ -122,7 +189,11 @@ export function MaterialReaderPage() {
           description="解析成功但没有提取到章节内容，可能是文件本身没有可提取的文本（例如扫描版 PDF）。"
         />
       ) : (
-        <MaterialOutlineView outline={outlineQuery.data!} activeSectionId={activeSectionId} />
+        <MaterialOutlineView
+          outline={outlineQuery.data!}
+          activeSectionId={activeSectionId}
+          onSelectSection={selectSection}
+        />
       )}
     </div>
   );
@@ -131,32 +202,69 @@ export function MaterialReaderPage() {
 /* --------------------------- 资料未就绪 --------------------------- */
 
 type MaterialNotReadyProps = {
-  status: string;
-  statusLabel: string;
-  errorMessage: string | null;
+  material: ReturnType<typeof useMaterial>["data"] & object;
+  isRetrying: boolean;
+  retryError: string | null;
+  onRetry: () => void;
   backTo: string;
 };
 
-function MaterialNotReady({ status, statusLabel, errorMessage, backTo }: MaterialNotReadyProps) {
+function MaterialNotReady({
+  material,
+  isRetrying,
+  retryError,
+  onRetry,
+  backTo,
+}: MaterialNotReadyProps) {
   // 契约 4.7：PROCESSING 是排队或处理中，不是失败
-  const inFlight = status === "processing";
+  const inFlight = material.status === "processing";
 
   return (
     <Card>
       <div className={styles.stateCard}>
         <p className={styles.stateTitle}>
-          {inFlight ? "资料正在解析中" : `资料当前状态：${statusLabel}`}
+          {inFlight
+            ? "资料正在解析中"
+            : material.failureStageLabel
+              ? `资料解析失败 · ${material.failureStageLabel}`
+              : `资料当前状态：${material.statusLabel}`}
         </p>
         <p className={styles.stateText}>
           {inFlight
             ? "解析由后台 Worker 执行，完成后这里会自动出现章节大纲与知识点。可以先离开这个页面。"
-            : (errorMessage ?? "这份资料还没有可阅读的解析结果。")}
+            : (material.errorMessage ?? "这份资料还没有可阅读的解析结果。")}
         </p>
-        {!inFlight ? (
+
+        {/* 失败时给出下一步能做什么，而不是只报告失败 */}
+        {material.canRetry ? (
+          <>
+            {material.failureHint ? (
+              <p className={styles.stateHint}>{material.failureHint}</p>
+            ) : null}
+            {retryError ? (
+              <p className={styles.jobId} role="alert">
+                {retryError}
+              </p>
+            ) : null}
+            <div className={styles.stateActions}>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={onRetry}
+                disabled={isRetrying}
+              >
+                {isRetrying ? "正在提交重试…" : "重试解析"}
+              </Button>
+              <Link to={backTo} className={styles.stateLink}>
+                回到资料列表
+              </Link>
+            </div>
+          </>
+        ) : (
           <Link to={backTo} className={styles.stateLink}>
             回到资料列表
           </Link>
-        ) : null}
+        )}
       </div>
     </Card>
   );

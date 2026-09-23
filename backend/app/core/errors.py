@@ -134,6 +134,12 @@ class AssignmentNotOpenError(ApiError):
     code = ErrorCode.ASSIGNMENT_NOT_OPEN
 
 
+class AttachmentAlreadyExistsError(ApiError):
+    """同一份任务下已有同名附件（契约 8.15），需先删除旧附件。"""
+
+    code = ErrorCode.ATTACHMENT_ALREADY_EXISTS
+
+
 class SubmissionAlreadyExistsError(ApiError):
     """同一学生对同一任务已有正式提交（契约 9.2）。"""
 
@@ -206,6 +212,15 @@ class AgentRunNotCancellableError(ApiError):
     """Run 已结束，无法取消（文档 6.2 / 6.10）。"""
 
     code = ErrorCode.AGENT_RUN_NOT_CANCELLABLE
+
+
+class AgentIdempotencyConflictError(ApiError):
+    """同一个 ``client_request_id`` 被复用于不同请求（评审文档「一、#12」）。
+
+    必须报冲突而不是返回上一次的结果：否则用户改完问题重发会拿到上一个问题的答案。
+    """
+
+    code = ErrorCode.AGENT_IDEMPOTENCY_CONFLICT
 
 
 class ValidationError(ApiError):

@@ -32,6 +32,8 @@ class ErrorCode(str, Enum):
     #: 资料已解析完成，无需再次解析（重试解析接口，契约 5.3）
     MATERIAL_ALREADY_READY = "MATERIAL_ALREADY_READY"
     ASSIGNMENT_NOT_OPEN = "ASSIGNMENT_NOT_OPEN"
+    #: 同一份任务下已有同名附件，需要先删除旧附件再上传（契约 8.15）
+    ATTACHMENT_ALREADY_EXISTS = "ATTACHMENT_ALREADY_EXISTS"
     #: 同一学生对同一任务已有正式提交，不能重复初始化上传（契约 9.2）
     SUBMISSION_ALREADY_EXISTS = "SUBMISSION_ALREADY_EXISTS"
     #: 提交未完成或批改未生成；或已有复核结果时重复触发（契约 9.6 / 9.9）
@@ -56,6 +58,8 @@ class ErrorCode(str, Enum):
     AGENT_CONTEXT_NOT_READY = "AGENT_CONTEXT_NOT_READY"
     #: Run 已结束，无法取消（6.2 / 6.10）
     AGENT_RUN_NOT_CANCELLABLE = "AGENT_RUN_NOT_CANCELLABLE"
+    #: 同一个 client_request_id 被用于**不同**的请求（评审文档「一、#12」）
+    AGENT_IDEMPOTENCY_CONFLICT = "AGENT_IDEMPOTENCY_CONFLICT"
 
     # ---------------------------- 框架层错误码 ----------------------------
     #: 请求体或查询参数未通过 Pydantic 校验
@@ -84,6 +88,7 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.MATERIAL_NOT_READY: "课程资料尚未解析完成",
     ErrorCode.MATERIAL_ALREADY_READY: "课程资料已解析完成，无需再次解析",
     ErrorCode.ASSIGNMENT_NOT_OPEN: "任务未发布或已关闭",
+    ErrorCode.ATTACHMENT_ALREADY_EXISTS: "这份任务下已有同名附件，请先删除旧附件",
     ErrorCode.SUBMISSION_ALREADY_EXISTS: "你已经提交过这份实验报告",
     ErrorCode.SUBMISSION_NOT_READY: "提交尚未完成或批改尚未生成，暂时无法执行该操作",
     ErrorCode.GRADE_NOT_REVIEWED: "尚未完成教师复核，不能发布",
@@ -97,6 +102,7 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.AGENT_CONTEXT_UNSUPPORTED: "当前对象类型暂不支持这个操作",
     ErrorCode.AGENT_CONTEXT_NOT_READY: "目标资料尚未解析完成，暂时无法作为上下文",
     ErrorCode.AGENT_RUN_NOT_CANCELLABLE: "该任务已经结束，无法取消",
+    ErrorCode.AGENT_IDEMPOTENCY_CONFLICT: "这次请求与之前用同一个请求编号提交的内容不一致",
     ErrorCode.VALIDATION_ERROR: "请求参数不合法",
     ErrorCode.METHOD_NOT_ALLOWED: "请求方法不被支持",
     ErrorCode.INTERNAL_ERROR: "服务内部错误，请稍后重试",
@@ -120,6 +126,7 @@ DEFAULT_STATUS_CODES: dict[ErrorCode, int] = {
     ErrorCode.MATERIAL_NOT_READY: 409,
     ErrorCode.MATERIAL_ALREADY_READY: 409,
     ErrorCode.ASSIGNMENT_NOT_OPEN: 409,
+    ErrorCode.ATTACHMENT_ALREADY_EXISTS: 409,
     ErrorCode.SUBMISSION_ALREADY_EXISTS: 409,
     ErrorCode.SUBMISSION_NOT_READY: 409,
     ErrorCode.GRADE_NOT_REVIEWED: 409,
@@ -133,6 +140,7 @@ DEFAULT_STATUS_CODES: dict[ErrorCode, int] = {
     ErrorCode.AGENT_CONTEXT_UNSUPPORTED: 422,
     ErrorCode.AGENT_CONTEXT_NOT_READY: 409,
     ErrorCode.AGENT_RUN_NOT_CANCELLABLE: 409,
+    ErrorCode.AGENT_IDEMPOTENCY_CONFLICT: 409,
     ErrorCode.VALIDATION_ERROR: 422,
     ErrorCode.METHOD_NOT_ALLOWED: 405,
     ErrorCode.INTERNAL_ERROR: 500,

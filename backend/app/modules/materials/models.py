@@ -62,6 +62,9 @@ OBJECT_KEY_MAX_LENGTH = 512
 #: 失败原因列长度：只保存可安全展示的摘要，不保存堆栈
 MATERIAL_ERROR_MAX_LENGTH = 500
 
+#: 解析失败阶段码的列长度；常量与 ``jobs`` 侧保持一致
+FAILURE_STAGE_MAX_LENGTH = 32
+
 #: 章节标题列长度
 SECTION_TITLE_MAX_LENGTH = 255
 
@@ -254,6 +257,13 @@ class Material(Base):
     #: 失败原因的安全摘要；非 FAILED 时为 NULL
     error_message: Mapped[str | None] = mapped_column(
         String(MATERIAL_ERROR_MAX_LENGTH), nullable=True
+    )
+
+    #: 解析失败的阶段码（取自 :class:`app.modules.jobs.models.JobFailureStage`）。
+    #: 与 ``error_message`` 一样是解析任务失败信息的投影，让资料列表能直接展示
+    #: 「读取文件 / 文本提取 / 大纲生成」哪一步失败，而不是一句笼统的失败。
+    failure_stage: Mapped[str | None] = mapped_column(
+        String(FAILURE_STAGE_MAX_LENGTH), nullable=True
     )
 
     #: 标记删除时间（契约 5.2）。NULL 表示未删除；非 NULL 的资料从所有读接口中

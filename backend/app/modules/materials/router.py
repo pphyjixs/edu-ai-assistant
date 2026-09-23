@@ -21,6 +21,7 @@ from app.modules.jobs.schemas import JobStatus
 from app.modules.materials import service
 from app.modules.materials.schemas import (
     MaterialDetail,
+    MaterialDownloadUrl,
     MaterialKnowledgePoint,
     MaterialOutline,
     MaterialSection,
@@ -184,7 +185,51 @@ async def get_material(
     material = await service.get_material_for_member(
         session, user=user, material_id=material_id
     )
-    return MaterialDetail.model_validate(material)
+    return (await service.material_details(session, [material]))[0]
+
+
+@materials_router.get(
+    "/materials/{material_id}/download-url",
+    status_code=status.HTTP_200_OK,
+    response_model=MaterialDownloadUrl,
+    summary="资料原文的临时下载地址",
+    description=(
+        "课程成员（教师或学生）可申请，归档课程同样可以；返回短时有效的预签名 GET 地址。"
+        "地址是纯本地签名，每次请求都会拿到新的有效地址，过期后重新请求即可。"
+        "资料不存在、已删除或当前用户不是课程成员时统一 404 RESOURCE_NOT_FOUND；"
+        "对象存储未配置或不可达返回 503 SERVICE_UNAVAILABLE。"
+    ),
+    responses={
+        401: {
+            "model": ErrorResponse,
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+        },
+        404: {
+            "model": ErrorResponse,
+            "description": "资料不存在、已删除，或当前用户不是课程成员（RESOURCE_NOT_FOUND）",
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": "对象存储未配置或不可达（SERVICE_UNAVAILABLE）",
+        },
+    },
+)
+async def get_material_download_url(
+    material_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+    storage: StorageDep,
+    settings: SettingsDep,
+) -> MaterialDownloadUrl:
+    material = await service.get_material_for_member(
+        session, user=user, material_id=material_id
+    )
+    download = await service.presign_material_download(
+        storage, material=material, settings=settings
+    )
+    return MaterialDownloadUrl(
+        download_url=download.url, download_expires_at=download.expires_at
+    )
 
 
 @materials_router.get(
@@ -219,7 +264,7 @@ async def list_materials(
         session, user=user, course_id=course_id, pagination=pagination
     )
     return Page[MaterialDetail](
-        items=[MaterialDetail.model_validate(material) for material in materials],
+        items=await service.material_details(session, materials),
         page=pagination.page,
         page_size=pagination.page_size,
         total=total,

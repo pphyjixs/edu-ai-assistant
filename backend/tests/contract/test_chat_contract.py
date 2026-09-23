@@ -101,7 +101,12 @@ def test_message_schema_exposes_grounded_and_citations(schema: dict) -> None:
     }
 
     citation = _component(schema, "Citation")["properties"]
+    # source_* 是「引用不限于资料」的扩展（评审文档「一、#2」）：
+    # 作业与评分标准也能支撑结论，但没有页码，因此 material_* 可空
     assert set(citation) == {
+        "source_kind",
+        "source_id",
+        "source_label",
         "material_id",
         "material_name",
         "section_id",

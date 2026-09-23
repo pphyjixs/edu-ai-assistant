@@ -157,10 +157,17 @@ class Settings(BaseSettings):
     agent_history_max_messages: int = 20
     #: 上下文检索片段条数上限
     agent_max_retrieved_chunks: int = 8
+    #: 召回阶段取回的片段上限（先多召回再重排，见评审文档「一、#1」）；
+    #: ≥ agent_max_retrieved_chunks 才有意义
+    agent_max_recall_chunks: int = 24
     #: 用户附加 `selected_text` 的长度上限（字符）
     agent_selected_text_max_chars: int = 4_000
     #: 单条来源快照落库的字符上限（避免把整份课件写进审计表）
     agent_source_snapshot_max_chars: int = 500
+    #: 同一 Run 最多允许的领取次数；超过后直接置为 FAILED，避免"永远重试"的任务
+    agent_max_attempts: int = 3
+    #: 课程级「总结课程」最多注入多少份资料的章节大纲（Map/Reduce 的第一级）
+    agent_course_summary_max_materials: int = 12
 
     # ------------------- 提交与批改（Grading）-------------------
     #: 实验报告单文件大小上限（字节），契约 9.2 默认 50 MiB
@@ -174,6 +181,12 @@ class Settings(BaseSettings):
     submission_grade_lease_seconds: int = 300
     #: 送入模型的报告全文上限（字符）；超过直接 FAILED，不截断后宣称成功（契约 9.11）
     submission_grade_max_chars: int = 120_000
+
+    # ------------------- 作业附件（Assignments）-------------------
+    #: 附件单文件大小上限（字节），与课件上传一致：默认 50 MiB
+    assignment_attachment_max_upload_bytes: int = 50 * 1024 * 1024
+    #: 附件上传的完成确认窗口（秒），默认 24 小时（与课件、报告一致）
+    assignment_attachment_confirm_ttl_seconds: int = 24 * 3600
 
     # ------------------------------ AI ------------------------------
     ai_provider: str = ""

@@ -34,20 +34,30 @@ import logging
 import secrets
 import sys
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Callable
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
 from app.core.time import utc_now
-from app.modules.jobs.models import Job, JobStatusValue, JobType
-from app.modules.materials import extraction, outline_ai, repository as repo
+from app.modules.jobs.models import (
+    Job,
+    JobFailureStage,
+    JobStatusValue,
+    JobType,
+)
+from app.modules.materials import extraction, outline_ai
+from app.modules.materials import repository as repo
 from app.modules.materials.models import Material, MaterialStatus
 from app.storage import S3Storage
-from app.storage.errors import StorageObjectNotFoundError
+from app.storage.errors import (
+    StorageObjectNotFoundError,
+    StorageUnavailableError,
+    StorageVerificationError,
+)
 
 logger = logging.getLogger("app.materials.worker")
 
@@ -128,6 +138,7 @@ async def claim_next(
         job.lease_expires_at = now + timedelta(seconds=lease_seconds)
         material.status = MaterialStatus.PROCESSING
         material.error_message = None
+        material.failure_stage = None
         material.updated_at = now
         await session.commit()
         return ClaimedJob(job_id=job.id, material=material, run_token=run_token)
@@ -256,9 +267,11 @@ async def _write_success(
     job_row.status = JobStatusValue.SUCCEEDED
     job_row.progress = 100
     job_row.error = None
+    job_row.failure_stage = None
     job_row.finished_at = now
     fresh.status = MaterialStatus.READY
     fresh.error_message = None
+    fresh.failure_stage = None
     fresh.updated_at = now
     await session.commit()
     return True
@@ -271,8 +284,13 @@ async def _write_failure(
     run_token: str,
     message: str,
     now: datetime,
+    stage: JobFailureStage = JobFailureStage.UNKNOWN,
 ) -> None:
-    """把任务与资料置为 ``FAILED``；资料已删除或令牌不匹配时放弃。"""
+    """把任务与资料置为 ``FAILED``；资料已删除或令牌不匹配时放弃。
+
+    ``stage`` 是**阶段码**（评审文档 #4.8）：前端据此区分「文件读不出来」
+    「文本提取不出来」和「模型侧失败」，而不是三种情况都画成同一句话。
+    """
     async with session_factory() as session:
         fresh = await repo.get_visible_material_for_update(session, material_id)
         if fresh is None:
@@ -292,9 +310,11 @@ async def _write_failure(
             return
         job_row.status = JobStatusValue.FAILED
         job_row.error = message
+        job_row.failure_stage = stage.value
         job_row.finished_at = now
         fresh.status = MaterialStatus.FAILED
         fresh.error_message = message
+        fresh.failure_stage = stage.value
         fresh.updated_at = now
         await session.commit()
 
@@ -314,13 +334,14 @@ async def run_job(
     aborted = {"flag": False}
     stop_event = asyncio.Event()
 
-    async def fail(message: str) -> None:
+    async def fail(message: str, stage: JobFailureStage = JobFailureStage.UNKNOWN) -> None:
         await _write_failure(
             session_factory,
             material_id=material.id,
             run_token=run_token,
             message=message,
             now=utc_now(),
+            stage=stage,
         )
 
     async def heartbeat_loop() -> None:
@@ -363,15 +384,20 @@ async def run_job(
             )
         except StorageVerificationError as exc:
             logger.warning("对象复核失败（material_id=%s）：%s", material.id, exc)
-            await fail(f"对象内容校验失败（{exc.reason}），已拒绝解析")
+            await fail(
+                f"对象内容校验失败（{exc.reason}），已拒绝解析",
+                JobFailureStage.DOWNLOAD,
+            )
             return
         except StorageObjectNotFoundError as exc:
             logger.warning("对象不存在（material_id=%s）：%s", material.id, exc)
-            await fail("对象存储中不存在该文件，无法解析")
+            await fail("对象存储中不存在该文件，无法解析", JobFailureStage.DOWNLOAD)
             return
         except StorageUnavailableError as exc:
             logger.warning("读取对象失败（material_id=%s）：%s", material.id, exc)
-            await fail("解析服务暂时无法读取文件，请稍后重试")
+            await fail(
+                "解析服务暂时无法读取文件，请稍后重试", JobFailureStage.DOWNLOAD
+            )
             return
 
         if aborted["flag"]:
@@ -387,7 +413,7 @@ async def run_job(
                 chunk_chars=settings.material_parse_chunk_chars,
             )
         except extraction.ExtractError as exc:
-            await fail(str(exc))
+            await fail(str(exc), JobFailureStage.NATIVE_EXTRACT)
             return
 
         if aborted["flag"]:
@@ -399,7 +425,7 @@ async def run_job(
                 ai_client = ai_client_factory()
         except Exception as exc:  # noqa: BLE001 - 客户端构造失败按生成失败处理
             logger.warning("模型客户端构造失败：%s", exc)
-            await fail("模型服务暂不可用，请稍后重试")
+            await fail("模型服务暂不可用，请稍后重试", JobFailureStage.MODEL_CALL)
             return
 
         try:
@@ -414,7 +440,7 @@ async def run_job(
             )
         except outline_ai.OutlineGenerationError as exc:
             logger.warning("大纲生成失败（material_id=%s）：%s", material.id, exc)
-            await fail(str(exc))
+            await fail(str(exc), JobFailureStage.OUTLINE_GENERATION)
             return
         finally:
             close = getattr(ai_client, "close", None)
@@ -479,7 +505,7 @@ async def run_pending_batch(
                 settings=settings,
                 ai_client_factory=ai_client_factory,
             )
-        except Exception:  # noqa: BLE001 - 单条任务的意外异常不拖垮整批
+        except Exception:
             logger.exception(
                 "任务执行出现意外异常（job=%s material=%s）",
                 claimed.job_id,
@@ -492,8 +518,9 @@ async def run_pending_batch(
                     run_token=claimed.run_token,
                     message=_safe_error(sys.exc_info()[1]),
                     now=utc_now(),
+                    stage=JobFailureStage.UNKNOWN,
                 )
-            except Exception:  # noqa: BLE001 - 数据库也不可用时只能记录
+            except Exception:
                 logger.exception("写入失败状态时再次出错（job=%s）", claimed.job_id)
         processed += 1
     return processed

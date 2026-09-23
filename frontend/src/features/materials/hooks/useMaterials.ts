@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { queryKeys } from "@/services/queryKeys";
+import { formatMonthDayTime } from "@/utils/datetime";
 
 import { materialsApi } from "../api";
 import { uploadMaterial, type UploadStep } from "../api/upload";
@@ -43,6 +44,28 @@ export function useMaterialOutline(materialId: string | undefined) {
     queryFn: ({ signal }) => materialsApi.outline(materialId as string, signal),
     select: toMaterialOutlineVM,
     enabled: Boolean(materialId),
+    retry: false,
+  });
+}
+
+/**
+ * 资料原文的下载地址（契约 4.9）。
+ *
+ * 地址有效期默认 10 分钟，且**每次请求都是新签的**，因此这里刻意不缓存
+ * （`staleTime: 0`）：用户点下载前重新取一次，比拿着一个可能已过期的链接
+ * 打开更可靠。页面只在资料存在时请求。
+ */
+export function useMaterialDownloadUrl(materialId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.materialDownloadUrl(materialId ?? "none"),
+    queryFn: ({ signal }) => materialsApi.downloadUrl(materialId as string, signal),
+    select: (dto) => ({
+      url: dto.download_url,
+      expiresAtLabel: formatMonthDayTime(dto.download_expires_at),
+      expiresAt: dto.download_expires_at,
+    }),
+    enabled: Boolean(materialId),
+    staleTime: 0,
     retry: false,
   });
 }

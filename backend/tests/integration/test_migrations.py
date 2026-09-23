@@ -49,6 +49,7 @@ EXPECTED_TABLES = {
     "practice_attempt_answers",
     "practice_generation_attempts",
     "assignments",
+    "assignment_attachments",
     "assignment_rubric_versions",
     "assignment_rubric_items",
     "agent_runs",
@@ -107,7 +108,7 @@ EXPECTED_ENUMS: dict[str, list[str]] = {
 COMPARE_OPTIONS = {"compare_type": True, "compare_server_default": True}
 
 #: head 对应的最新迁移
-REVISION = "0013_jobs_contract"
+REVISION = "01d9328a578b"
 
 #: jobs 的两条契约约束（库侧实际名字带双重前缀，见命名约定）
 JOBS_PROGRESS_CONSTRAINT = "ck_jobs_ck_jobs_progress_range"

@@ -14,6 +14,8 @@ dist/
 
 # ----------------------------- 测试 / 覆盖率 -------------------------
 .pytest_cache/
+# 超时机制自测用的内层用例目录（隐藏目录，pytest 不收集；由测试运行时生成）
+backend/tests/.inner_tmp/
 .coverage
 htmlcov/
 .mypy_cache/

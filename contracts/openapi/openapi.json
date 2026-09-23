@@ -1571,6 +1571,95 @@
         }
       }
     },
+    "/api/v1/materials/{material_id}/download-url": {
+      "get": {
+        "tags": [
+          "materials"
+        ],
+        "summary": "资料原文的临时下载地址",
+        "description": "课程成员（教师或学生）可申请，归档课程同样可以；返回短时有效的预签名 GET 地址。地址是纯本地签名，每次请求都会拿到新的有效地址，过期后重新请求即可。资料不存在、已删除或当前用户不是课程成员时统一 404 RESOURCE_NOT_FOUND；对象存储未配置或不可达返回 503 SERVICE_UNAVAILABLE。",
+        "operationId": "get_material_download_url_api_v1_materials__material_id__download_url_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "material_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Material Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaterialDownloadUrl"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资料不存在、已删除，或当前用户不是课程成员（RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "对象存储未配置或不可达（SERVICE_UNAVAILABLE）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/courses/{course_id}/materials": {
       "get": {
         "tags": [
@@ -3517,13 +3606,559 @@
         }
       }
     },
+    "/api/v1/assignments/{assignment_id}/reopen": {
+      "post": {
+        "tags": [
+          "assignments"
+        ],
+        "summary": "重新开启实验任务",
+        "description": "仅课程创建教师可调用。`CLOSED` 重新开启为 `PUBLISHED` 并清除 `closed_at`；已发布幂等返回（且不改变 `published_at`）；`DRAFT`/`ARCHIVED` 与归档课程返回 409。重新开启不改变评分规则版本，也不清除学生此前的提交。请求体可省略或传 {}。",
+        "operationId": "reopen_assignment_api_v1_assignments__assignment_id__reopen_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "assignment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Assignment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "重新开启成功（含幂等重放）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssignmentDetailSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "学生调用为 ROLE_FORBIDDEN；非创建教师为 COURSE_FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "课程/任务不存在，或当前用户不可见（RESOURCE_NOT_FOUND；学生视角下的草稿一律按不存在处理）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "课程已归档（COURSE_ARCHIVED）或状态不可重新开启（ASSIGNMENT_NOT_OPEN）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "请求体为显式 null 或含未声明字段（VALIDATION_ERROR）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "没有请求字段：可省略请求体或传空对象 {}"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/assignments/{assignment_id}/attachments": {
+      "get": {
+        "tags": [
+          "assignments"
+        ],
+        "summary": "作业附件列表",
+        "description": "课程成员（教师或学生）可读；草稿任务对学生按不存在处理（404）。只返回**已完成**上传的附件，未完成的草稿态不可见；每个附件都带现场签发的短时下载地址。",
+        "operationId": "list_attachments_api_v1_assignments__assignment_id__attachments_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "assignment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Assignment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "查询成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AssignmentAttachmentSchema"
+                  },
+                  "title": "Response List Attachments Api V1 Assignments  Assignment Id  Attachments Get"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务或附件不存在、对当前用户不可见，或不是课程成员（统一 RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/assignments/{assignment_id}/attachments/uploads": {
+      "post": {
+        "tags": [
+          "assignments"
+        ],
+        "summary": "初始化附件上传",
+        "description": "仅课程创建教师可调用。返回预签名 PUT 地址与必须原样携带的请求头；只接受 PDF、PPTX、DOCX，单文件不超过 `ASSIGNMENT_ATTACHMENT_MAX_UPLOAD_BYTES`。同一任务下已有**同名**附件时返回 409 ATTACHMENT_ALREADY_EXISTS（请先删除旧附件）；重复初始化会复用未完成的上传记录并换发新的地址。",
+        "operationId": "init_attachment_upload_api_v1_assignments__assignment_id__attachments_uploads_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "assignment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Assignment Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttachmentUploadInitRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "已签发上传地址",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttachmentUploadInitResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "学生调用为 ROLE_FORBIDDEN；非创建教师为 COURSE_FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务或附件不存在、对当前用户不可见，或不是课程成员（统一 RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "课程或任务已归档（COURSE_ARCHIVED / ASSIGNMENT_NOT_OPEN），或已有同名附件（ATTACHMENT_ALREADY_EXISTS）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "文件类型、MIME、大小、sha256 不满足规则，或对象缺失/不一致、确认窗口已过（UPLOAD_INVALID）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "对象存储未配置或不可达（SERVICE_UNAVAILABLE）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/assignments/{assignment_id}/attachments/uploads/{upload_id}/complete": {
+      "post": {
+        "tags": [
+          "assignments"
+        ],
+        "summary": "完成附件上传",
+        "description": "仅课程创建教师可调用。确认对象存在且大小、类型、摘要与初始化声明一致后，附件正式生效并对课程成员可见；同一 `upload_id` 重复确认**幂等**返回。请求体可省略或传 {}。",
+        "operationId": "complete_attachment_upload_api_v1_assignments__assignment_id__attachments_uploads__upload_id__complete_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "upload_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Upload Id"
+            }
+          },
+          {
+            "name": "assignment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Assignment Id"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "附件已生效（含幂等重放）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssignmentAttachmentSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "学生调用为 ROLE_FORBIDDEN；非创建教师为 COURSE_FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务或附件不存在、对当前用户不可见，或不是课程成员（统一 RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "课程或任务已归档，或已有同名附件（ATTACHMENT_ALREADY_EXISTS）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "对象缺失或与初始化声明不一致、确认窗口已过（UPLOAD_INVALID），或请求体不为空对象（VALIDATION_ERROR）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "对象存储未配置或不可达（SERVICE_UNAVAILABLE）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "没有请求字段：可省略请求体或传空对象 {}"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/assignments/{assignment_id}/attachments/{attachment_id}": {
+      "delete": {
+        "tags": [
+          "assignments"
+        ],
+        "summary": "删除作业附件",
+        "description": "仅课程创建教师可调用。删除后附件立即从列表消失；对象存储中的文件尽力删除，删除失败不影响本次删除结果。附件不存在或不属于该任务时返回 404。",
+        "operationId": "delete_attachment_api_v1_assignments__assignment_id__attachments__attachment_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Attachment Id"
+            }
+          },
+          {
+            "name": "assignment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Assignment Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "删除成功"
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "学生调用为 ROLE_FORBIDDEN；非创建教师为 COURSE_FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "任务或附件不存在、对当前用户不可见，或不是课程成员（统一 RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "课程已归档（COURSE_ARCHIVED）或任务已归档（ASSIGNMENT_NOT_OPEN）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/chat-sessions/{session_id}/runs": {
       "post": {
         "tags": [
           "agent"
         ],
         "summary": "创建 Agent Run",
-        "description": "在指定会话中创建一个异步 Agent Run：同一事务写入用户消息、`agent_runs` 与 `AGENT_RUN` 任务后立即返回 202，模型调用由独立 Worker 完成。`client_request_id` 在用户范围内唯一，网络重试会返回同一个 Run。第一版每个会话同时只允许一个未结束的 Run。",
+        "description": "在指定会话中创建一个异步 Agent Run：同一事务写入用户消息、`agent_runs` 与 `AGENT_RUN` 任务后立即返回 202，模型调用由独立 Worker 完成。`client_request_id` 在用户范围内唯一，网络重试会返回同一个 Run；把同一个编号用于**不同内容**会返回 409 AGENT_IDEMPOTENCY_CONFLICT。`action` 与 `context` 的组合必须落在允许矩阵内，否则 422。第一版每个会话同时只允许一个未结束的 Run。",
         "operationId": "create_agent_run_api_v1_chat_sessions__session_id__runs_post",
         "security": [
           {
@@ -3584,7 +4219,7 @@
             }
           },
           "409": {
-            "description": "AGENT_RUN_IN_PROGRESS（该会话已有未结束的 Run）、COURSE_ARCHIVED（课程已归档）或 AGENT_CONTEXT_NOT_READY（资料未解析完成）",
+            "description": "AGENT_RUN_IN_PROGRESS（该会话已有未结束的 Run）、AGENT_IDEMPOTENCY_CONFLICT（同一请求编号被用于不同内容）、COURSE_ARCHIVED（课程已归档）或 AGENT_CONTEXT_NOT_READY（资料未解析完成）",
             "content": {
               "application/json": {
                 "schema": {
@@ -3624,6 +4259,174 @@
             }
           }
         }
+      },
+      "get": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "会话内的 Agent Run 列表",
+        "description": "按创建时间倒序返回本会话的 Run（新→旧），含状态、失败阶段与错误摘要。前端用它把 FAILED / CANCELLED 的原因显示在对应提问下面，因此刷新页面后用户仍然知道上一次为什么没有回答。只返回自己的会话。",
+        "operationId": "list_agent_runs_api_v1_chat_sessions__session_id__runs_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 50,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Run 列表（最多 limit 条）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_AgentRunSchema_"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "会话不存在、不是所有者，或目标对象不属于本课程/不可见（RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "limit 超出范围（VALIDATION_ERROR）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/chat-sessions/{session_id}/active-run": {
+      "get": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "会话中尚未结束的 Run",
+        "description": "打开会话时先调用它：`run` 非空则按正常节奏恢复轮询，因此刷新页面不会让「正在生成」的提示消失，也不会丢掉已经发出的提问。没有进行中的 Run 时返回 200 且 `run` 为 null——这是常规状态，不是错误。",
+        "operationId": "get_active_agent_run_api_v1_chat_sessions__session_id__active_run_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "进行中的 Run，或 null",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentActiveRunSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "会话不存在、不是所有者，或目标对象不属于本课程/不可见（RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/agent-runs/{run_id}": {
@@ -3632,7 +4435,7 @@
           "agent"
         ],
         "summary": "查询 Agent Run",
-        "description": "仅 Run 的所有者可读。`status` / `progress` / `error` 来自关联任务；成功后会带上 `output_message_id` 与本次实际注入的来源列表。",
+        "description": "仅 Run 的所有者可读。`status` / `progress` / `error` / `failure_stage` 来自关联任务；成功后会带上 `output_message_id`、`evidence_level` 与本次实际注入的来源列表。",
         "operationId": "get_agent_run_api_v1_agent_runs__run_id__get",
         "security": [
           {
@@ -4884,6 +5687,23 @@
   },
   "components": {
     "schemas": {
+      "AgentActiveRunSchema": {
+        "properties": {
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentRunSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "AgentActiveRunSchema",
+        "description": "``GET /chat-sessions/{session_id}/active-run`` 的响应。\n\n刻意**不用 404** 表示「没有进行中的 Run」：页面打开时这是常规情况，\n用 200 + ``run: null`` 可以让前端一条路径处理，也避免把正常状态记进\n错误监控（评审文档「一、#11」）。"
+      },
       "AgentRunAction": {
         "type": "string",
         "enum": [
@@ -4944,6 +5764,28 @@
               }
             ],
             "title": "Error"
+          },
+          "failure_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Stage"
+          },
+          "evidence_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Level"
           },
           "created_at": {
             "type": "string",
@@ -5075,6 +5917,79 @@
         ],
         "title": "AgentRunSourceSchema",
         "description": "来源快照的展示视图（不含 ``snapshot`` 原文）。"
+      },
+      "AssignmentAttachmentSchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "assignment_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Assignment Id"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "content_type": {
+            "type": "string",
+            "title": "Content Type"
+          },
+          "size": {
+            "type": "integer",
+            "title": "Size"
+          },
+          "sha256": {
+            "type": "string",
+            "title": "Sha256"
+          },
+          "uploaded_by": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Uploaded By"
+          },
+          "uploaded_by_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uploaded By Name"
+          },
+          "download_url": {
+            "type": "string",
+            "title": "Download Url"
+          },
+          "download_expires_at": {
+            "type": "string",
+            "title": "Download Expires At"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "assignment_id",
+          "filename",
+          "content_type",
+          "size",
+          "sha256",
+          "uploaded_by",
+          "download_url",
+          "download_expires_at",
+          "created_at"
+        ],
+        "title": "AssignmentAttachmentSchema",
+        "description": "作业附件（对课程成员可见，含临时下载地址）。"
       },
       "AssignmentDetailSchema": {
         "properties": {
@@ -5282,6 +6197,79 @@
         "title": "AssignmentSummarySchema",
         "description": "任务摘要（列表用，不含说明与评分项）。"
       },
+      "AttachmentUploadInitRequest": {
+        "properties": {
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "content_type": {
+            "type": "string",
+            "title": "Content Type"
+          },
+          "size": {
+            "type": "integer",
+            "title": "Size"
+          },
+          "sha256": {
+            "type": "string",
+            "title": "Sha256"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "filename",
+          "content_type",
+          "size",
+          "sha256"
+        ],
+        "title": "AttachmentUploadInitRequest",
+        "description": "初始化附件上传（契约 8.15），字段与课件上传完全一致。"
+      },
+      "AttachmentUploadInitResponse": {
+        "properties": {
+          "upload_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Upload Id"
+          },
+          "upload_url": {
+            "type": "string",
+            "title": "Upload Url"
+          },
+          "method": {
+            "type": "string",
+            "title": "Method"
+          },
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Headers"
+          },
+          "expires_at": {
+            "type": "string",
+            "title": "Expires At"
+          },
+          "confirm_deadline_at": {
+            "type": "string",
+            "title": "Confirm Deadline At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "upload_id",
+          "upload_url",
+          "method",
+          "headers",
+          "expires_at",
+          "confirm_deadline_at"
+        ],
+        "title": "AttachmentUploadInitResponse",
+        "description": "初始化响应：与课件上传同形的三段式凭据。"
+      },
       "ChatMessageSchema": {
         "properties": {
           "id": {
@@ -5387,13 +6375,55 @@
       },
       "Citation": {
         "properties": {
-          "material_id": {
+          "source_kind": {
             "type": "string",
-            "format": "uuid",
+            "title": "Source Kind",
+            "default": "MATERIAL"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "source_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Label"
+          },
+          "material_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Material Id"
           },
           "material_name": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Material Name"
           },
           "section_id": {
@@ -5424,11 +6454,25 @@
             "title": "Source Type"
           },
           "location_start": {
-            "type": "integer",
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Location Start"
           },
           "location_end": {
-            "type": "integer",
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Location End"
           },
           "page": {
@@ -5449,18 +6493,12 @@
         },
         "type": "object",
         "required": [
-          "material_id",
-          "material_name",
-          "section_id",
-          "section_title",
           "source_type",
-          "location_start",
-          "location_end",
           "page",
           "quote"
         ],
         "title": "Citation",
-        "description": "引用（契约 6.6）：取自命中片段，带可核对的原文摘录。"
+        "description": "引用（契约 6.6）：取自命中片段，带可核对的原文摘录。\n\n引用**不限于资料**（评审文档「一、#2」）：``source_kind`` 为 ``MATERIAL`` 时\n指向资料片段/章节，前端可跳转到阅读器；为 ``ASSIGNMENT`` 时指向作业与评分标准，\n这类业务对象没有页码，``material_*`` / ``location_*`` 为空，前端只做展示。\n统一用 ``source_id`` 表示来源自身的 ID，``source_label`` 表示可直接展示的名称。"
       },
       "CourseCreateRequest": {
         "properties": {
@@ -5762,6 +6800,7 @@
           "MATERIAL_NOT_READY",
           "MATERIAL_ALREADY_READY",
           "ASSIGNMENT_NOT_OPEN",
+          "ATTACHMENT_ALREADY_EXISTS",
           "SUBMISSION_ALREADY_EXISTS",
           "SUBMISSION_NOT_READY",
           "GRADE_NOT_REVIEWED",
@@ -5775,6 +6814,7 @@
           "AGENT_CONTEXT_UNSUPPORTED",
           "AGENT_CONTEXT_NOT_READY",
           "AGENT_RUN_NOT_CANCELLABLE",
+          "AGENT_IDEMPOTENCY_CONFLICT",
           "VALIDATION_ERROR",
           "METHOD_NOT_ALLOWED",
           "INTERNAL_ERROR",
@@ -6086,6 +7126,17 @@
             ],
             "title": "Error"
           },
+          "failure_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Stage"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -6255,6 +7306,28 @@
             "format": "uuid",
             "title": "Uploaded By"
           },
+          "uploaded_by_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uploaded By Name"
+          },
+          "sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sha256"
+          },
           "error_message": {
             "anyOf": [
               {
@@ -6265,6 +7338,17 @@
               }
             ],
             "title": "Error Message"
+          },
+          "failure_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Stage"
           },
           "created_at": {
             "type": "string",
@@ -6290,6 +7374,25 @@
         ],
         "title": "MaterialDetail",
         "description": "资料详情（契约 4.7）。"
+      },
+      "MaterialDownloadUrl": {
+        "properties": {
+          "download_url": {
+            "type": "string",
+            "title": "Download Url"
+          },
+          "download_expires_at": {
+            "type": "string",
+            "title": "Download Expires At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "download_url",
+          "download_expires_at"
+        ],
+        "title": "MaterialDownloadUrl",
+        "description": "资料原文的临时下载地址（契约 4.9）。\n\n地址是预签名 ``GET``，**纯本地计算**生成：每次请求都会拿到新的有效地址，\n过期后前端重新请求一次即可，服务端不缓存也不需要额外的会话记录。"
       },
       "MaterialKnowledgePoint": {
         "properties": {
@@ -6524,6 +7627,37 @@
         ],
         "title": "MaterialUploadInitResponse",
         "description": "初始化上传响应（契约 4.3）。"
+      },
+      "Page_AgentRunSchema_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AgentRunSchema"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "page",
+          "page_size",
+          "total"
+        ],
+        "title": "Page[AgentRunSchema]"
       },
       "Page_AssignmentSummarySchema_": {
         "properties": {
