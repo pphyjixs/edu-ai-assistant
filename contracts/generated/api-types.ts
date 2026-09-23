@@ -709,6 +709,166 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/assignments/{assignment_id}/submissions/uploads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 初始化报告上传
+         * @description 仅课程学生可调用。任务必须已发布且仍允许提交；已存在正式提交时返回 `409 SUBMISSION_ALREADY_EXISTS`。重新初始化会复用仍处于 `UPLOADING` 的提交并签发**新的**上传会话与对象键，旧会话被标记为已替代。
+         */
+        post: operations["init_submission_upload_api_v1_assignments__assignment_id__submissions_uploads_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assignments/{assignment_id}/submissions/uploads/{upload_id}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 完成提交
+         * @description 仅课程学生可调用。确认对象存在且大小、类型、SHA-256 与初始化声明一致后，写入提交时间、补交标志与**当时**的评分规则版本，状态置为 `SUBMITTED`。同一 upload 重复完成返回首次结果；请求体可省略或传 {}。
+         */
+        post: operations["complete_submission_upload_api_v1_assignments__assignment_id__submissions_uploads__upload_id__complete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assignments/{assignment_id}/submissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 提交列表
+         * @description 课程创建教师返回全班正式提交（`submitted_at` 非空），按 `submitted_at DESC, id DESC` 分页；学生只返回本人 0–1 条提交（未完成时返回空列表，刷新后仍可找回自己的记录）；其他教师返回 403 ROLE_FORBIDDEN。归档课程仍可读。
+         */
+        get: operations["list_submissions_api_v1_assignments__assignment_id__submissions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/submissions/{submission_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 提交详情
+         * @description 提交本人或课程创建教师可读；正式提交额外返回短时有效的 `download_url`（预签名 GET）与 `download_expires_at`。学生的提交在成绩发布前不含任何AI 分数或教师未发布分数。非成员、非本人与不存在的提交统一 404。
+         */
+        get: operations["get_submission_api_v1_submissions__submission_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/submissions/{submission_id}/grade": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 触发或重试 AI 批改
+         * @description 仅课程创建教师可调用。`SUBMITTED` 首次触发创建唯一 `SUBMISSION_GRADE` 任务；`GRADING` 且任务在排队或租约有效时幂等返回原任务；`FAILED` 或租约过期的 `RUNNING` 复用原 job ID 重置为 `PENDING`；`REVIEW_REQUIRED`、`PUBLISHED` 与未完成提交返回 409 SUBMISSION_NOT_READY。请求体可省略或传 {}。
+         */
+        post: operations["request_grade_api_v1_submissions__submission_id__grade_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/submissions/{submission_id}/grade-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 批改详情
+         * @description 课程创建教师始终可读（含未复核、未发布）。学生仅在该提交 `PUBLISHED` 后可读本人批改，且响应中不包含 AI 原始建议分与差异（`ai_score`、`ai_comment`、`suggested_total_score`、`ai_summary` 为 null）。批改尚未生成时教师返回 409 SUBMISSION_NOT_READY，批改失败返回 502 AI_JOB_FAILED。
+         */
+        get: operations["get_grade_review_api_v1_submissions__submission_id__grade_review_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/grade-reviews/{review_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * 教师复核
+         * @description 仅课程创建教师可调用。提交**完整快照**：`summary` 与 `items` 必填，items 必须恰好覆盖该提交所引用评分版本的全部评分项，不多不少、不重复。分数只接受 JSON number、最多两位小数且不超过该项满分，最终总分由分项求和。保存后写入复核人与复核时间，AI 原始字段保持不变。
+         */
+        patch: operations["update_grade_review_api_v1_grade_reviews__review_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/grade-reviews/{review_id}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 发布成绩
+         * @description 仅课程创建教师可调用。必须已完成教师复核，否则返回 409 GRADE_NOT_REVIEWED；发布后写入 `published_at` 并把提交置为 `PUBLISHED`；重复发布幂等，不覆盖首次 `published_at`。请求体可省略或传 {}。
+         */
+        post: operations["publish_grade_review_api_v1_grade_reviews__review_id__publish_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/jobs/{job_id}": {
         parameters: {
             query?: never;
@@ -739,8 +899,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * 重试练习生成任务
-         * @description 仅课程创建教师可调用。只接受 FAILED，或租约已过期的 RUNNING（崩溃遗留）；复用原练习与 job ID，清除运行令牌、租约、错误与旧题目，重置为 GENERATING / PENDING 供 Worker 重新领取。MATERIAL_PARSE 任务返回 409 JOB_NOT_RETRYABLE（改走资料重试接口）；SUBMISSION_GRADE 未实现，统一 404。请求体可省略或传 {}。
+         * 重试异步任务
+         * @description 仅资源管理者（课程创建教师）可调用。只接受 FAILED，或租约已过期的 RUNNING（崩溃遗留）；复用原资源与 job ID，清除运行令牌、租约与错误，重置为 PENDING 供 Worker 重新领取。MATERIAL_PARSE 任务返回 409 JOB_NOT_RETRYABLE（改走资料重试接口，见 5.3）；SUBMISSION_GRADE 任务按 9.6 的分流重置（与 `POST /submissions/{id}/grade` 共用逻辑），已有复核结果时返回 409 SUBMISSION_NOT_READY。请求体可省略或传 {}。
          */
         post: operations["retry_job_api_v1_jobs__job_id__retry_post"];
         delete?: never;
@@ -1143,7 +1303,7 @@ export interface components {
          * @description 机器可读的错误标识。
          * @enum {string}
          */
-        ErrorCode: "AUTH_INVALID_CREDENTIALS" | "AUTH_TOKEN_EXPIRED" | "AUTH_EMAIL_TAKEN" | "AUTH_TOO_MANY_ATTEMPTS" | "ROLE_FORBIDDEN" | "COURSE_FORBIDDEN" | "COURSE_ARCHIVED" | "RESOURCE_NOT_FOUND" | "INVITE_CODE_INVALID" | "UPLOAD_INVALID" | "RUBRIC_SCORE_MISMATCH" | "MATERIAL_NOT_READY" | "MATERIAL_ALREADY_READY" | "ASSIGNMENT_NOT_OPEN" | "GRADE_NOT_REVIEWED" | "AI_JOB_FAILED" | "CHAT_CONFLICT" | "PRACTICE_NOT_READY" | "PRACTICE_ALREADY_ATTEMPTED" | "JOB_NOT_RETRYABLE" | "AGENT_RUN_IN_PROGRESS" | "AGENT_CONTEXT_UNSUPPORTED" | "AGENT_CONTEXT_NOT_READY" | "AGENT_RUN_NOT_CANCELLABLE" | "VALIDATION_ERROR" | "METHOD_NOT_ALLOWED" | "INTERNAL_ERROR" | "SERVICE_UNAVAILABLE";
+        ErrorCode: "AUTH_INVALID_CREDENTIALS" | "AUTH_TOKEN_EXPIRED" | "AUTH_EMAIL_TAKEN" | "AUTH_TOO_MANY_ATTEMPTS" | "ROLE_FORBIDDEN" | "COURSE_FORBIDDEN" | "COURSE_ARCHIVED" | "RESOURCE_NOT_FOUND" | "INVITE_CODE_INVALID" | "UPLOAD_INVALID" | "RUBRIC_SCORE_MISMATCH" | "MATERIAL_NOT_READY" | "MATERIAL_ALREADY_READY" | "ASSIGNMENT_NOT_OPEN" | "SUBMISSION_ALREADY_EXISTS" | "SUBMISSION_NOT_READY" | "GRADE_NOT_REVIEWED" | "GRADE_ALREADY_PUBLISHED" | "AI_JOB_FAILED" | "CHAT_CONFLICT" | "PRACTICE_NOT_READY" | "PRACTICE_ALREADY_ATTEMPTED" | "JOB_NOT_RETRYABLE" | "AGENT_RUN_IN_PROGRESS" | "AGENT_CONTEXT_UNSUPPORTED" | "AGENT_CONTEXT_NOT_READY" | "AGENT_RUN_NOT_CANCELLABLE" | "VALIDATION_ERROR" | "METHOD_NOT_ALLOWED" | "INTERNAL_ERROR" | "SERVICE_UNAVAILABLE";
         /**
          * ErrorResponse
          * @description 所有非 2xx 响应的统一结构。
@@ -1158,6 +1318,83 @@ export interface components {
          */
         ErrorResponse: {
             error: components["schemas"]["ErrorBody"];
+        };
+        /**
+         * GradeItemDetailSchema
+         * @description 批改后的单个评分项（契约 9.10）。
+         */
+        GradeItemDetailSchema: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Rubric Item Id
+             * Format: uuid
+             */
+            rubric_item_id: string;
+            /** Order */
+            order: number;
+            /** Title */
+            title: string;
+            /** Max Score */
+            max_score: number;
+            /** Ai Score */
+            ai_score: number | null;
+            /** Final Score */
+            final_score: number;
+            /** Ai Comment */
+            ai_comment: string | null;
+            /** Evidence Quote */
+            evidence_quote: string;
+            /**
+             * Evidence Source Type
+             * @enum {string}
+             */
+            evidence_source_type: "PDF_PAGE" | "DOCX_PARAGRAPH";
+            /** Evidence Location Start */
+            evidence_location_start: number;
+            /** Evidence Location End */
+            evidence_location_end: number;
+            /** Error Type */
+            error_type: string;
+            /** Improvement Suggestion */
+            improvement_suggestion: string;
+            /** Teacher Comment */
+            teacher_comment: string;
+        };
+        /**
+         * GradeReviewDetailSchema
+         * @description 批改详情（契约 9.10）。
+         */
+        GradeReviewDetailSchema: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Submission Id
+             * Format: uuid
+             */
+            submission_id: string;
+            /** Ai Summary */
+            ai_summary: string | null;
+            /** Teacher Summary */
+            teacher_summary: string;
+            /** Suggested Total Score */
+            suggested_total_score: number | null;
+            /** Final Total Score */
+            final_total_score: number;
+            /** Items */
+            items: components["schemas"]["GradeItemDetailSchema"][];
+            /** Reviewed By */
+            reviewed_by: string | null;
+            /** Reviewed At */
+            reviewed_at: string | null;
+            /** Published At */
+            published_at: string | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1502,6 +1739,17 @@ export interface components {
             /** Total */
             total: number;
         };
+        /** Page[SubmissionSummarySchema] */
+        Page_SubmissionSummarySchema_: {
+            /** Items */
+            items: components["schemas"]["SubmissionSummarySchema"][];
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+            /** Total */
+            total: number;
+        };
         /**
          * PracticeAttemptAnswerSchema
          * @description 答题结果中的单题明细（契约 7.7）。
@@ -1739,6 +1987,132 @@ export interface components {
             order: number;
         };
         /**
+         * SubmissionDetailSchema
+         * @description 提交详情：摘要 + 内容摘要 + 临时下载地址。
+         */
+        SubmissionDetailSchema: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Assignment Id
+             * Format: uuid
+             */
+            assignment_id: string;
+            /**
+             * Course Id
+             * Format: uuid
+             */
+            course_id: string;
+            /**
+             * Student Id
+             * Format: uuid
+             */
+            student_id: string;
+            status: components["schemas"]["SubmissionStatus"];
+            /** Filename */
+            filename: string;
+            /** Content Type */
+            content_type: string;
+            /** Size */
+            size: number;
+            /** Is Late */
+            is_late: boolean;
+            /** Rubric Version */
+            rubric_version: number | null;
+            /** Submitted At */
+            submitted_at: string | null;
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+            /** Sha256 */
+            sha256: string;
+            /** Download Url */
+            download_url: string | null;
+            /** Download Expires At */
+            download_expires_at: string | null;
+        };
+        /**
+         * SubmissionStatus
+         * @description 提交状态（契约 9.1）。
+         * @enum {string}
+         */
+        SubmissionStatus: "UPLOADING" | "SUBMITTED" | "GRADING" | "REVIEW_REQUIRED" | "PUBLISHED" | "FAILED";
+        /**
+         * SubmissionSummarySchema
+         * @description 提交摘要（列表用）。
+         */
+        SubmissionSummarySchema: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Assignment Id
+             * Format: uuid
+             */
+            assignment_id: string;
+            /**
+             * Course Id
+             * Format: uuid
+             */
+            course_id: string;
+            /**
+             * Student Id
+             * Format: uuid
+             */
+            student_id: string;
+            status: components["schemas"]["SubmissionStatus"];
+            /** Filename */
+            filename: string;
+            /** Content Type */
+            content_type: string;
+            /** Size */
+            size: number;
+            /** Is Late */
+            is_late: boolean;
+            /** Rubric Version */
+            rubric_version: number | null;
+            /** Submitted At */
+            submitted_at: string | null;
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+        };
+        /**
+         * SubmissionUploadInitSchema
+         * @description 初始化上传响应（契约 9.2）。
+         */
+        SubmissionUploadInitSchema: {
+            /**
+             * Submission Id
+             * Format: uuid
+             */
+            submission_id: string;
+            /**
+             * Upload Id
+             * Format: uuid
+             */
+            upload_id: string;
+            /** Upload Url */
+            upload_url: string;
+            /** Method */
+            method: string;
+            /** Headers */
+            headers: {
+                [key: string]: string;
+            };
+            /** Expires At */
+            expires_at: string;
+            /** Confirm Deadline At */
+            confirm_deadline_at: string;
+        };
+        /**
          * UserProfile
          * @description 当前用户资料；用于 ``GET /users/me`` 与注册响应。
          */
@@ -1914,6 +2288,37 @@ export interface components {
             rubric_items?: components["schemas"]["RubricItemRequest"][];
         };
         /**
+         * GradeItemReviewRequest
+         * @description 复核请求中的单个评分项（契约 9.8）。
+         */
+        GradeItemReviewRequest: {
+            /**
+             * Rubric Item Id
+             * Format: uuid
+             */
+            rubric_item_id: string;
+            /**
+             * Final Score
+             * @description 不小于 0、最多 2 位小数（0.01 的整数倍），且不得超过该评分项的满分；只接受 JSON number（拒绝布尔、字符串、NaN 与 Infinity）
+             */
+            final_score: number;
+            /**
+             * Teacher Comment
+             * @default
+             */
+            teacher_comment: string;
+        };
+        /**
+         * GradeReviewUpdateRequest
+         * @description 教师复核请求（契约 9.8）：完整快照，summary 与 items 都必填。
+         */
+        GradeReviewUpdateRequest: {
+            /** Summary */
+            summary: string;
+            /** Items */
+            items: components["schemas"]["GradeItemReviewRequest"][];
+        };
+        /**
          * PracticeAttemptAnswerRequest
          * @description 单题提交（契约 7.6）：单选为选项 ID、判断为布尔、简答为文本。
          *
@@ -1971,6 +2376,24 @@ export interface components {
             max_score: number;
             /** Order */
             order: number;
+        };
+        /**
+         * SubmissionUploadInitRequest
+         * @description 初始化报告上传请求（契约 9.2）。
+         *
+         *     只声明类型与必填；长度、白名单、MIME 一致性、大小范围与 sha256 格式由
+         *     service 判定并返回 ``UPLOAD_INVALID``，避免被框架统一降级成
+         *     ``VALIDATION_ERROR``。
+         */
+        SubmissionUploadInitRequest: {
+            /** Filename */
+            filename: string;
+            /** Content Type */
+            content_type: string;
+            /** Size */
+            size: number;
+            /** Sha256 */
+            sha256: string;
         };
     };
     responses: never;
@@ -4709,6 +5132,640 @@ export interface operations {
                 };
             };
             /** @description 任务已结束（AGENT_RUN_NOT_CANCELLABLE） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 请求体为显式 null 或含未声明字段（VALIDATION_ERROR） */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 未预期的服务端错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    init_submission_upload_api_v1_assignments__assignment_id__submissions_uploads_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assignment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SubmissionUploadInitRequest"];
+            };
+        };
+        responses: {
+            /** @description 上传会话已创建，返回预签名信息 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubmissionUploadInitSchema"];
+                };
+            };
+            /** @description Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 仅课程学生可调用；其他角色返回 ROLE_FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 资源不存在，或当前用户不可见（RESOURCE_NOT_FOUND；他人提交与未发布的批改一律按不存在处理） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 课程已归档（COURSE_ARCHIVED）、任务未发布或已关闭（ASSIGNMENT_NOT_OPEN）或已有正式提交（SUBMISSION_ALREADY_EXISTS） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 请求结构不合法（VALIDATION_ERROR）；文件类型、MIME、大小或 sha256 不合规（UPLOAD_INVALID） */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 未预期的服务端错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    complete_submission_upload_api_v1_assignments__assignment_id__submissions_uploads__upload_id__complete_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assignment_id: string;
+                upload_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description 提交完成（含幂等重放） */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubmissionDetailSchema"];
+                };
+            };
+            /** @description Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 仅课程学生可调用；其他角色返回 ROLE_FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 资源不存在，或当前用户不可见（RESOURCE_NOT_FOUND；他人提交与未发布的批改一律按不存在处理） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 课程已归档（COURSE_ARCHIVED）、任务未发布或已关闭（ASSIGNMENT_NOT_OPEN）或已有正式提交（SUBMISSION_ALREADY_EXISTS） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 请求结构不合法（VALIDATION_ERROR）；对象缺失、大小/类型/校验值不符或确认窗口已过（UPLOAD_INVALID） */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 未预期的服务端错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_submissions_api_v1_assignments__assignment_id__submissions_get: {
+        parameters: {
+            query?: {
+                /** @description 页码，从 1 开始 */
+                page?: number;
+                /** @description 每页条数，最大 100 */
+                page_size?: number;
+            };
+            header?: never;
+            path: {
+                assignment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 查询成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_SubmissionSummarySchema_"];
+                };
+            };
+            /** @description Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 学生以外且非课程创建教师（ROLE_FORBIDDEN） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 资源不存在，或当前用户不可见（RESOURCE_NOT_FOUND；他人提交与未发布的批改一律按不存在处理） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 分页参数不合法（VALIDATION_ERROR） */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 未预期的服务端错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_submission_api_v1_submissions__submission_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                submission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 查询成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubmissionDetailSchema"];
+                };
+            };
+            /** @description Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 其他教师（非课程创建教师）返回 COURSE_FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 资源不存在，或当前用户不可见（RESOURCE_NOT_FOUND；他人提交与未发布的批改一律按不存在处理） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description 未预期的服务端错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 对象存储未配置或不可达（SERVICE_UNAVAILABLE） */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    request_grade_api_v1_submissions__submission_id__grade_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                submission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description 已受理，返回批改任务 */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobStatus"];
+                };
+            };
+            /** @description Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 学生调用为学生角色越权（ROLE_FORBIDDEN）；其他教师为非创建教师（COURSE_FORBIDDEN） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 资源不存在，或当前用户不可见（RESOURCE_NOT_FOUND；他人提交与未发布的批改一律按不存在处理） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 课程已归档（COURSE_ARCHIVED）、提交未就绪（SUBMISSION_NOT_READY）、未完成复核（GRADE_NOT_REVIEWED）或成绩已发布（GRADE_ALREADY_PUBLISHED） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 请求体为显式 null 或含未声明字段（VALIDATION_ERROR） */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 未预期的服务端错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_grade_review_api_v1_submissions__submission_id__grade_review_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                submission_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 查询成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GradeReviewDetailSchema"];
+                };
+            };
+            /** @description Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 学生调用为学生角色越权（ROLE_FORBIDDEN）；其他教师为非创建教师（COURSE_FORBIDDEN） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 资源不存在，或当前用户不可见（RESOURCE_NOT_FOUND；他人提交与未发布的批改一律按不存在处理） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 课程已归档（COURSE_ARCHIVED）、提交未就绪（SUBMISSION_NOT_READY）、未完成复核（GRADE_NOT_REVIEWED）或成绩已发布（GRADE_ALREADY_PUBLISHED） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description 未预期的服务端错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 批改任务失败（AI_JOB_FAILED，details.job_id 指向任务） */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    update_grade_review_api_v1_grade_reviews__review_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                review_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GradeReviewUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description 复核已保存，返回批改详情 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GradeReviewDetailSchema"];
+                };
+            };
+            /** @description Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 学生调用为学生角色越权（ROLE_FORBIDDEN）；其他教师为非创建教师（COURSE_FORBIDDEN） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 资源不存在，或当前用户不可见（RESOURCE_NOT_FOUND；他人提交与未发布的批改一律按不存在处理） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 课程已归档（COURSE_ARCHIVED）、提交未就绪（SUBMISSION_NOT_READY）、未完成复核（GRADE_NOT_REVIEWED）或成绩已发布（GRADE_ALREADY_PUBLISHED） */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 请求结构、字段类型/长度不合法，或评分项未覆盖评分版本（VALIDATION_ERROR） */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 未预期的服务端错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    publish_grade_review_api_v1_grade_reviews__review_id__publish_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                review_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description 发布成功（含幂等重放） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GradeReviewDetailSchema"];
+                };
+            };
+            /** @description Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 学生调用为学生角色越权（ROLE_FORBIDDEN）；其他教师为非创建教师（COURSE_FORBIDDEN） */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 资源不存在，或当前用户不可见（RESOURCE_NOT_FOUND；他人提交与未发布的批改一律按不存在处理） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 课程已归档（COURSE_ARCHIVED）、提交未就绪（SUBMISSION_NOT_READY）、未完成复核（GRADE_NOT_REVIEWED）或成绩已发布（GRADE_ALREADY_PUBLISHED） */
             409: {
                 headers: {
                     [name: string]: unknown;

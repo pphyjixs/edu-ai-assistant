@@ -18,6 +18,8 @@ dist/
 htmlcov/
 .mypy_cache/
 .ruff_cache/
+# 测试超时事件与线程栈快照（本地产物，见 backend/tests/conftest.py）
+test-reports/
 
 # ----------------------------- 环境变量 -----------------------------
 .env

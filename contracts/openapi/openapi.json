@@ -3806,6 +3806,891 @@
         }
       }
     },
+    "/api/v1/assignments/{assignment_id}/submissions/uploads": {
+      "post": {
+        "tags": [
+          "grading"
+        ],
+        "summary": "初始化报告上传",
+        "description": "仅课程学生可调用。任务必须已发布且仍允许提交；已存在正式提交时返回 `409 SUBMISSION_ALREADY_EXISTS`。重新初始化会复用仍处于 `UPLOADING` 的提交并签发**新的**上传会话与对象键，旧会话被标记为已替代。",
+        "operationId": "init_submission_upload_api_v1_assignments__assignment_id__submissions_uploads_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "assignment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Assignment Id"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "上传会话已创建，返回预签名信息",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmissionUploadInitSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "请求结构不合法（VALIDATION_ERROR）；文件类型、MIME、大小或 sha256 不合规（UPLOAD_INVALID）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "仅课程学生可调用；其他角色返回 ROLE_FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在，或当前用户不可见（RESOURCE_NOT_FOUND；他人提交与未发布的批改一律按不存在处理）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "课程已归档（COURSE_ARCHIVED）、任务未发布或已关闭（ASSIGNMENT_NOT_OPEN）或已有正式提交（SUBMISSION_ALREADY_EXISTS）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmissionUploadInitRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/assignments/{assignment_id}/submissions/uploads/{upload_id}/complete": {
+      "post": {
+        "tags": [
+          "grading"
+        ],
+        "summary": "完成提交",
+        "description": "仅课程学生可调用。确认对象存在且大小、类型、SHA-256 与初始化声明一致后，写入提交时间、补交标志与**当时**的评分规则版本，状态置为 `SUBMITTED`。同一 upload 重复完成返回首次结果；请求体可省略或传 {}。",
+        "operationId": "complete_submission_upload_api_v1_assignments__assignment_id__submissions_uploads__upload_id__complete_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "assignment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Assignment Id"
+            }
+          },
+          {
+            "name": "upload_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Upload Id"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "提交完成（含幂等重放）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmissionDetailSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "请求结构不合法（VALIDATION_ERROR）；对象缺失、大小/类型/校验值不符或确认窗口已过（UPLOAD_INVALID）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "仅课程学生可调用；其他角色返回 ROLE_FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在，或当前用户不可见（RESOURCE_NOT_FOUND；他人提交与未发布的批改一律按不存在处理）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "课程已归档（COURSE_ARCHIVED）、任务未发布或已关闭（ASSIGNMENT_NOT_OPEN）或已有正式提交（SUBMISSION_ALREADY_EXISTS）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "没有请求字段：可省略请求体或传空对象 {}"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/assignments/{assignment_id}/submissions": {
+      "get": {
+        "tags": [
+          "grading"
+        ],
+        "summary": "提交列表",
+        "description": "课程创建教师返回全班正式提交（`submitted_at` 非空），按 `submitted_at DESC, id DESC` 分页；学生只返回本人 0–1 条提交（未完成时返回空列表，刷新后仍可找回自己的记录）；其他教师返回 403 ROLE_FORBIDDEN。归档课程仍可读。",
+        "operationId": "list_submissions_api_v1_assignments__assignment_id__submissions_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "assignment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Assignment Id"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "页码，从 1 开始",
+              "default": 1,
+              "title": "Page"
+            },
+            "description": "页码，从 1 开始"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "每页条数，最大 100",
+              "default": 20,
+              "title": "Page Size"
+            },
+            "description": "每页条数，最大 100"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "查询成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_SubmissionSummarySchema_"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "学生以外且非课程创建教师（ROLE_FORBIDDEN）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在，或当前用户不可见（RESOURCE_NOT_FOUND；他人提交与未发布的批改一律按不存在处理）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "分页参数不合法（VALIDATION_ERROR）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/submissions/{submission_id}": {
+      "get": {
+        "tags": [
+          "grading"
+        ],
+        "summary": "提交详情",
+        "description": "提交本人或课程创建教师可读；正式提交额外返回短时有效的 `download_url`（预签名 GET）与 `download_expires_at`。学生的提交在成绩发布前不含任何AI 分数或教师未发布分数。非成员、非本人与不存在的提交统一 404。",
+        "operationId": "get_submission_api_v1_submissions__submission_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "submission_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Submission Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "查询成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmissionDetailSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "其他教师（非课程创建教师）返回 COURSE_FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在，或当前用户不可见（RESOURCE_NOT_FOUND；他人提交与未发布的批改一律按不存在处理）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "对象存储未配置或不可达（SERVICE_UNAVAILABLE）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/submissions/{submission_id}/grade": {
+      "post": {
+        "tags": [
+          "grading"
+        ],
+        "summary": "触发或重试 AI 批改",
+        "description": "仅课程创建教师可调用。`SUBMITTED` 首次触发创建唯一 `SUBMISSION_GRADE` 任务；`GRADING` 且任务在排队或租约有效时幂等返回原任务；`FAILED` 或租约过期的 `RUNNING` 复用原 job ID 重置为 `PENDING`；`REVIEW_REQUIRED`、`PUBLISHED` 与未完成提交返回 409 SUBMISSION_NOT_READY。请求体可省略或传 {}。",
+        "operationId": "request_grade_api_v1_submissions__submission_id__grade_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "submission_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Submission Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "已受理，返回批改任务",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobStatus"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在，或当前用户不可见（RESOURCE_NOT_FOUND；他人提交与未发布的批改一律按不存在处理）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "课程已归档（COURSE_ARCHIVED）、提交未就绪（SUBMISSION_NOT_READY）、未完成复核（GRADE_NOT_REVIEWED）或成绩已发布（GRADE_ALREADY_PUBLISHED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "请求体为显式 null 或含未声明字段（VALIDATION_ERROR）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "学生调用为学生角色越权（ROLE_FORBIDDEN）；其他教师为非创建教师（COURSE_FORBIDDEN）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "没有请求字段：可省略请求体或传空对象 {}"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/submissions/{submission_id}/grade-review": {
+      "get": {
+        "tags": [
+          "grading"
+        ],
+        "summary": "批改详情",
+        "description": "课程创建教师始终可读（含未复核、未发布）。学生仅在该提交 `PUBLISHED` 后可读本人批改，且响应中不包含 AI 原始建议分与差异（`ai_score`、`ai_comment`、`suggested_total_score`、`ai_summary` 为 null）。批改尚未生成时教师返回 409 SUBMISSION_NOT_READY，批改失败返回 502 AI_JOB_FAILED。",
+        "operationId": "get_grade_review_api_v1_submissions__submission_id__grade_review_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "submission_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Submission Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "查询成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GradeReviewDetailSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在，或当前用户不可见（RESOURCE_NOT_FOUND；他人提交与未发布的批改一律按不存在处理）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "课程已归档（COURSE_ARCHIVED）、提交未就绪（SUBMISSION_NOT_READY）、未完成复核（GRADE_NOT_REVIEWED）或成绩已发布（GRADE_ALREADY_PUBLISHED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "批改任务失败（AI_JOB_FAILED，details.job_id 指向任务）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "学生调用为学生角色越权（ROLE_FORBIDDEN）；其他教师为非创建教师（COURSE_FORBIDDEN）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/grade-reviews/{review_id}": {
+      "patch": {
+        "tags": [
+          "grading"
+        ],
+        "summary": "教师复核",
+        "description": "仅课程创建教师可调用。提交**完整快照**：`summary` 与 `items` 必填，items 必须恰好覆盖该提交所引用评分版本的全部评分项，不多不少、不重复。分数只接受 JSON number、最多两位小数且不超过该项满分，最终总分由分项求和。保存后写入复核人与复核时间，AI 原始字段保持不变。",
+        "operationId": "update_grade_review_api_v1_grade_reviews__review_id__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "review_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Review Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "复核已保存，返回批改详情",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GradeReviewDetailSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在，或当前用户不可见（RESOURCE_NOT_FOUND；他人提交与未发布的批改一律按不存在处理）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "课程已归档（COURSE_ARCHIVED）、提交未就绪（SUBMISSION_NOT_READY）、未完成复核（GRADE_NOT_REVIEWED）或成绩已发布（GRADE_ALREADY_PUBLISHED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "请求结构、字段类型/长度不合法，或评分项未覆盖评分版本（VALIDATION_ERROR）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "学生调用为学生角色越权（ROLE_FORBIDDEN）；其他教师为非创建教师（COURSE_FORBIDDEN）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GradeReviewUpdateRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/grade-reviews/{review_id}/publish": {
+      "post": {
+        "tags": [
+          "grading"
+        ],
+        "summary": "发布成绩",
+        "description": "仅课程创建教师可调用。必须已完成教师复核，否则返回 409 GRADE_NOT_REVIEWED；发布后写入 `published_at` 并把提交置为 `PUBLISHED`；重复发布幂等，不覆盖首次 `published_at`。请求体可省略或传 {}。",
+        "operationId": "publish_grade_review_api_v1_grade_reviews__review_id__publish_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "review_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Review Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "发布成功（含幂等重放）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GradeReviewDetailSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在，或当前用户不可见（RESOURCE_NOT_FOUND；他人提交与未发布的批改一律按不存在处理）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "课程已归档（COURSE_ARCHIVED）、提交未就绪（SUBMISSION_NOT_READY）、未完成复核（GRADE_NOT_REVIEWED）或成绩已发布（GRADE_ALREADY_PUBLISHED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "请求体为显式 null 或含未声明字段（VALIDATION_ERROR）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "学生调用为学生角色越权（ROLE_FORBIDDEN）；其他教师为非创建教师（COURSE_FORBIDDEN）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "没有请求字段：可省略请求体或传空对象 {}"
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/jobs/{job_id}": {
       "get": {
         "tags": [
@@ -3890,8 +4775,8 @@
         "tags": [
           "jobs"
         ],
-        "summary": "重试练习生成任务",
-        "description": "仅课程创建教师可调用。只接受 FAILED，或租约已过期的 RUNNING（崩溃遗留）；复用原练习与 job ID，清除运行令牌、租约、错误与旧题目，重置为 GENERATING / PENDING 供 Worker 重新领取。MATERIAL_PARSE 任务返回 409 JOB_NOT_RETRYABLE（改走资料重试接口）；SUBMISSION_GRADE 未实现，统一 404。请求体可省略或传 {}。",
+        "summary": "重试异步任务",
+        "description": "仅资源管理者（课程创建教师）可调用。只接受 FAILED，或租约已过期的 RUNNING（崩溃遗留）；复用原资源与 job ID，清除运行令牌、租约与错误，重置为 PENDING 供 Worker 重新领取。MATERIAL_PARSE 任务返回 409 JOB_NOT_RETRYABLE（改走资料重试接口，见 5.3）；SUBMISSION_GRADE 任务按 9.6 的分流重置（与 `POST /submissions/{id}/grade` 共用逻辑），已有复核结果时返回 409 SUBMISSION_NOT_READY。请求体可省略或传 {}。",
         "operationId": "retry_job_api_v1_jobs__job_id__retry_post",
         "security": [
           {
@@ -4877,7 +5762,10 @@
           "MATERIAL_NOT_READY",
           "MATERIAL_ALREADY_READY",
           "ASSIGNMENT_NOT_OPEN",
+          "SUBMISSION_ALREADY_EXISTS",
+          "SUBMISSION_NOT_READY",
           "GRADE_NOT_REVIEWED",
+          "GRADE_ALREADY_PUBLISHED",
           "AI_JOB_FAILED",
           "CHAT_CONFLICT",
           "PRACTICE_NOT_READY",
@@ -4915,6 +5803,212 @@
             "request_id": "3f6a1c2e9d8b4a0f9e7c5b3a1d2f4e60"
           }
         }
+      },
+      "GradeItemDetailSchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "rubric_item_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Rubric Item Id"
+          },
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "max_score": {
+            "type": "number",
+            "title": "Max Score"
+          },
+          "ai_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Score"
+          },
+          "final_score": {
+            "type": "number",
+            "title": "Final Score"
+          },
+          "ai_comment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Comment"
+          },
+          "evidence_quote": {
+            "type": "string",
+            "title": "Evidence Quote"
+          },
+          "evidence_source_type": {
+            "type": "string",
+            "enum": [
+              "PDF_PAGE",
+              "DOCX_PARAGRAPH"
+            ],
+            "title": "Evidence Source Type"
+          },
+          "evidence_location_start": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Evidence Location Start"
+          },
+          "evidence_location_end": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Evidence Location End"
+          },
+          "error_type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "improvement_suggestion": {
+            "type": "string",
+            "title": "Improvement Suggestion"
+          },
+          "teacher_comment": {
+            "type": "string",
+            "title": "Teacher Comment"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "rubric_item_id",
+          "order",
+          "title",
+          "max_score",
+          "ai_score",
+          "final_score",
+          "ai_comment",
+          "evidence_quote",
+          "evidence_source_type",
+          "evidence_location_start",
+          "evidence_location_end",
+          "error_type",
+          "improvement_suggestion",
+          "teacher_comment"
+        ],
+        "title": "GradeItemDetailSchema",
+        "description": "批改后的单个评分项（契约 9.10）。"
+      },
+      "GradeReviewDetailSchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "submission_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Submission Id"
+          },
+          "ai_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ai Summary"
+          },
+          "teacher_summary": {
+            "type": "string",
+            "title": "Teacher Summary"
+          },
+          "suggested_total_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Suggested Total Score"
+          },
+          "final_total_score": {
+            "type": "number",
+            "title": "Final Total Score"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/GradeItemDetailSchema"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "reviewed_by": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed By"
+          },
+          "reviewed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed At"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "submission_id",
+          "ai_summary",
+          "teacher_summary",
+          "suggested_total_score",
+          "final_total_score",
+          "items",
+          "reviewed_by",
+          "reviewed_at",
+          "published_at"
+        ],
+        "title": "GradeReviewDetailSchema",
+        "description": "批改详情（契约 9.10）。"
       },
       "HTTPValidationError": {
         "properties": {
@@ -5644,6 +6738,37 @@
         ],
         "title": "Page[PracticeSetSummarySchema]"
       },
+      "Page_SubmissionSummarySchema_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SubmissionSummarySchema"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "page",
+          "page_size",
+          "total"
+        ],
+        "title": "Page[SubmissionSummarySchema]"
+      },
       "PracticeAttemptAnswerSchema": {
         "properties": {
           "question_id": {
@@ -6177,6 +7302,279 @@
         "title": "RubricItemSchema",
         "description": "评分项响应。"
       },
+      "SubmissionDetailSchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "assignment_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Assignment Id"
+          },
+          "course_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Course Id"
+          },
+          "student_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Student Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SubmissionStatus"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "content_type": {
+            "type": "string",
+            "title": "Content Type"
+          },
+          "size": {
+            "type": "integer",
+            "title": "Size"
+          },
+          "is_late": {
+            "type": "boolean",
+            "title": "Is Late"
+          },
+          "rubric_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rubric Version"
+          },
+          "submitted_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Submitted At"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          },
+          "sha256": {
+            "type": "string",
+            "title": "Sha256"
+          },
+          "download_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Download Url"
+          },
+          "download_expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Download Expires At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "assignment_id",
+          "course_id",
+          "student_id",
+          "status",
+          "filename",
+          "content_type",
+          "size",
+          "is_late",
+          "rubric_version",
+          "submitted_at",
+          "created_at",
+          "updated_at",
+          "sha256",
+          "download_url",
+          "download_expires_at"
+        ],
+        "title": "SubmissionDetailSchema",
+        "description": "提交详情：摘要 + 内容摘要 + 临时下载地址。"
+      },
+      "SubmissionStatus": {
+        "type": "string",
+        "enum": [
+          "UPLOADING",
+          "SUBMITTED",
+          "GRADING",
+          "REVIEW_REQUIRED",
+          "PUBLISHED",
+          "FAILED"
+        ],
+        "title": "SubmissionStatus",
+        "description": "提交状态（契约 9.1）。"
+      },
+      "SubmissionSummarySchema": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "assignment_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Assignment Id"
+          },
+          "course_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Course Id"
+          },
+          "student_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Student Id"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SubmissionStatus"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "content_type": {
+            "type": "string",
+            "title": "Content Type"
+          },
+          "size": {
+            "type": "integer",
+            "title": "Size"
+          },
+          "is_late": {
+            "type": "boolean",
+            "title": "Is Late"
+          },
+          "rubric_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rubric Version"
+          },
+          "submitted_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Submitted At"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "assignment_id",
+          "course_id",
+          "student_id",
+          "status",
+          "filename",
+          "content_type",
+          "size",
+          "is_late",
+          "rubric_version",
+          "submitted_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "SubmissionSummarySchema",
+        "description": "提交摘要（列表用）。"
+      },
+      "SubmissionUploadInitSchema": {
+        "properties": {
+          "submission_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Submission Id"
+          },
+          "upload_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Upload Id"
+          },
+          "upload_url": {
+            "type": "string",
+            "title": "Upload Url"
+          },
+          "method": {
+            "type": "string",
+            "title": "Method"
+          },
+          "headers": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Headers"
+          },
+          "expires_at": {
+            "type": "string",
+            "title": "Expires At"
+          },
+          "confirm_deadline_at": {
+            "type": "string",
+            "title": "Confirm Deadline At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "submission_id",
+          "upload_id",
+          "upload_url",
+          "method",
+          "headers",
+          "expires_at",
+          "confirm_deadline_at"
+        ],
+        "title": "SubmissionUploadInitSchema",
+        "description": "初始化上传响应（契约 9.2）。"
+      },
       "UserProfile": {
         "properties": {
           "id": {
@@ -6530,6 +7928,63 @@
         "title": "AssignmentUpdateRequest",
         "type": "object"
       },
+      "GradeItemReviewRequest": {
+        "additionalProperties": false,
+        "description": "复核请求中的单个评分项（契约 9.8）。",
+        "properties": {
+          "rubric_item_id": {
+            "format": "uuid",
+            "title": "Rubric Item Id",
+            "type": "string"
+          },
+          "final_score": {
+            "description": "不小于 0、最多 2 位小数（0.01 的整数倍），且不得超过该评分项的满分；只接受 JSON number（拒绝布尔、字符串、NaN 与 Infinity）",
+            "minimum": 0,
+            "multipleOf": 0.01,
+            "title": "Final Score",
+            "type": "number"
+          },
+          "teacher_comment": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Teacher Comment",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rubric_item_id",
+          "final_score"
+        ],
+        "title": "GradeItemReviewRequest",
+        "type": "object"
+      },
+      "GradeReviewUpdateRequest": {
+        "additionalProperties": false,
+        "description": "教师复核请求（契约 9.8）：完整快照，summary 与 items 都必填。",
+        "properties": {
+          "summary": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Summary",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/GradeItemReviewRequest"
+            },
+            "maxItems": 50,
+            "minItems": 1,
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "summary",
+          "items"
+        ],
+        "title": "GradeReviewUpdateRequest",
+        "type": "object"
+      },
       "PracticeAttemptAnswerRequest": {
         "additionalProperties": false,
         "description": "单题提交（契约 7.6）：单选为选项 ID、判断为布尔、简答为文本。\n\n类型严格：只接受 JSON 字符串或 JSON 布尔值，``0`` / ``1`` 不会被转成布尔值。",
@@ -6647,6 +8102,36 @@
           "order"
         ],
         "title": "RubricItemRequest",
+        "type": "object"
+      },
+      "SubmissionUploadInitRequest": {
+        "additionalProperties": false,
+        "description": "初始化报告上传请求（契约 9.2）。\n\n只声明类型与必填；长度、白名单、MIME 一致性、大小范围与 sha256 格式由\nservice 判定并返回 ``UPLOAD_INVALID``，避免被框架统一降级成\n``VALIDATION_ERROR``。",
+        "properties": {
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "content_type": {
+            "title": "Content Type",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "filename",
+          "content_type",
+          "size",
+          "sha256"
+        ],
+        "title": "SubmissionUploadInitRequest",
         "type": "object"
       }
     },

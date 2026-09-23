@@ -149,16 +149,53 @@ python scripts/practice_worker.py
 `AI_API_KEY` / `AI_TIMEOUT_SECONDS`；未配置时领取到的任务会以「模型服务未配置」
 写入 `FAILED`，配置完成后可通过 `POST /jobs/{job_id}/retry` 重新生成。
 
-发布顺序：**先执行数据库迁移，再启动两个 Worker，最后开放前端入口**。
-`0009_practice_sets` 与 `0010_assignments` 都只新增表与原生枚举，不与前序迁移冲突，
-可在同一发布中按序执行。
+**提交与批改（Grading）配套**：实验报告的 AI 批改由**第三个独立常驻进程**执行，
+同样不在 Vercel 请求进程内调用模型：
+
+```bash
+python scripts/grading_worker.py
+```
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `SUBMISSION_GRADE_LEASE_SECONDS` | `300` | 批改任务租约（秒）；崩溃后超过租约的 `RUNNING` 任务可由重试接口回收 |
+| `SUBMISSION_GRADE_MAX_CHARS` | `120000` | 送入模型的报告全文上限（字符），超出直接 `FAILED`，不截断后宣称成功 |
+| `GRADING_WORKER_POLL_SECONDS` | `5` | 队列空时的轮询间隔 |
+| `GRADING_WORKER_BATCH_SIZE` | `5` | 单批最多领取的任务数 |
+
+提交与批改模块自身的其余配置：
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `SUBMISSION_MAX_UPLOAD_BYTES` | `52428800` | 实验报告单文件大小上限（50 MiB） |
+| `SUBMISSION_UPLOAD_CONFIRM_TTL_SECONDS` | `86400` | 报告上传的完成确认窗口（24 小时） |
+| `SUBMISSION_UPLOAD_DELETE_BUFFER_SECONDS` | `3600` | 报告上传对象清理缓冲（秒）：预签名 PUT 到期后再等该时长才删除孤立对象，覆盖晚到 PUT 的重建窗口 |
+
+批改 Worker **需要对象存储**（从桶里下载报告原文并复核大小与 SHA-256，复用 `STORAGE_*`）
+与模型配置（复用 `AI_BASE_URL` / `AI_MODEL` / `AI_API_KEY` / `AI_TIMEOUT_SECONDS`）；
+模型未配置时领取到的任务会以「模型服务未配置」写入 `FAILED`，配置后可通过
+`POST /submissions/{submission_id}/grade` 重新触发。过期或被替代的报告上传对象由
+独立维护命令清理：`python scripts/cleanup_expired_submission_uploads.py`
+（幂等，可周期运行；删除对象后会再次 HeadObject 复查，发现晚到 PUT 则本轮不标记过期）。
+
+发布顺序：**先执行数据库迁移（`0010 → 0011_agent_runs → 0012_submissions_grading`），再启动全部 Worker（解析、练习、批改与 Agent），最后开放前端入口**。
+`0009_practice_sets`、`0010_assignments`、`0011_agent_runs` 与 `0012_submissions_grading` 都只新增表与原生枚举，
+不与前序迁移冲突，可在同一发布中按序执行。
 
 **实验任务（Assignments）配套**：`0010_assignments` 只新增 `assignments`、
 `assignment_rubric_versions`、`assignment_rubric_items` 三张表与 `assignment_status`
 原生枚举。该模块**不新增环境变量、不需要对象存储、也不需要额外 Worker**——
 创建、修改、发布、关闭与查询都在 API 请求内同步完成（评分规则版本在写入事务内追加）。
-迁移可回退（`downgrade` 逐个删除表、索引与外键，最后删除枚举），
-`backend/tests/integration/test_migrations.py` 覆盖 `0009 → 0010 → 0009 → 0010` 往返。
+迁移可回退（`downgrade` 逐个删除表、索引与外键，最后删除枚举）。
+
+**提交与批改（Grading）配套**：`0012_submissions_grading` 只新增 `submissions`、
+`submission_upload_sessions`、`grade_reviews`、`grade_items`、`submission_grade_attempts`
+五张表与 `submission_status`、`submission_grade_attempt_status` 两个原生枚举；
+`grade_items.rubric_item_id` 与 `submissions.rubric_version_id` 是指向历史评分版本的
+**RESTRICT 外键**（删除版本会被拒绝，历史批改不能静默失联）。
+迁移可回退（`downgrade` 按外键反序删表，最后删除枚举），
+`backend/tests/integration/test_migrations.py` 覆盖 `0011_agent_runs → 0012 → 0011_agent_runs → 0012` 往返，
+并断言提交唯一、批改唯一、评分项唯一与分数范围约束在库侧生效。
 
 开发、Preview 和 Production 使用独立配置。任何密钥都不能使用 `VITE_` 前缀，也不能提交到仓库。
 

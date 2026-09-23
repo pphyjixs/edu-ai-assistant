@@ -148,6 +148,45 @@ Access Token 有效期 1 小时，Refresh Token 自登录签发起有效 7 天�
 
 正式成绩必须由教师发布。学生只能查看自己的已发布结果。
 
+实现说明（第 9 节八个接口，迁移 `0012_submissions_grading`）：
+
+- **一张提交一份**：`submissions` 上 `(assignment_id, student_id)` 唯一，并发由数据库兜住；
+  初始化上传时复用仍处于 `UPLOADING` 的提交（同一 `submission_id`）并签发**新的**上传会话与
+  对象键，被替代的旧会话由维护命令清理；报告正式提交后再次初始化返回 `409 SUBMISSION_ALREADY_EXISTS`。
+- **五张表**：`submissions`（提交本体 + 固定评分版本指针）、`submission_upload_sessions`
+  （每次上传尝试与完成快照）、`grade_reviews`（每份提交唯一一条，AI 原始值与教师终稿并存）、
+  `grade_items`（评分项快照 + AI/教师分数，`rubric_item_id` 为**历史外键**）、
+  `submission_grade_attempts`（每次 Worker 尝试的审计轨迹）。原生枚举 `submission_status`、
+  `submission_grade_attempt_status`。
+- **固定评分版本**：完成提交时写入当时的 `current_rubric_version_id`；批改、复核与展示都只读
+  提交引用的版本，教师之后修改 Rubric（新版本）不影响历史提交。
+- **上传协议复用课件上传**：对象键由课程、任务与上传会话 UUID 推导（不含用户文件名），只接受
+  PDF / DOCX（拒绝旧版 `.doc`），完成时用 HeadObject 校验大小、MIME 与存储侧 SHA-256；
+  独立配置 `SUBMISSION_MAX_UPLOAD_BYTES`（默认 50 MiB）与 `SUBMISSION_UPLOAD_CONFIRM_TTL_SECONDS`
+  （默认 24 小时），并提供预签名 GET（`download_url` / `download_expires_at`）。
+- **完成与会话不变量**：每份提交最多只有一个**完成**的上传会话（部分唯一索引
+  `(submission_id) WHERE completed_at IS NOT NULL`）。完成请求的状态检查全部在 HeadObject
+  之前，优先级为 已完成幂等 → 已被其他会话提交（409）→ 已过期/被清理（`UPLOAD_EXPIRED`）→
+  已被替代或对象键不匹配（`UPLOAD_SUPERSEDED`）→ 提交状态 → 允许提交 → 对象确认；
+  只有命中上述命名唯一约束的 `IntegrityError` 才转成 `409`，其他数据库错误原样抛出。
+- **统一锁顺序**：课程 → Assignment → 提交固定 RubricVersion → Submission →（UploadSession /
+  Job / GradeReview）。初始化、完成、触发、重试、复核与发布都按此顺序取锁；读接口不加写锁。
+- **批改 Worker**（`scripts/grading_worker.py`）沿用练习 Worker 的领取、租约、运行令牌与心跳协议；
+  模型调用与对象下载期间**不持有数据库事务**，成功回写一次性创建 Review 与全部 GradeItem，
+  失败与旧执行者都不写部分结果；生成期间课程归档则任务 `CANCELLED`、提交 `FAILED`。
+  提取阶段保留 PDF 页码 / DOCX 段落号，模型必须声明证据位置区间，服务端核对
+  "位置存在 + 摘录落在区间内"，来源类型由报告 MIME 确定。
+- **复核与发布**：AI 建议自动复制为初始终稿但 `reviewed_at` 仍为空；`PATCH` 必须提交**完整快照**
+  （恰好覆盖提交引用版本的全部评分项），保存后写 `reviewed_by` / `reviewed_at` 并保留 AI 原始字段，
+  因此 AI 建议与教师终稿可同时审计；发布要求已复核，重复发布幂等且不覆盖首次 `published_at`。
+- **学生可见性**：发布前批改详情对学生一律 `404`；发布后返回终稿摘要、最终分、教师评语与证据及定位
+  （`evidence_quote` / `evidence_source_type` / `evidence_location_start` / `evidence_location_end`），
+  AI 原始建议分（`ai_score` / `ai_comment` / `suggested_total_score` / `ai_summary`）为 `null`。
+- **错误优先级**：认证 → 资源可见性 → 角色 → 课程归档 → 业务状态 → 请求结构 → 字段与分数语义 → 写入；
+  分数只接受 JSON number、最多两位小数且不超过该项满分，教师最终总分由分项求和（`Decimal`）。
+- **本轮未交付**：真实模型效果验收、前端提交/批改页面接入、部署环境 Worker 常驻运行验收；
+  报告附件的批量管理与删除流水线。
+
 ## 8. Jobs 模块
 
 职责：统一管理资料解析、练习生成和报告批改的异步状态。
