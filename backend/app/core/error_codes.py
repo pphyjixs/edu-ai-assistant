@@ -50,6 +50,8 @@ class ErrorCode(str, Enum):
     AGENT_CONTEXT_NOT_READY = "AGENT_CONTEXT_NOT_READY"
     #: Run 已结束，无法取消（6.2 / 6.10）
     AGENT_RUN_NOT_CANCELLABLE = "AGENT_RUN_NOT_CANCELLABLE"
+    #: 同一个 client_request_id 被用于**不同**的请求（评审文档「一、#12」）
+    AGENT_IDEMPOTENCY_CONFLICT = "AGENT_IDEMPOTENCY_CONFLICT"
 
     # ---------------------------- 框架层错误码 ----------------------------
     #: 请求体或查询参数未通过 Pydantic 校验
@@ -88,6 +90,7 @@ DEFAULT_MESSAGES: dict[ErrorCode, str] = {
     ErrorCode.AGENT_CONTEXT_UNSUPPORTED: "当前对象类型暂不支持这个操作",
     ErrorCode.AGENT_CONTEXT_NOT_READY: "目标资料尚未解析完成，暂时无法作为上下文",
     ErrorCode.AGENT_RUN_NOT_CANCELLABLE: "该任务已经结束，无法取消",
+    ErrorCode.AGENT_IDEMPOTENCY_CONFLICT: "这次请求与之前用同一个请求编号提交的内容不一致",
     ErrorCode.VALIDATION_ERROR: "请求参数不合法",
     ErrorCode.METHOD_NOT_ALLOWED: "请求方法不被支持",
     ErrorCode.INTERNAL_ERROR: "服务内部错误，请稍后重试",
@@ -121,6 +124,7 @@ DEFAULT_STATUS_CODES: dict[ErrorCode, int] = {
     ErrorCode.AGENT_CONTEXT_UNSUPPORTED: 422,
     ErrorCode.AGENT_CONTEXT_NOT_READY: 409,
     ErrorCode.AGENT_RUN_NOT_CANCELLABLE: 409,
+    ErrorCode.AGENT_IDEMPOTENCY_CONFLICT: 409,
     ErrorCode.VALIDATION_ERROR: 422,
     ErrorCode.METHOD_NOT_ALLOWED: 405,
     ErrorCode.INTERNAL_ERROR: 500,

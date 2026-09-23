@@ -7,12 +7,15 @@
  * 映射规则：
  * - 没有具体对象，或页面在自己声明"课程"时 → **省略** `context`，表示整个课程范围的 ASK；
  * - 资料 / 资料章节 / 作业 → 对应 `entity_type` + `entity_id`（章节另带 `section_id`）；
- * - `submission` / `grade` / `practice` 尚未支持 → 同样省略 context，
- *   由后端按课程范围处理，而不是伪造一个后端不认的实体类型。
+ * - 页面声明了后端还不支持的上下文（practice / submission / grade）→ **直接报错**，
+ *   不静默降级成 COURSE（评审文档「一、#3」）：否则用户以为在问这份提交，
+ *   实际问的是整门课程，得到的回答与预期不符还看不出原因。
  *
  * 动作按钮会带上明确的 `action`，因此「总结这份资料」是真的 `SUMMARIZE_CONTEXT +
  * MATERIAL`，而不是把意图写在文本里让模型猜（文档 6.9）。
  */
+
+import { HttpError } from "@/services/http";
 
 import type {
   AgentEntityTypeDto,
@@ -25,6 +28,14 @@ const ENTITY_TYPE_MAP: Partial<Record<string, AgentEntityTypeDto>> = {
   material: "MATERIAL",
   "material-section": "MATERIAL_SECTION",
   assignment: "ASSIGNMENT",
+  course: "COURSE",
+};
+
+/** 页面可能声明、但后端尚未实现对应上下文解析的类型 */
+const UNSUPPORTED_CONTEXT_LABEL: Partial<Record<string, string>> = {
+  practice: "练习",
+  submission: "提交内容",
+  grade: "成绩",
 };
 
 export type RunInput = {
@@ -48,7 +59,19 @@ export function buildRunRequest(
   context: BuddyContext,
   runInput: RunInput,
 ): AgentRunCreateRequestDto {
-  const entityType = context.entityType ? ENTITY_TYPE_MAP[context.entityType] : undefined;
+  const declared = context.entityType;
+  const unsupported = declared ? UNSUPPORTED_CONTEXT_LABEL[declared] : undefined;
+  if (unsupported) {
+    // 明确失败好过静默问错对象：让用户看到"这个对象暂时不能问"，
+    // 而不是拿到一段针对整门课程的回答还以为是针对当前对象的
+    throw new HttpError({
+      code: "AGENT_CONTEXT_UNSUPPORTED",
+      message: `Buddy 暂时还不能围绕${unsupported}提问，可以先回到课程页面提问。`,
+      status: 422,
+    });
+  }
+
+  const entityType = declared ? ENTITY_TYPE_MAP[declared] : undefined;
 
   // context / options 在生成的类型里是必填字段（OpenAPI 声明为可空），
   // 因此没有上下文时显式传 null——后端把它与"不传"等价处理。
@@ -59,6 +82,9 @@ export function buildRunRequest(
     options: null,
     client_request_id: newClientRequestId(),
   };
+
+  // COURSE 与"没有上下文"等价：整门课程的 ASK，不需要显式传 COURSE
+  if (entityType === "COURSE") return body;
 
   if (entityType && context.entityId) {
     body.context = {

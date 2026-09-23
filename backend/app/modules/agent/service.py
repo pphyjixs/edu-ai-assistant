@@ -23,10 +23,13 @@ import logging
 import uuid
 from datetime import datetime
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.core.errors import (
+    AgentContextUnsupportedError,
+    AgentIdempotencyConflictError,
     AgentRunInProgressError,
     AgentRunNotCancellableError,
     ChatConflictError,
@@ -37,7 +40,13 @@ from app.modules.agent import context as context_module
 from app.modules.agent import repository as repo
 from app.modules.agent.deps import RunScope
 from app.modules.agent.models import AgentRun
-from app.modules.agent.schemas import AgentRunCreateRequest
+from app.modules.agent.schemas import (
+    ACTION_CONTEXT_MATRIX,
+    TERMINAL_STATUSES,
+    AgentRunCreateRequest,
+    allowed_contexts,
+    request_fingerprint,
+)
 from app.modules.auth.models import User
 from app.modules.chat import repository as chat_repo
 from app.modules.chat.models import ChatMessage, ChatMessageRole, ChatSession
@@ -46,6 +55,9 @@ from app.modules.jobs import service as jobs_service
 from app.modules.jobs.models import Job, JobStatusValue
 
 logger = logging.getLogger("app.agent.service")
+
+#: 任务的终态（与 :data:`app.modules.agent.schemas.TERMINAL_STATUSES` 同源）
+TERMINAL_JOB_STATUSES = TERMINAL_STATUSES
 
 
 async def _require_owned_session(
@@ -58,6 +70,25 @@ async def _require_owned_session(
     if chat_session is None:
         raise ResourceNotFoundError()
     return chat_session
+
+
+def _require_allowed_combination(
+    request: AgentRunCreateRequest,
+) -> None:
+    """校验 action ↔ context 矩阵（评审文档「一、#8」）。
+
+    旧实现接受 ``CHECK_SUBMISSION + COURSE``、``BREAK_DOWN_ASSIGNMENT + MATERIAL``
+    这类无意义组合，结果是要么生成跑题的回答、要么跑到一半才发现上下文用不上。
+    这里在创建 Run 时就同步拒绝，并把**允许的组合**写进提示，方便前端修。
+    """
+    entity_type = request.context.entity_type if request.context else None
+    if entity_type in ACTION_CONTEXT_MATRIX[request.action]:
+        return
+    raise AgentContextUnsupportedError(
+        f"{request.action.value} 不支持 "
+        f"{'COURSE' if entity_type is None else entity_type.value} 上下文；"
+        f"允许的是 {allowed_contexts(request.action)}"
+    )
 
 
 async def create_run(
@@ -74,9 +105,10 @@ async def create_run(
     前置的认证、会话所有权、课程成员与归档检查已由 ``RunScopeDep`` 完成并锁住
     课程行，这里继续做上下文可见性、幂等与并发保护，然后写入。
 
-    :raises AgentContextUnsupportedError: 实体类型未实现 / 缺少必填 ID
+    :raises AgentContextUnsupportedError: 实体类型未实现 / action-context 组合非法
     :raises AgentContextNotReadyError: 资料尚未解析完成
     :raises AgentRunInProgressError: 该会话已有未结束的 Run
+    :raises AgentIdempotencyConflictError: 同一幂等键被用于不同请求
     """
     created_at = now or utc_now()
     session_id = scope.session_id
@@ -95,19 +127,23 @@ async def create_run(
         is_staff=scope.is_staff,
     )
 
+    # 可见性之后才校验组合：契约的错误优先级是「可见状态 → action/context 矩阵」，
+    # 反过来会让不可见的对象被组合校验提前暴露成 422 而不是 404。
+    _require_allowed_combination(request)
+
+    fingerprint = request_fingerprint(request)
+
     # 幂等：同一用户的同一 client_request_id 返回既有 Run（文档 6.3）
     existing = await repo.get_run_by_client_request_id(
         session, user_id=user.id, client_request_id=request.client_request_id
     )
     if existing is not None:
-        pair = await repo.get_run_with_job(session, existing.id)
-        if pair is not None:
-            logger.info(
-                "幂等重放：run=%s client_request_id=%s",
-                existing.id,
-                request.client_request_id,
-            )
-            return pair
+        return await _replay_existing_run(
+            session,
+            existing,
+            fingerprint=fingerprint,
+            client_request_id=request.client_request_id,
+        )
 
     # 第一版每个会话最多一个未结束的 Run（文档 6.5）
     if await repo.find_active_run_id(session, session_id=session_id) is not None:
@@ -148,6 +184,7 @@ async def create_run(
         action=request.action,
         input_message_id=input_message.id,
         client_request_id=request.client_request_id,
+        request_fingerprint=fingerprint,
         entity_type=entity_type,
         entity_id=entity_id,
         section_id=section_id,
@@ -159,7 +196,25 @@ async def create_run(
     # 任务与 Run 同事务；状态、进度、错误只存在这张表
     job = jobs_service.create_agent_run_job(session, run_id=run.id, now=created_at)
 
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        # 并发重放：两个请求同时带着同一个 client_request_id 进来时，
+        # 先查后插会撞上唯一约束。回滚后回查即可拿到"已经存在的那一个"
+        # （评审文档「一、#12」），而不是把 500 抛给用户。
+        await session.rollback()
+        winner = await repo.get_run_by_client_request_id(
+            session, user_id=user.id, client_request_id=request.client_request_id
+        )
+        if winner is None:  # pragma: no cover - 冲突不是来自这条约束
+            raise
+        return await _replay_existing_run(
+            session,
+            winner,
+            fingerprint=fingerprint,
+            client_request_id=request.client_request_id,
+        )
+
     logger.info(
         "创建 Agent Run run=%s action=%s entity=%s",
         run.id,
@@ -167,6 +222,30 @@ async def create_run(
         entity_type.value if entity_type else "COURSE",
     )
     return run, job
+
+
+async def _replay_existing_run(
+    session: AsyncSession,
+    existing: AgentRun,
+    *,
+    fingerprint: str,
+    client_request_id: str,
+) -> tuple[AgentRun, Job]:
+    """幂等重放：校验请求指纹一致后返回既有 Run。"""
+    if existing.request_fingerprint and existing.request_fingerprint != fingerprint:
+        logger.warning(
+            "幂等键 %s 被复用于不同请求，返回冲突（run=%s）",
+            client_request_id,
+            existing.id,
+        )
+        raise AgentIdempotencyConflictError(
+            "这次请求与之前用同一个请求编号提交的内容不一致，请换一个请求编号重试"
+        )
+    pair = await repo.get_run_with_job(session, existing.id)
+    if pair is None:  # pragma: no cover - Run 与 Job 同事务创建
+        raise ResourceNotFoundError()
+    logger.info("幂等重放：run=%s client_request_id=%s", existing.id, client_request_id)
+    return pair
 
 
 async def get_run(
@@ -177,6 +256,56 @@ async def get_run(
     if pair is None or pair[0].user_id != user.id:
         raise ResourceNotFoundError()
     return pair
+
+
+async def get_active_run(
+    session: AsyncSession, *, user: User, session_id: uuid.UUID
+) -> tuple[AgentRun, Job] | None:
+    """会话中尚未结束的 Run（评审文档「一、#11」）。
+
+    页面打开时调用：拿到就用它恢复轮询，刷新页面不会让"正在生成"的提示消失。
+    会话不可见时统一 404，避免用这个接口探测别人的会话。
+    """
+    chat_session = await chat_repo.get_owned_session(
+        session, session_id=session_id, user_id=user.id
+    )
+    if chat_session is None:
+        raise ResourceNotFoundError()
+    return await repo.get_active_run_with_job(session, session_id=session_id)
+
+
+async def list_runs(
+    session: AsyncSession, *, user: User, session_id: uuid.UUID, limit: int
+) -> tuple[list[tuple[AgentRun, Job]], int]:
+    """会话内的 Run 列表（新→旧）与总数。
+
+    前端把 ``FAILED`` / ``CANCELLED`` 的原因挂在对应的提问下面，
+    因此刷新之后用户仍然能知道"上一次为什么没有回答"。
+    """
+    chat_session = await chat_repo.get_owned_session(
+        session, session_id=session_id, user_id=user.id
+    )
+    if chat_session is None:
+        raise ResourceNotFoundError()
+    items = await repo.list_runs_with_jobs(session, session_id=session_id, limit=limit)
+    total = await repo.count_runs(session, session_id=session_id)
+    return items, total
+
+
+async def require_cancellable_run(
+    session: AsyncSession, *, user: User, run_id: uuid.UUID
+) -> None:
+    """取消操作的**前置检查**（不写库、不加锁）。
+
+    放在请求体校验之前，保证错误优先级是 404/409 → 422，与其它模块一致：
+    请求体格式不对不应该掩盖"这条 Run 已经结束了"这个更重要的结论。
+    """
+    pair = await repo.get_run_with_job(session, run_id)
+    if pair is None or pair[0].user_id != user.id:
+        raise ResourceNotFoundError()
+    _, job = pair
+    if job.status in TERMINAL_JOB_STATUSES:
+        raise AgentRunNotCancellableError()
 
 
 async def cancel_run(
@@ -213,11 +342,7 @@ async def cancel_run(
     if job is None:  # pragma: no cover
         raise ResourceNotFoundError()
 
-    if job.status in (
-        JobStatusValue.SUCCEEDED,
-        JobStatusValue.FAILED,
-        JobStatusValue.CANCELLED,
-    ):
+    if job.status in TERMINAL_JOB_STATUSES:
         raise AgentRunNotCancellableError()
 
     cancelled_at = utc_now()

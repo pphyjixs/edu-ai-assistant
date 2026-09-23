@@ -44,4 +44,8 @@ export const queryKeys = {
   job: (jobId: string) => ["job", jobId] as const,
   /** 异步 Agent Run（Buddy 提问） */
   agentRun: (runId: string) => ["agent-run", runId] as const,
+  /** 会话内的 Run 列表：刷新后据此把失败原因显示在对应提问下面 */
+  agentRuns: (sessionId: string) => ["agent-runs", sessionId] as const,
+  /** 会话中尚未结束的 Run：刷新后据此恢复轮询 */
+  activeAgentRun: (sessionId: string) => ["agent-active-run", sessionId] as const,
 };

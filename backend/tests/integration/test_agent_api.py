@@ -393,9 +393,14 @@ def test_worker_writes_assistant_message_and_sources(
     assert citation["quote"]
 
 
-def test_fake_citation_is_dropped_and_answer_becomes_ungrounded(
+def test_fake_citation_is_dropped_but_answer_is_kept_without_grounding(
     client: TestClient, fake_storage, pg_session_factory, make_settings
 ) -> None:
+    """越界引用只被丢弃，正文保留但如实标注"引用没核对上"。
+
+    评审文档「一、#1.4 / #1.5」：引用验证失败只剔除对应引用，
+    不再把整段有效回答抹成一句"未找到依据"。
+    """
     course_id, teacher, material_id = _teacher_with_ready_material(
         client, fake_storage, pg_session_factory, make_settings
     )
@@ -414,9 +419,41 @@ def test_fake_citation_is_dropped_and_answer_becomes_ungrounded(
 
     messages = client.get(MESSAGES_URL.format(session_id=session_id), headers=_auth(teacher)).json()
     assistant = messages["items"][1]
+    # 没有可核对的引用 → 不声称有依据
     assert assistant["grounded"] is False
     assert assistant["citations"] == []
-    assert "依据" in assistant["content"]
+    # 但模型给出的正文被保留下来，并附上"未核对上"的说明
+    assert "按注入的资料" in assistant["content"]
+    assert "核对" in assistant["content"]
+
+
+def test_no_evidence_message_names_searched_materials(
+    client: TestClient, fake_storage, pg_session_factory, make_settings
+) -> None:
+    """确实无依据时给的说明要具体：说检索了几份资料，而不是一句通用文案。"""
+    course_id, teacher, material_id = _teacher_with_ready_material(
+        client, fake_storage, pg_session_factory, make_settings
+    )
+    session_id = _create_session(client, teacher, course_id)
+    _create_run(
+        client,
+        teacher,
+        session_id,
+        context={"entity_type": "MATERIAL", "entity_id": material_id},
+    )
+
+    def _declines(request: httpx.Request) -> httpx.Response:
+        return _model_json_response(
+            {"answer": "", "evidence_level": "NONE", "citations": []}
+        )
+
+    _run_agent_worker(pg_session_factory, make_settings, responder=_declines)
+
+    messages = client.get(MESSAGES_URL.format(session_id=session_id), headers=_auth(teacher)).json()
+    assistant = messages["items"][1]
+    assert assistant["grounded"] is False
+    assert "1 份资料" in assistant["content"]
+    assert "chapter-1.docx" in assistant["content"]
 
 
 def test_material_context_does_not_leak_other_materials(
@@ -519,6 +556,7 @@ def test_stale_run_token_cannot_overwrite(
             pg_session_factory,
             now=utc_now(),
             lease_seconds=settings.agent_run_lease_seconds,
+            max_attempts=settings.agent_max_attempts,
         )
         assert claimed is not None
         # 旧 Worker 的令牌被新一轮执行替换
@@ -544,6 +582,8 @@ def test_stale_run_token_cannot_overwrite(
                 section_id=None,
                 selected_text=None,
                 question=claimed.question,
+                action=claimed.action,
+                input_message_id=claimed.input_message_id,
                 is_staff=True,
                 settings=settings,
             )
@@ -562,3 +602,347 @@ def test_stale_run_token_cannot_overwrite(
         MESSAGES_URL.format(session_id=session_id), headers=_auth(teacher)
     ).json()
     assert [item["role"] for item in messages["items"]] == ["USER"]
+
+# --------------------------------------------------------------------------- #
+# 评审文档「一、#8 / #9 / #11 / #12 / #13」与「二、5」的回归
+# --------------------------------------------------------------------------- #
+def _failing_responder(request: httpx.Request) -> httpx.Response:
+    """假模型返回不可解析的内容，触发「模型侧失败」路径。"""
+    return httpx.Response(200, json={"choices": [{"message": {"content": "不是 JSON"}}]})
+
+
+def test_action_context_matrix_rejects_meaningless_combinations(
+    client: TestClient, fake_storage, pg_session_factory, make_settings
+) -> None:
+    """`CHECK_SUBMISSION + COURSE`、`BREAK_DOWN_ASSIGNMENT + MATERIAL` 必须在创建时就 422。"""
+    course_id, teacher, material_id = _teacher_with_ready_material(
+        client, fake_storage, pg_session_factory, make_settings
+    )
+    session_id = _create_session(client, teacher, course_id)
+
+    response = _create_run(
+        client,
+        teacher,
+        session_id,
+        action="BREAK_DOWN_ASSIGNMENT",
+        context={"entity_type": "MATERIAL", "entity_id": material_id},
+    )
+    assert response.status_code == 422, response.text
+    body = response.json()["error"]
+    assert body["code"] == "AGENT_CONTEXT_UNSUPPORTED"
+    # 提示里要写清允许的组合，前端才能自助修正
+    assert "ASSIGNMENT" in body["message"]
+
+    # 拆解任务不允许退化成课程范围
+    response = _create_run(client, teacher, session_id, action="BREAK_DOWN_ASSIGNMENT")
+    assert response.status_code == 422, response.text
+
+    # 错误优先级：不可见对象先于 action/context 组合判定，因此这里是 404 而不是 422
+    response = _create_run(
+        client,
+        teacher,
+        session_id,
+        action="BREAK_DOWN_ASSIGNMENT",
+        context={"entity_type": "MATERIAL", "entity_id": str(uuid.uuid4())},
+    )
+    assert response.status_code == 404, response.text
+
+    # 提交前检查只接受 SUBMISSION，课程范围不被接受
+    response = _create_run(
+        client, teacher, session_id, action="CHECK_SUBMISSION", context=None
+    )
+    assert response.status_code == 422, response.text
+
+    # 组合合法但领域模块未实现：稳定返回「未实现」，而不是悄悄退化成课程问答
+    response = _create_run(
+        client,
+        teacher,
+        session_id,
+        action="CHECK_SUBMISSION",
+        context={"entity_type": "SUBMISSION", "entity_id": str(uuid.uuid4())},
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["error"]["code"] == "AGENT_CONTEXT_UNSUPPORTED"
+
+    # ASK + COURSE（省略 context）仍然可用
+    response = _create_run(client, teacher, session_id)
+    assert response.status_code == 202, response.text
+
+
+def test_same_client_request_id_with_different_body_conflicts(
+    client: TestClient, fake_storage, pg_session_factory, make_settings
+) -> None:
+    """幂等键复用于不同内容必须 409，不能把旧答案当成这一次的回答。"""
+    course_id, teacher, material_id = _teacher_with_ready_material(
+        client, fake_storage, pg_session_factory, make_settings
+    )
+    session_id = _create_session(client, teacher, course_id)
+    key = str(uuid.uuid4())
+    context = {"entity_type": "MATERIAL", "entity_id": material_id}
+
+    first = _create_run(
+        client, teacher, session_id, input="第一个问题", client_request_id=key, context=context
+    )
+    assert first.status_code == 202, first.text
+
+    # 同样的请求体再来一次：返回同一个 Run（网络重试语义）
+    replay = _create_run(
+        client, teacher, session_id, input="第一个问题", client_request_id=key, context=context
+    )
+    assert replay.status_code == 202, replay.text
+    assert replay.json()["id"] == first.json()["id"]
+
+    # 换了内容却复用同一个编号：409
+    changed = _create_run(
+        client, teacher, session_id, input="换了一个问题", client_request_id=key, context=context
+    )
+    assert changed.status_code == 409, changed.text
+    assert changed.json()["error"]["code"] == "AGENT_IDEMPOTENCY_CONFLICT"
+
+
+def test_active_run_and_run_list_enable_refresh_recovery(
+    client: TestClient, fake_storage, pg_session_factory, make_settings
+) -> None:
+    """刷新后能恢复轮询，并能看到上一次失败的原因（评审文档「一、#11」）。"""
+    course_id, teacher, material_id = _teacher_with_ready_material(
+        client, fake_storage, pg_session_factory, make_settings
+    )
+    session_id = _create_session(client, teacher, course_id)
+    created = _create_run(
+        client,
+        teacher,
+        session_id,
+        context={"entity_type": "MATERIAL", "entity_id": material_id},
+    ).json()
+
+    active = client.get(
+        f"/api/v1/chat-sessions/{session_id}/active-run", headers=_auth(teacher)
+    )
+    assert active.status_code == 200
+    assert active.json()["run"]["id"] == created["id"]
+    assert active.json()["run"]["status"] == "PENDING"
+
+    # Worker 执行失败：模型返回不可解析的内容
+    _run_agent_worker(pg_session_factory, make_settings, responder=_failing_responder)
+
+    after = client.get(
+        f"/api/v1/chat-sessions/{session_id}/active-run", headers=_auth(teacher)
+    )
+    assert after.status_code == 200
+    assert after.json()["run"] is None  # 没有进行中的 Run 是常规状态
+
+    runs = client.get(
+        f"/api/v1/chat-sessions/{session_id}/runs", headers=_auth(teacher)
+    ).json()
+    assert runs["total"] == 1
+    failed = runs["items"][0]
+    assert failed["id"] == created["id"]
+    assert failed["status"] == "FAILED"
+    # 失败原因与阶段码都要能读到，前端才能给出「模型侧失败」这类具体提示
+    assert failed["error"]
+    assert failed["failure_stage"] == "MODEL_CALL"
+
+    # 别人的会话一律 404（不暴露存在性）
+    other_token = _teacher_with_ready_material(
+        client, fake_storage, pg_session_factory, make_settings, email="other@example.com"
+    )[1]
+    assert (
+        client.get(
+            f"/api/v1/chat-sessions/{session_id}/runs", headers=_auth(other_token)
+        ).status_code
+        == 404
+    )
+
+
+def test_cancel_rejects_non_empty_body(
+    client: TestClient, fake_storage, pg_session_factory, make_settings
+) -> None:
+    """取消接口复用了统一空对象校验器：带字段的请求体是 422。"""
+    course_id, teacher, material_id = _teacher_with_ready_material(
+        client, fake_storage, pg_session_factory, make_settings
+    )
+    session_id = _create_session(client, teacher, course_id)
+    run = _create_run(
+        client,
+        teacher,
+        session_id,
+        context={"entity_type": "MATERIAL", "entity_id": material_id},
+    ).json()
+
+    bad = client.post(
+        CANCEL_URL.format(run_id=run["id"]),
+        json={"reason": "不想等了"},
+        headers=_auth(teacher),
+    )
+    assert bad.status_code == 422, bad.text
+    assert bad.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    ok = client.post(CANCEL_URL.format(run_id=run["id"]), json={}, headers=_auth(teacher))
+    assert ok.status_code == 202, ok.text
+    assert ok.json()["status"] == "CANCELLED"
+
+
+def test_expired_running_run_is_reclaimed_and_attempts_are_capped(
+    client: TestClient, fake_storage, pg_session_factory, make_settings
+) -> None:
+    """过期 RUNNING 可被接管；尝试次数用尽后进入 FAILED（评审文档「一、#9」）。"""
+    from datetime import timedelta
+
+    from app.core.time import utc_now
+
+    course_id, teacher, material_id = _teacher_with_ready_material(
+        client, fake_storage, pg_session_factory, make_settings
+    )
+    session_id = _create_session(client, teacher, course_id)
+    run = _create_run(
+        client,
+        teacher,
+        session_id,
+        context={"entity_type": "MATERIAL", "entity_id": material_id},
+    ).json()
+
+    async def _scenario() -> object:
+        # 第一次领取：租约 0 秒，立刻过期（模拟执行者崩溃）
+        first = await agent_worker.claim_next(
+            pg_session_factory, now=utc_now(), lease_seconds=0, max_attempts=3
+        )
+        assert first is not None and first.attempt == 1
+        # 新 Worker 应当能接管这条已经过期的 RUNNING
+        second = await agent_worker.claim_next(
+            pg_session_factory,
+            now=utc_now() + timedelta(seconds=1),
+            lease_seconds=0,
+            max_attempts=3,
+        )
+        assert second is not None and second.attempt == 2
+        # 把上限降到 2：再次领取应当直接判失败，而不是继续重试
+        return await agent_worker.claim_next(
+            pg_session_factory,
+            now=utc_now() + timedelta(seconds=2),
+            lease_seconds=300,
+            max_attempts=2,
+        )
+
+    assert asyncio.run(_scenario()) is None
+
+    detail = client.get(RUN_URL.format(run_id=run["id"]), headers=_auth(teacher)).json()
+    assert detail["status"] == "FAILED"
+    assert "重试" in detail["error"]
+
+
+def test_assignment_context_is_valid_evidence(
+    client: TestClient, fake_storage, pg_session_factory, make_settings
+) -> None:
+    """作业与评分标准可以支撑有依据的回答，并显示为 ASSIGNMENT 引用（评审文档「一、#2」）。"""
+    from tests.integration.test_assignments_api import _create as _create_assignment
+
+    _register(client, "matrix-teacher@example.com", "TEACHER")
+    teacher = _login(client, "matrix-teacher@example.com")
+    course_id = _create_course(client, teacher)
+    assignment = _create_assignment(client, course_id, teacher).json()
+
+    session_id = _create_session(client, teacher, course_id)
+    response = _create_run(
+        client,
+        teacher,
+        session_id,
+        input="这个实验要怎么做？",
+        action="BREAK_DOWN_ASSIGNMENT",
+        context={"entity_type": "ASSIGNMENT", "entity_id": assignment["id"]},
+    )
+    assert response.status_code == 202, response.text
+
+    # 假模型引用提示词里的第一个来源块（就是作业要求块）
+    _run_agent_worker(pg_session_factory, make_settings, responder=_quoting_responder())
+
+    messages = client.get(
+        MESSAGES_URL.format(session_id=session_id), headers=_auth(teacher)
+    ).json()
+    assistant = messages["items"][1]
+    assert assistant["grounded"] is True, assistant["content"]
+    citation = assistant["citations"][0]
+    assert citation["source_kind"] == "ASSIGNMENT"
+    # 作业引用没有页码，也不指向资料阅读器
+    assert citation["material_id"] is None
+    assert citation["location_start"] is None
+    assert "作业" in citation["source_label"]
+
+    # Run 上带本次的依据等级，审计与前端都能看到
+    run_detail = client.get(
+        RUN_URL.format(run_id=response.json()["id"]), headers=_auth(teacher)
+    ).json()
+    assert run_detail["evidence_level"] in {"FULL", "PARTIAL"}
+
+
+def test_material_section_context_scopes_the_prompt(
+    client: TestClient, fake_storage, pg_session_factory, make_settings
+) -> None:
+    """MATERIAL_SECTION 只注入该章节及相邻章节，不是整份资料（评审文档「一、#3」）。"""
+    course_id, teacher, material_id = _teacher_with_ready_material(
+        client, fake_storage, pg_session_factory, make_settings
+    )
+    outline = client.get(
+        f"/api/v1/materials/{material_id}/outline", headers=_auth(teacher)
+    ).json()
+    sections = outline["sections"]
+    assert len(sections) >= 2
+
+    session_id = _create_session(client, teacher, course_id)
+    captured: list[str] = []
+    response = _create_run(
+        client,
+        teacher,
+        session_id,
+        input="这一节讲了什么？",
+        context={
+            "entity_type": "MATERIAL_SECTION",
+            "entity_id": material_id,
+            "section_id": sections[1]["id"],
+        },
+    )
+    assert response.status_code == 202, response.text
+    _run_agent_worker(
+        pg_session_factory, make_settings, responder=_quoting_responder(captured)
+    )
+
+    prompt = captured[0]
+    assert sections[1]["title"] in prompt  # 目标章节
+    assert sections[0]["title"] in prompt  # 相邻章节作为背景
+
+    # 不存在的 section_id 属于不可见，统一 404
+    bad = _create_run(
+        client,
+        teacher,
+        session_id,
+        context={
+            "entity_type": "MATERIAL_SECTION",
+            "entity_id": material_id,
+            "section_id": str(uuid.uuid4()),
+        },
+    )
+    assert bad.status_code == 404, bad.text
+
+
+def test_current_input_appears_only_once_in_prompt(
+    client: TestClient, fake_storage, pg_session_factory, make_settings
+) -> None:
+    """本次输入只在「本次输入」区段出现一次，不重复进历史（评审文档「一、#13」）。"""
+    course_id, teacher, material_id = _teacher_with_ready_material(
+        client, fake_storage, pg_session_factory, make_settings
+    )
+    session_id = _create_session(client, teacher, course_id)
+    context = {"entity_type": "MATERIAL", "entity_id": material_id}
+
+    _create_run(client, teacher, session_id, input="第一轮问题", context=context)
+    _run_agent_worker(pg_session_factory, make_settings, responder=_quoting_responder())
+
+    captured: list[str] = []
+    _create_run(client, teacher, session_id, input="第二轮问题", context=context)
+    _run_agent_worker(
+        pg_session_factory, make_settings, responder=_quoting_responder(captured)
+    )
+
+    prompt = captured[0]
+    assert prompt.count("第二轮问题") == 1
+    assert prompt.count("第一轮问题") == 1  # 上一轮作为历史保留一次
+    assert "## 本次输入" in prompt

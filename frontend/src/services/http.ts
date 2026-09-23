@@ -10,34 +10,17 @@
  * 页面与组件不得直接使用 fetch（docs/architecture.md 第 5 节），一律经这里。
  */
 
-/** 契约第 12 节的稳定错误码全集 */
-export type ApiErrorCode =
-  | "AUTH_INVALID_CREDENTIALS"
-  | "AUTH_TOKEN_EXPIRED"
-  | "AUTH_EMAIL_TAKEN"
-  | "AUTH_TOO_MANY_ATTEMPTS"
-  | "ROLE_FORBIDDEN"
-  | "COURSE_FORBIDDEN"
-  | "COURSE_ARCHIVED"
-  | "RESOURCE_NOT_FOUND"
-  | "INVITE_CODE_INVALID"
-  | "UPLOAD_INVALID"
-  | "RUBRIC_SCORE_MISMATCH"
-  | "MATERIAL_NOT_READY"
-  | "MATERIAL_ALREADY_READY"
-  | "ASSIGNMENT_NOT_OPEN"
-  | "GRADE_NOT_REVIEWED"
-  | "AI_JOB_FAILED"
-  | "CHAT_CONFLICT"
-  | "PRACTICE_NOT_READY"
-  | "PRACTICE_ALREADY_ATTEMPTED"
-  | "JOB_NOT_RETRYABLE"
-  | "VALIDATION_ERROR"
-  | "METHOD_NOT_ALLOWED"
-  | "INTERNAL_ERROR"
-  | "SERVICE_UNAVAILABLE"
-  /** 前端本地补充：请求未能到达服务端 */
-  | "NETWORK_ERROR";
+import type { Schemas } from "@/types/api";
+
+/**
+ * 契约第 12 节的稳定错误码全集。
+ *
+ * 直接取自生成的契约类型（`Schemas["ErrorCode"]`），不再手抄一份：
+ * 手抄的列表会在后端新增错误码时悄悄落后——例如 `AGENT_*` 系列
+ * 就没有同步过来，导致前端无法按键判断分支。
+ * 只有 `NETWORK_ERROR` 是前端本地状态（请求没到达服务端），契约里不存在。
+ */
+export type ApiErrorCode = Schemas["ErrorCode"] | "NETWORK_ERROR";
 
 export type AppError = {
   code: ApiErrorCode;

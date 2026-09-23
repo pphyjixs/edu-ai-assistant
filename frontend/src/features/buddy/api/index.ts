@@ -37,6 +37,21 @@ export function citationsOf(message: ChatMessageDto): CitationDto[] {
   return message.citations ?? [];
 }
 
+/**
+ * 引用是否指向课程资料。
+ *
+ * 作业与评分标准也能支撑结论（评审文档「一、#2」），但它们没有页码，
+ * 也不能跳到资料阅读器，因此前端要分流渲染。
+ */
+export function isMaterialCitation(citation: CitationDto): boolean {
+  return citation.source_kind !== "ASSIGNMENT" && Boolean(citation.material_id);
+}
+
+/** 可直接展示的来源名称；资料引用退回到资料名 */
+export function citationLabel(citation: CitationDto): string {
+  return citation.source_label ?? citation.material_name ?? "来源";
+}
+
 /** Run 是否已结束（终态） */
 export function isTerminalRunStatus(status: AgentRunStatusDto | undefined): boolean {
   return status === "SUCCEEDED" || status === "FAILED" || status === "CANCELLED";
@@ -54,6 +69,9 @@ export function isRunInFlight(status: AgentRunStatusDto | undefined): boolean {
  * 先用一页的容量拿全量，只有真的超过一页时再补一次「最后一页」的请求。
  */
 const MESSAGE_PAGE_SIZE = 100;
+
+/** 会话内 Run 列表一次取回的条数（够覆盖当前可见的几轮问答即可） */
+const RUN_LIST_LIMIT = 20;
 
 export const buddyApi = {
   /** 契约 6.2：POST /courses/{course_id}/chat-sessions —— 没有请求字段 */
@@ -104,5 +122,35 @@ export const buddyApi = {
   /** 文档 6.2：POST /agent-runs/{run_id}/cancel */
   cancelRun(runId: string): Promise<AgentRunDto> {
     return http.post<AgentRunDto>(`/agent-runs/${runId}/cancel`, {});
+  },
+
+  /**
+   * 评审文档「一、#11」：GET /chat-sessions/{session_id}/active-run
+   *
+   * 打开会话时先问一次「有没有还没结束的 Run」。有就按正常节奏恢复轮询，
+   * 因此刷新页面不会让「正在生成」的提示消失，也不会丢掉已经发出的提问。
+   * 返回的 `run` 为 null 是常规状态（没有进行中的任务），不是错误。
+   */
+  getActiveRun(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<Schemas["AgentActiveRunSchema"]> {
+    return http.get<Schemas["AgentActiveRunSchema"]>(
+      `/chat-sessions/${sessionId}/active-run`,
+      { signal },
+    );
+  },
+
+  /**
+   * 评审文档「一、#11」：GET /chat-sessions/{session_id}/runs
+   *
+   * 会话内的 Run 列表（新→旧）。前端用它把 FAILED / CANCELLED 的原因
+   * 显示在对应提问下面，这样刷新之后用户仍然知道上一次为什么没有回答。
+   */
+  listRuns(sessionId: string, limit = RUN_LIST_LIMIT, signal?: AbortSignal): Promise<Page<AgentRunDto>> {
+    return http.get<Page<AgentRunDto>>(
+      `/chat-sessions/${sessionId}/runs${buildQuery({ limit })}`,
+      { signal },
+    );
   },
 };

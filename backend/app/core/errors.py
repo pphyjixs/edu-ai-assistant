@@ -190,6 +190,15 @@ class AgentRunNotCancellableError(ApiError):
     code = ErrorCode.AGENT_RUN_NOT_CANCELLABLE
 
 
+class AgentIdempotencyConflictError(ApiError):
+    """同一个 ``client_request_id`` 被复用于不同请求（评审文档「一、#12」）。
+
+    必须报冲突而不是返回上一次的结果：否则用户改完问题重发会拿到上一个问题的答案。
+    """
+
+    code = ErrorCode.AGENT_IDEMPOTENCY_CONFLICT
+
+
 class ValidationError(ApiError):
     """请求参数未通过校验，details 内为 ``errors`` 字段级说明。"""
 

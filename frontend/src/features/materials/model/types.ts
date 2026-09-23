@@ -8,6 +8,7 @@
 
 import type { PillTone } from "@/components/Pill/Pill";
 import { formatMonthDayTime } from "@/utils/datetime";
+import { failureStageHint, failureStageLabel } from "@/utils/failureStage";
 import { formatLocation, SOURCE_TYPE_LABEL } from "@/utils/location";
 
 import type {
@@ -62,6 +63,16 @@ export type MaterialVM = {
   statusTone: PillTone;
   /** 仅 FAILED 时非空；后端返回的安全描述 */
   errorMessage: string | null;
+  /**
+   * 仅 FAILED 时非空的失败阶段码（``DOWNLOAD`` / ``NATIVE_EXTRACT`` /
+   * ``OUTLINE_GENERATION`` …）。前端据此说明「失败在哪一步、能做什么」，
+   * 而不是只给一句笼统的失败原因（评审文档「一、#4.8」）。
+   */
+  failureStage: string | null;
+  /** 失败阶段的人话说明；非失败时为 null */
+  failureStageLabel: string | null;
+  /** 失败时给用户的可执行建议；非失败时为 null */
+  failureHint: string | null;
   createdAtLabel: string;
   /** 只有解析完成才能读大纲 */
   isReady: boolean;
@@ -71,6 +82,7 @@ export type MaterialVM = {
 
 export function toMaterialVM(dto: MaterialDetailDto): MaterialVM {
   const mapped = STATUS_MAP[dto.status];
+  const failed = mapped.status === "failed";
 
   return {
     id: dto.id,
@@ -82,9 +94,12 @@ export function toMaterialVM(dto: MaterialDetailDto): MaterialVM {
     statusLabel: mapped.label,
     statusTone: mapped.tone,
     errorMessage: dto.error_message,
+    failureStage: failed ? (dto.failure_stage ?? null) : null,
+    failureStageLabel: failed ? failureStageLabel(dto.failure_stage) : null,
+    failureHint: failed ? failureStageHint(dto.failure_stage) : null,
     createdAtLabel: formatMonthDayTime(dto.created_at),
     isReady: mapped.status === "ready",
-    canRetry: mapped.status === "failed",
+    canRetry: failed,
   };
 }
 

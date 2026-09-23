@@ -1,14 +1,25 @@
 /**
  * 消息列表。负责 Loading / Empty / Error 三态与自动滚动。
+ *
+ * 除了消息本身，这里还要把**失败的 Run** 显示出来（评审文档「一、#11」）：
+ * 失败的回答不会写进消息表，刷新之后用户只看得到自己的提问，
+ * 完全不知道发生了什么。把 Run 的状态与失败阶段挂在对应提问下面，
+ * 用户至少知道「上一次为什么没有回答、下一步能做什么」。
  */
 
 import { useEffect, useRef } from "react";
 
 import { EmptyState } from "@/components/EmptyState/EmptyState";
 import { ErrorState } from "@/components/ErrorState/ErrorState";
+import { Icon } from "@/components/Icon/Icon";
 import { Skeleton } from "@/components/Skeleton/Skeleton";
-import { useBuddyMessages } from "@/features/buddy/hooks/useBuddyThread";
+import type { AgentRunDto } from "@/features/buddy/api";
+import {
+  useBuddyMessages,
+  useRunByInputMessage,
+} from "@/features/buddy/hooks/useBuddyThread";
 import { toAppError } from "@/services/http";
+import { failureStageHint, failureStageLabel } from "@/utils/failureStage";
 
 import { BuddyMessage } from "../BuddyMessage/BuddyMessage";
 
@@ -22,6 +33,7 @@ export type BuddyMessageListProps = {
 
 export function BuddyMessageList({ sessionId, isSending }: BuddyMessageListProps) {
   const { data, isPending, isError, error, refetch } = useBuddyMessages(sessionId);
+  const runByInputMessage = useRunByInputMessage(sessionId);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const messageCount = data?.length ?? 0;
@@ -69,9 +81,16 @@ export function BuddyMessageList({ sessionId, isSending }: BuddyMessageListProps
 
   return (
     <div className={styles.list}>
-      {data?.map((message) => (
-        <BuddyMessage key={message.id} message={message} />
-      ))}
+      {data?.map((message) => {
+        // Run 挂在**触发它的那条用户消息**下面
+        const run = runByInputMessage.get(message.id);
+        return (
+          <div key={message.id}>
+            <BuddyMessage message={message} />
+            {run ? <BuddyRunNotice run={run} /> : null}
+          </div>
+        );
+      })}
 
       {isSending ? (
         <div className={styles.sending} role="status">
@@ -84,5 +103,41 @@ export function BuddyMessageList({ sessionId, isSending }: BuddyMessageListProps
 
       <div ref={bottomRef} />
     </div>
+  );
+}
+
+/**
+ * 一次 Run 的状态提示。
+ *
+ * 只在**用户需要知道的结果**上出现：失败或取消时说明原因与下一步；
+ * 正在执行时说明进度；成功时不重复提示（消息本身就是结果）。
+ */
+function BuddyRunNotice({ run }: { run: AgentRunDto }) {
+  if (run.status === "SUCCEEDED" || run.status === "PENDING") return null;
+
+  if (run.status === "RUNNING") {
+    return (
+      <p className={styles.notice} role="status">
+        <Icon name="spark" size={13} />
+        <span>正在生成回答…</span>
+      </p>
+    );
+  }
+
+  if (run.status === "CANCELLED") {
+    return (
+      <p className={styles.notice}>
+        <span>这次提问已取消，没有生成回答。</span>
+      </p>
+    );
+  }
+
+  // FAILED：给出「哪一步失败 + 能做什么」，而不是一句笼统的错误
+  return (
+    <p className={`${styles.notice} ${styles.noticeError}`} role="alert">
+      <strong>{failureStageLabel(run.failure_stage)}</strong>
+      {run.error ? <span>：{run.error}</span> : null}
+      <span className={styles.noticeHint}>{failureStageHint(run.failure_stage)}</span>
+    </p>
   );
 }

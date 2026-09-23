@@ -353,6 +353,8 @@ def test_list_requires_membership_and_returns_ordered_page(
         "status",
         "uploaded_by",
         "error_message",
+        # 失败阶段码（评审文档「一、#4.8」）
+        "failure_stage",
         "created_at",
         "updated_at",
     }

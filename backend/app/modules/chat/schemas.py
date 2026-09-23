@@ -19,6 +19,7 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.time import UtcTimestamp
+from app.modules.chat.models import CitationSourceKind
 
 #: 问题正文长度上限（契约 6.5：去除首尾空白后 1–2000 字符）
 QUESTION_MAX_LENGTH = 2000
@@ -62,17 +63,30 @@ class ChatSessionSchema(BaseModel):
 
 
 class Citation(BaseModel):
-    """引用（契约 6.6）：取自命中片段，带可核对的原文摘录。"""
+    """引用（契约 6.6）：取自命中片段，带可核对的原文摘录。
+
+    引用**不限于资料**（评审文档「一、#2」）：``source_kind`` 为 ``MATERIAL`` 时
+    指向资料片段/章节，前端可跳转到阅读器；为 ``ASSIGNMENT`` 时指向作业与评分标准，
+    这类业务对象没有页码，``material_*`` / ``location_*`` 为空，前端只做展示。
+    统一用 ``source_id`` 表示来源自身的 ID，``source_label`` 表示可直接展示的名称。
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
-    material_id: uuid.UUID
-    material_name: str
-    section_id: uuid.UUID | None
-    section_title: str | None
+    #: MATERIAL（资料）或 ASSIGNMENT（作业与评分标准）
+    source_kind: str = CitationSourceKind.MATERIAL.value
+    #: 来源自身 ID：资料引用等于 material_id，作业引用为 assignment_id
+    source_id: uuid.UUID | None = None
+    #: 可直接展示的来源名称，例如「作业《实验二》」
+    source_label: str | None = None
+
+    material_id: uuid.UUID | None = None
+    material_name: str | None = None
+    section_id: uuid.UUID | None = None
+    section_title: str | None = None
     source_type: str
-    location_start: int
-    location_end: int
+    location_start: int | None = None
+    location_end: int | None = None
     #: 仅 PDF 有值（等于 location_start）；PPTX 与 DOCX 为 null
     page: int | None
     quote: str

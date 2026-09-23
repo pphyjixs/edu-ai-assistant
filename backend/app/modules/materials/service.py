@@ -619,12 +619,14 @@ async def retry_parse(
     job.status = JobStatusValue.PENDING
     job.progress = 0
     job.error = None
+    job.failure_stage = None
     job.started_at = None
     job.finished_at = None
     job.run_token = None
     job.lease_expires_at = None
     locked.status = MaterialStatus.PROCESSING
     locked.error_message = None
+    locked.failure_stage = None
     locked.updated_at = now
     await session.commit()
     return job, locked, True

@@ -656,13 +656,37 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * 会话内的 Agent Run 列表
+         * @description 按创建时间倒序返回本会话的 Run（新→旧），含状态、失败阶段与错误摘要。前端用它把 FAILED / CANCELLED 的原因显示在对应提问下面，因此刷新页面后用户仍然知道上一次为什么没有回答。只返回自己的会话。
+         */
+        get: operations["list_agent_runs_api_v1_chat_sessions__session_id__runs_get"];
         put?: never;
         /**
          * 创建 Agent Run
-         * @description 在指定会话中创建一个异步 Agent Run：同一事务写入用户消息、`agent_runs` 与 `AGENT_RUN` 任务后立即返回 202，模型调用由独立 Worker 完成。`client_request_id` 在用户范围内唯一，网络重试会返回同一个 Run。第一版每个会话同时只允许一个未结束的 Run。
+         * @description 在指定会话中创建一个异步 Agent Run：同一事务写入用户消息、`agent_runs` 与 `AGENT_RUN` 任务后立即返回 202，模型调用由独立 Worker 完成。`client_request_id` 在用户范围内唯一，网络重试会返回同一个 Run；把同一个编号用于**不同内容**会返回 409 AGENT_IDEMPOTENCY_CONFLICT。`action` 与 `context` 的组合必须落在允许矩阵内，否则 422。第一版每个会话同时只允许一个未结束的 Run。
          */
         post: operations["create_agent_run_api_v1_chat_sessions__session_id__runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/chat-sessions/{session_id}/active-run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 会话中尚未结束的 Run
+         * @description 打开会话时先调用它：`run` 非空则按正常节奏恢复轮询，因此刷新页面不会让「正在生成」的提示消失，也不会丢掉已经发出的提问。没有进行中的 Run 时返回 200 且 `run` 为 null——这是常规状态，不是错误。
+         */
+        get: operations["get_active_agent_run_api_v1_chat_sessions__session_id__active_run_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -678,7 +702,7 @@ export interface paths {
         };
         /**
          * 查询 Agent Run
-         * @description 仅 Run 的所有者可读。`status` / `progress` / `error` 来自关联任务；成功后会带上 `output_message_id` 与本次实际注入的来源列表。
+         * @description 仅 Run 的所有者可读。`status` / `progress` / `error` / `failure_stage` 来自关联任务；成功后会带上 `output_message_id`、`evidence_level` 与本次实际注入的来源列表。
          */
         get: operations["get_agent_run_api_v1_agent_runs__run_id__get"];
         put?: never;
@@ -754,6 +778,17 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * AgentActiveRunSchema
+         * @description ``GET /chat-sessions/{session_id}/active-run`` 的响应。
+         *
+         *     刻意**不用 404** 表示「没有进行中的 Run」：页面打开时这是常规情况，
+         *     用 200 + ``run: null`` 可以让前端一条路径处理，也避免把正常状态记进
+         *     错误监控（评审文档「一、#11」）。
+         */
+        AgentActiveRunSchema: {
+            run?: components["schemas"]["AgentRunSchema"] | null;
+        };
+        /**
          * AgentRunAction
          * @description Run 的动作（契约 6.3 的 ``action``）。
          * @enum {string}
@@ -789,6 +824,10 @@ export interface components {
             output_message_id: string | null;
             /** Error */
             error: string | null;
+            /** Failure Stage */
+            failure_stage?: string | null;
+            /** Evidence Level */
+            evidence_level?: string | null;
             /** Created At */
             created_at: string;
             /** Started At */
@@ -960,25 +999,36 @@ export interface components {
         /**
          * Citation
          * @description 引用（契约 6.6）：取自命中片段，带可核对的原文摘录。
+         *
+         *     引用**不限于资料**（评审文档「一、#2」）：``source_kind`` 为 ``MATERIAL`` 时
+         *     指向资料片段/章节，前端可跳转到阅读器；为 ``ASSIGNMENT`` 时指向作业与评分标准，
+         *     这类业务对象没有页码，``material_*`` / ``location_*`` 为空，前端只做展示。
+         *     统一用 ``source_id`` 表示来源自身的 ID，``source_label`` 表示可直接展示的名称。
          */
         Citation: {
             /**
-             * Material Id
-             * Format: uuid
+             * Source Kind
+             * @default MATERIAL
              */
-            material_id: string;
+            source_kind: string;
+            /** Source Id */
+            source_id?: string | null;
+            /** Source Label */
+            source_label?: string | null;
+            /** Material Id */
+            material_id?: string | null;
             /** Material Name */
-            material_name: string;
+            material_name?: string | null;
             /** Section Id */
-            section_id: string | null;
+            section_id?: string | null;
             /** Section Title */
-            section_title: string | null;
+            section_title?: string | null;
             /** Source Type */
             source_type: string;
             /** Location Start */
-            location_start: number;
+            location_start?: number | null;
             /** Location End */
-            location_end: number;
+            location_end?: number | null;
             /** Page */
             page: number | null;
             /** Quote */
@@ -1143,7 +1193,7 @@ export interface components {
          * @description 机器可读的错误标识。
          * @enum {string}
          */
-        ErrorCode: "AUTH_INVALID_CREDENTIALS" | "AUTH_TOKEN_EXPIRED" | "AUTH_EMAIL_TAKEN" | "AUTH_TOO_MANY_ATTEMPTS" | "ROLE_FORBIDDEN" | "COURSE_FORBIDDEN" | "COURSE_ARCHIVED" | "RESOURCE_NOT_FOUND" | "INVITE_CODE_INVALID" | "UPLOAD_INVALID" | "RUBRIC_SCORE_MISMATCH" | "MATERIAL_NOT_READY" | "MATERIAL_ALREADY_READY" | "ASSIGNMENT_NOT_OPEN" | "GRADE_NOT_REVIEWED" | "AI_JOB_FAILED" | "CHAT_CONFLICT" | "PRACTICE_NOT_READY" | "PRACTICE_ALREADY_ATTEMPTED" | "JOB_NOT_RETRYABLE" | "AGENT_RUN_IN_PROGRESS" | "AGENT_CONTEXT_UNSUPPORTED" | "AGENT_CONTEXT_NOT_READY" | "AGENT_RUN_NOT_CANCELLABLE" | "VALIDATION_ERROR" | "METHOD_NOT_ALLOWED" | "INTERNAL_ERROR" | "SERVICE_UNAVAILABLE";
+        ErrorCode: "AUTH_INVALID_CREDENTIALS" | "AUTH_TOKEN_EXPIRED" | "AUTH_EMAIL_TAKEN" | "AUTH_TOO_MANY_ATTEMPTS" | "ROLE_FORBIDDEN" | "COURSE_FORBIDDEN" | "COURSE_ARCHIVED" | "RESOURCE_NOT_FOUND" | "INVITE_CODE_INVALID" | "UPLOAD_INVALID" | "RUBRIC_SCORE_MISMATCH" | "MATERIAL_NOT_READY" | "MATERIAL_ALREADY_READY" | "ASSIGNMENT_NOT_OPEN" | "GRADE_NOT_REVIEWED" | "AI_JOB_FAILED" | "CHAT_CONFLICT" | "PRACTICE_NOT_READY" | "PRACTICE_ALREADY_ATTEMPTED" | "JOB_NOT_RETRYABLE" | "AGENT_RUN_IN_PROGRESS" | "AGENT_CONTEXT_UNSUPPORTED" | "AGENT_CONTEXT_NOT_READY" | "AGENT_RUN_NOT_CANCELLABLE" | "AGENT_IDEMPOTENCY_CONFLICT" | "VALIDATION_ERROR" | "METHOD_NOT_ALLOWED" | "INTERNAL_ERROR" | "SERVICE_UNAVAILABLE";
         /**
          * ErrorResponse
          * @description 所有非 2xx 响应的统一结构。
@@ -1200,6 +1250,8 @@ export interface components {
             resource_id: string;
             /** Error */
             error: string | null;
+            /** Failure Stage */
+            failure_stage?: string | null;
             /** Created At */
             created_at: string;
             /** Started At */
@@ -1290,6 +1342,8 @@ export interface components {
             uploaded_by: string;
             /** Error Message */
             error_message: string | null;
+            /** Failure Stage */
+            failure_stage?: string | null;
             /** Created At */
             created_at: string;
             /** Updated At */
@@ -1424,6 +1478,17 @@ export interface components {
             expires_at: string;
             /** Confirm Deadline At */
             confirm_deadline_at: string;
+        };
+        /** Page[AgentRunSchema] */
+        Page_AgentRunSchema_: {
+            /** Items */
+            items: components["schemas"]["AgentRunSchema"][];
+            /** Page */
+            page: number;
+            /** Page Size */
+            page_size: number;
+            /** Total */
+            total: number;
         };
         /** Page[AssignmentSummarySchema] */
         Page_AssignmentSummarySchema_: {
@@ -4528,6 +4593,66 @@ export interface operations {
             };
         };
     };
+    list_agent_runs_api_v1_chat_sessions__session_id__runs_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Run 列表（最多 limit 条） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_AgentRunSchema_"];
+                };
+            };
+            /** @description Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 会话不存在、不是所有者，或目标对象不属于本课程/不可见（RESOURCE_NOT_FOUND） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description limit 超出范围（VALIDATION_ERROR） */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 未预期的服务端错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     create_agent_run_api_v1_chat_sessions__session_id__runs_post: {
         parameters: {
             query?: never;
@@ -4579,7 +4704,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description AGENT_RUN_IN_PROGRESS（该会话已有未结束的 Run）、COURSE_ARCHIVED（课程已归档）或 AGENT_CONTEXT_NOT_READY（资料未解析完成） */
+            /** @description AGENT_RUN_IN_PROGRESS（该会话已有未结束的 Run）、AGENT_IDEMPOTENCY_CONFLICT（同一请求编号被用于不同内容）、COURSE_ARCHIVED（课程已归档）或 AGENT_CONTEXT_NOT_READY（资料未解析完成） */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4595,6 +4720,64 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 未预期的服务端错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_active_agent_run_api_v1_chat_sessions__session_id__active_run_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 进行中的 Run，或 null */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentActiveRunSchema"];
+                };
+            };
+            /** @description Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 会话不存在、不是所有者，或目标对象不属于本课程/不可见（RESOURCE_NOT_FOUND） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
             /** @description 未预期的服务端错误 */

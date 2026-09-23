@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.agent.models import AgentRun, AgentRunSource
@@ -48,6 +48,7 @@ def add_run(
     selected_text: str | None,
     options: dict,
     now: datetime,
+    request_fingerprint: str | None = None,
 ) -> AgentRun:
     """创建 Run 记录（未提交）。"""
     run = AgentRun(
@@ -57,6 +58,7 @@ def add_run(
         action=action,
         input_message_id=input_message_id,
         client_request_id=client_request_id,
+        request_fingerprint=request_fingerprint,
         entity_type=entity_type,
         entity_id=entity_id,
         section_id=section_id,
@@ -141,6 +143,42 @@ async def find_active_run_id(
     return row.id if row is not None else None
 
 
+async def get_active_run_with_job(
+    session: AsyncSession, *, session_id: uuid.UUID
+) -> tuple[AgentRun, Job] | None:
+    """会话中尚未结束的 Run（含任务行），供 ``active-run`` 接口恢复轮询。"""
+    row = (await session.execute(_ACTIVE_RUN_SQL, {"session_id": session_id})).first()
+    if row is None:
+        return None
+    return await get_run_with_job(session, row.id)
+
+
+async def list_runs_with_jobs(
+    session: AsyncSession, *, session_id: uuid.UUID, limit: int
+) -> list[tuple[AgentRun, Job]]:
+    """会话内的 Run 列表（新→旧），含任务行。
+
+    前端用它把 ``FAILED`` / ``CANCELLED`` 的原因显示在对应提问下面：
+    刷新页面后，用户仍然能看到"这个问题为什么没有回答"（评审文档「一、#11」）。
+    """
+    result = await session.execute(
+        select(AgentRun, Job)
+        .join(Job, (Job.type == JobType.AGENT_RUN) & (Job.resource_id == AgentRun.id))
+        .where(AgentRun.session_id == session_id)
+        .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+        .limit(max(1, limit))
+    )
+    return [(run, job) for run, job in result.all()]
+
+
+async def count_runs(session: AsyncSession, *, session_id: uuid.UUID) -> int:
+    """会话内的 Run 总数（列表分页用）。"""
+    result = await session.execute(
+        select(func.count()).select_from(AgentRun).where(AgentRun.session_id == session_id)
+    )
+    return int(result.scalar_one())
+
+
 async def get_run_with_job(
     session: AsyncSession, run_id: uuid.UUID
 ) -> tuple[AgentRun, Job] | None:
@@ -203,11 +241,14 @@ __all__ = [
     "add_run",
     "add_source",
     "count_active_runs",
+    "count_runs",
     "find_active_run_id",
+    "get_active_run_with_job",
     "get_run",
     "get_run_by_client_request_id",
     "get_run_for_update",
     "get_run_with_job",
+    "list_runs_with_jobs",
     "list_sources",
     "lock_owned_session",
 ]

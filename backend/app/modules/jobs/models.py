@@ -18,8 +18,8 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Index, Integer, String, UniqueConstraint, func
 from sqlalchemy import Enum as SAEnum
+from sqlalchemy import Index, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import Uuid
 
@@ -29,6 +29,35 @@ from app.db.types import UtcDateTime
 
 #: 失败原因列长度：只保存可安全展示的摘要，不保存堆栈
 JOB_ERROR_MAX_LENGTH = 500
+
+#: 失败阶段列的取值域（**不是**原生枚举：阶段码会随流水线演进增加，
+#: 用字符串列可以让新增阶段不必发迁移）。取值见 :class:`JobFailureStage`。
+FAILURE_STAGE_MAX_LENGTH = 32
+
+
+class JobFailureStage(str, enum.Enum):
+    """任务失败发生在哪个阶段（评审文档「一、#4.8 / #9」）。
+
+    只用于**展示与排错**：前端据此区分「文件本身读不出来」「模型侧失败」
+    「服务不可用」，而不是把三种情况都画成同一句失败原因。
+    """
+
+    #: 从对象存储读取/校验原文件
+    DOWNLOAD = "DOWNLOAD"
+    #: 原生文本提取与切块
+    NATIVE_EXTRACT = "NATIVE_EXTRACT"
+    #: 页面渲染为图片（PDF/PPTX 视觉解析路径）
+    RENDER = "RENDER"
+    #: 视觉识别（OCR / 图表 / 公式）
+    VISION_OCR = "VISION_OCR"
+    #: 大纲生成
+    OUTLINE_GENERATION = "OUTLINE_GENERATION"
+    #: 模型客户端构造或配置缺失
+    MODEL_CALL = "MODEL_CALL"
+    #: 结果发布（写库）
+    PUBLISH = "PUBLISH"
+    #: 未归类
+    UNKNOWN = "UNKNOWN"
 
 
 class JobType(str, enum.Enum):
@@ -102,6 +131,12 @@ class Job(Base):
     #: 失败原因的安全摘要；非 FAILED 时为 NULL
     error: Mapped[str | None] = mapped_column(
         String(JOB_ERROR_MAX_LENGTH), nullable=True
+    )
+
+    #: 失败阶段码（``JobFailureStage`` 的取值）；非 FAILED 时为 NULL。
+    #: 用字符串列而不是原生枚举：新增阶段不需要发迁移。
+    failure_stage: Mapped[str | None] = mapped_column(
+        String(FAILURE_STAGE_MAX_LENGTH), nullable=True
     )
 
     #: 执行尝试次数：Worker 每次原子领取 +1（契约 5.5 的重试语义）

@@ -28,6 +28,9 @@ class JobStatus(BaseModel):
     resource_id: uuid.UUID
     #: 失败原因的安全摘要；非 FAILED 时为 null
     error: str | None
+    #: 失败阶段码（``DOWNLOAD`` / ``NATIVE_EXTRACT`` / ``OUTLINE_GENERATION`` …）；
+    #: 非 FAILED 时为 null。前端据此区分「文件读不出来」与「模型侧失败」。
+    failure_stage: str | None = None
     created_at: UtcTimestamp
     started_at: UtcTimestamp | None
     finished_at: UtcTimestamp | None

@@ -108,6 +108,9 @@ class MaterialDetail(BaseModel):
     uploaded_by: uuid.UUID
     #: 失败原因的安全摘要；非 FAILED 时为 null
     error_message: str | None
+    #: 解析失败的阶段码；非 FAILED 时为 null。前端据此说明「失败在读取文件 /
+    #: 文本提取 / 大纲生成」哪一步，而不是只给一句笼统的失败（评审文档 #4.8）。
+    failure_stage: str | None = None
     created_at: UtcTimestamp
     updated_at: UtcTimestamp
 
