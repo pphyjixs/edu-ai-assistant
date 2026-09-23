@@ -7,6 +7,7 @@
 | [api-contract.md](api-contract.md) | REST API、数据结构、错误码和异步任务协议 |
 | [acceptance.md](acceptance.md) | MVP 总体验收和逐模块验收标准 |
 | [collaboration.md](collaboration.md) | 分支、提交、联调、代码所有权和交付流程 |
+| [deployment-docker.md](deployment-docker.md) | Docker Compose 单机部署、资源限制、升级和备份 |
 | [deployment-vercel.md](deployment-vercel.md) | Vercel 部署拓扑、环境变量和服务约束 |
 
 ## 文档优先级

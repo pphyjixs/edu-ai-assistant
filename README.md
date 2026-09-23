@@ -8,7 +8,7 @@
 - 后端：FastAPI、Pydantic、SQLAlchemy
 - 数据库：PostgreSQL
 - 文件存储：兼容 S3 的对象存储
-- 部署：Vercel
+- 部署：Docker Compose（单机）
 
 ## 仓库目录
 
@@ -24,7 +24,8 @@ edu-ai-assistant/
 ## 开发入口
 
 - [项目文档索引](docs/README.md)：架构、模块分工与协作规范。
-- [后端部署与本地开发](docs/deployment-vercel.md)：环境变量、PostgreSQL 和独立迁移步骤。
+- [Docker 单机部署](docs/deployment-docker.md)：2 核 2 GB 服务器部署、备份与升级步骤。
+- [原 Vercel 部署说明](docs/deployment-vercel.md)：环境变量、PostgreSQL 和独立迁移步骤。
 - [API 契约](docs/api-contract.md)与 [OpenAPI 导出物](contracts/openapi/openapi.json)。
 - [验收标准](docs/acceptance.md)：第 12 节列出后端测试命令、测试库规则和用例覆盖。
 
