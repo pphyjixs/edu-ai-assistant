@@ -21,7 +21,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import { HttpError, toAppError, type AppError } from "@/services/http";
 import { queryKeys } from "@/services/queryKeys";
@@ -30,6 +30,7 @@ import {
   buddyApi,
   isTerminalRunStatus,
   type AgentRunActionDto,
+  type AgentRunDto,
   type ChatSessionDto,
 } from "../api";
 import { buildRunRequest, newClientRequestId } from "../model/runs";
@@ -42,6 +43,43 @@ export function useBuddyMessages(sessionId: string | undefined) {
     enabled: Boolean(sessionId),
     staleTime: 0,
   });
+}
+
+/** 提示词之外的 Run 列表条数上限（与后端默认一致） */
+const RUN_LIST_LIMIT = 20;
+
+/**
+ * 会话内的 Run 列表。
+ *
+ * 刷新之后消息列表里只有"用户提问"，失败的回答连内容都没有；
+ * 有了 Run 列表，界面才能把「上一次为什么没有回答」挂在对应的提问下面
+ * （评审文档「一、#11」）。
+ */
+export function useSessionRuns(sessionId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.agentRuns(sessionId ?? "none"),
+    queryFn: ({ signal }) => buddyApi.listRuns(sessionId as string, RUN_LIST_LIMIT, signal),
+    enabled: Boolean(sessionId),
+    staleTime: 0,
+  });
+}
+
+/**
+ * 把 Run 列表按「触发它的用户消息」索引，便于挂在消息下面展示。
+ *
+ * 同一个 input_message 理论上只有一个 Run，这里取最新的一条。
+ */
+export function useRunByInputMessage(
+  sessionId: string | undefined,
+): Map<string, AgentRunDto> {
+  const query = useSessionRuns(sessionId);
+  return useMemo(() => {
+    const map = new Map<string, AgentRunDto>();
+    for (const run of query.data?.items ?? []) {
+      if (!map.has(run.input_message_id)) map.set(run.input_message_id, run);
+    }
+    return map;
+  }, [query.data]);
 }
 
 /**
@@ -118,6 +156,11 @@ export function useSendBuddyRun() {
       // 用户消息在创建 Run 时已经落库，立刻刷新让它出现在对话里
       void queryClient.invalidateQueries({ queryKey: queryKeys.messages(result.sessionId) });
       void queryClient.invalidateQueries({ queryKey: ["recent-chat-sessions"] });
+      // 让「当前进行中的 Run」与 Run 列表跟上，避免刷新后又退回旧状态
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.activeAgentRun(result.sessionId),
+      });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.agentRuns(result.sessionId) });
     },
   });
 }
@@ -161,6 +204,13 @@ export function useAgentRun(runId: string | undefined, sessionId: string | undef
     void queryClient.invalidateQueries({ queryKey: ["recent-chat-sessions"] });
   }, [status, sessionId, queryClient]);
 
+  // 到达终态后同步刷新列表与 active-run：失败原因要能立刻出现在消息下面
+  useEffect(() => {
+    if (!isTerminalRunStatus(status) || !sessionId) return;
+    void queryClient.invalidateQueries({ queryKey: queryKeys.agentRuns(sessionId) });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.activeAgentRun(sessionId) });
+  }, [status, sessionId, queryClient]);
+
   return query;
 }
 
@@ -168,6 +218,10 @@ export function useAgentRun(runId: string | undefined, sessionId: string | undef
  * 最近一次提问的完整状态：会话、Run、进度与错误。
  *
  * 面板与页面按钮共用它，因此无论从哪触发，界面上的状态都是一致的。
+ *
+ * **刷新恢复**（评审文档「一、#11」）：本地 mutation 记录只在内存里，
+ * 刷新后为空。所以这里再问一次服务端「这个会话还有没有没结束的 Run」，
+ * 有就接着轮询——否则用户刷新后既看不到进度，也等不到那条回答。
  */
 export function useActiveBuddyRun(): {
   sessionId: string | undefined;
@@ -176,6 +230,8 @@ export function useActiveBuddyRun(): {
   isSubmitting: boolean;
   error: AppError | null;
 } {
+  const sessionIdFromStore = useBuddyStore((state) => state.activeChatSessionId);
+
   const states = useMutationState({
     filters: { mutationKey: buddyRunMutationKey },
     select: (mutation) => ({
@@ -187,14 +243,33 @@ export function useActiveBuddyRun(): {
   });
 
   const latest = [...states].sort((a, b) => b.submittedAt - a.submittedAt)[0];
-  const runQuery = useAgentRun(latest?.data?.runId, latest?.data?.sessionId);
+
+  // 服务端的「进行中 Run」：页面刚打开（刷新 / 换会话）时靠它恢复
+  const activeQuery = useQuery({
+    queryKey: queryKeys.activeAgentRun(sessionIdFromStore ?? "none"),
+    queryFn: ({ signal }) => buddyApi.getActiveRun(sessionIdFromStore as string, signal),
+    enabled: Boolean(sessionIdFromStore),
+    staleTime: 0,
+    retry: false,
+  });
+
+  // 本地这一次只在"它确实属于当前会话"时才算数，避免换课后串台
+  const localSessionId =
+    latest?.data?.sessionId && latest.data.sessionId === sessionIdFromStore
+      ? latest.data.sessionId
+      : undefined;
+  const localRunId = localSessionId ? latest?.data?.runId : undefined;
+
+  const runId = localRunId ?? activeQuery.data?.run?.id ?? undefined;
+  const runQuery = useAgentRun(runId, localSessionId ?? sessionIdFromStore);
 
   const submitError =
     latest?.status === "error" && latest.error ? toAppError(latest.error) : null;
-  const runError = runQuery.data?.error;
+  const runError = runQuery.data?.error ?? activeQuery.data?.run?.error ?? null;
+  const runStatus = runQuery.data?.status ?? activeQuery.data?.run?.status;
   const error: AppError | null =
     submitError ??
-    (runQuery.data?.status === "FAILED"
+    (runStatus === "FAILED"
       ? {
           code: "AI_JOB_FAILED",
           message: runError ?? "这次生成没有成功完成，可以重新提问。",
@@ -204,9 +279,9 @@ export function useActiveBuddyRun(): {
       : null);
 
   return {
-    sessionId: latest?.data?.sessionId,
-    runId: latest?.data?.runId,
-    run: runQuery.data,
+    sessionId: localSessionId ?? sessionIdFromStore,
+    runId,
+    run: runQuery.data ?? activeQuery.data?.run ?? undefined,
     isSubmitting: latest?.status === "pending",
     error,
   };

@@ -23,6 +23,7 @@ from app.modules.chat.models import (
     ChatMessageCitation,
     ChatMessageRole,
     ChatSession,
+    CitationSourceKind,
 )
 
 #: 单条消息最多保存的引用数量（与检索上限一致）
@@ -164,22 +165,34 @@ def add_citation(
     citation_id: uuid.UUID,
     message_id: uuid.UUID,
     order: int,
-    material_id: uuid.UUID,
-    material_name: str,
+    material_id: uuid.UUID | None,
+    material_name: str | None,
     section_id: uuid.UUID | None,
     section_title: str | None,
     source_type: str,
-    location_start: int,
-    location_end: int,
+    location_start: int | None,
+    location_end: int | None,
     page: int | None,
     quote: str,
     now: datetime,
+    source_kind: str = CitationSourceKind.MATERIAL.value,
+    source_id: uuid.UUID | None = None,
+    source_label: str | None = None,
 ) -> ChatMessageCitation:
-    """暂存一条引用快照（契约 6.6）。"""
+    """暂存一条引用快照（契约 6.6）。
+
+    ``source_kind`` 区分资料引用与作业/评分标准引用（评审文档「一、#2」）。
+    非资料引用不填 ``material_*`` 与 ``location_*``，只填 ``source_id`` /
+    ``source_label``；资料引用则让 ``source_id`` 默认取 ``material_id``，
+    这样前端可以统一用 ``source_id`` 定位来源。
+    """
     citation = ChatMessageCitation(
         id=citation_id,
         message_id=message_id,
         order=order,
+        source_kind=source_kind,
+        source_id=source_id if source_id is not None else material_id,
+        source_label=source_label if source_label is not None else material_name,
         material_id=material_id,
         material_name=material_name,
         section_id=section_id,

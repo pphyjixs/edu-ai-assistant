@@ -105,7 +105,7 @@ EXPECTED_ENUMS: dict[str, list[str]] = {
 COMPARE_OPTIONS = {"compare_type": True, "compare_server_default": True}
 
 #: head 对应的最新迁移
-REVISION = "0012_submissions_grading"
+REVISION = "0013_merge_agent_and_submissions"
 
 
 @pytest.fixture(scope="module")

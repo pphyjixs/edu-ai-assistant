@@ -32,7 +32,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
@@ -41,6 +41,7 @@ from app.modules.agent import context as context_module
 from app.modules.agent import generation_ai
 from app.modules.agent import repository as repo
 from app.modules.agent.models import (
+    EVIDENCE_LEVEL_MAX_LENGTH,
     MODEL_NAME_MAX_LENGTH,
     PROMPT_VERSION_MAX_LENGTH,
     AgentEntityType,
@@ -49,11 +50,22 @@ from app.modules.agent.models import (
 )
 from app.modules.agent.prompts import prompt_version_for
 from app.modules.chat import repository as chat_repo
-from app.modules.chat.models import ChatMessage, ChatMessageRole, ChatSession
+from app.modules.chat.models import (
+    NON_MATERIAL_SOURCE_TYPE,
+    ChatMessage,
+    ChatMessageRole,
+    ChatSession,
+    CitationSourceKind,
+)
 from app.modules.chat.retrieval import match_section
 from app.modules.courses.models import Course, CourseStatus
 from app.modules.jobs import service as jobs_service
-from app.modules.jobs.models import Job, JobStatusValue, JobType
+from app.modules.jobs.models import (
+    Job,
+    JobFailureStage,
+    JobStatusValue,
+    JobType,
+)
 
 logger = logging.getLogger("app.agent.worker")
 
@@ -87,6 +99,12 @@ class ClaimedAgentRun:
     selected_text: str | None
     question: str
     run_token: str
+    #: 本次提问的消息 ID：历史查询要排除它，避免同一句话进提示词两次
+    input_message_id: uuid.UUID
+    #: ``options.output_language``，为空表示"与用户输入同语言"
+    output_language: str | None = None
+    #: 第几次领取（1 起）
+    attempt: int = 1
 
 
 def _safe_error(exc: BaseException) -> str:
@@ -100,63 +118,104 @@ async def claim_next(
     *,
     now: datetime,
     lease_seconds: int,
+    max_attempts: int = 3,
 ) -> ClaimedAgentRun | None:
-    """领取一个待执行的 Agent Run。"""
-    async with session_factory() as session:
-        result = await session.execute(
-            select(Job)
-            .where(Job.type == JobType.AGENT_RUN, Job.status == JobStatusValue.PENDING)
-            .order_by(Job.created_at)
-            .limit(1)
-            .with_for_update(skip_locked=True)
-        )
-        job = result.scalar_one_or_none()
-        if job is None:
-            await session.rollback()
-            return None
+    """领取一个待执行的 Agent Run。
 
-        run = await repo.get_run(session, job.resource_id)
-        if run is None:
-            # Run 被删除（会话级联删除）：任务作废，避免空转
-            job.status = JobStatusValue.CANCELLED
-            job.finished_at = now
+    领取条件覆盖两类任务（评审文档「一、#9」）：
+
+    1. ``PENDING``：正常排队；
+    2. ``RUNNING`` 且**租约已过期**：执行者崩溃或失联，允许新 Worker 接管，
+       并生成新的 ``run_token``——旧执行者持有旧令牌，回写会被拒绝。
+
+    尝试次数超过 ``max_attempts`` 的任务不会再被领取，而是直接置为 ``FAILED``，
+    避免一条注定失败的任务在队列里无限重试、把 Run 永远留在 RUNNING。
+    """
+    # 内部循环：跳过"尝试次数已用尽"的任务，直到拿到一个可执行的任务或队列空
+    for _ in range(8):
+        async with session_factory() as session:
+            result = await session.execute(
+                select(Job)
+                .where(
+                    Job.type == JobType.AGENT_RUN,
+                    or_(
+                        Job.status == JobStatusValue.PENDING,
+                        and_(
+                            Job.status == JobStatusValue.RUNNING,
+                            Job.lease_expires_at.is_not(None),
+                            Job.lease_expires_at <= now,
+                        ),
+                    ),
+                )
+                .order_by(Job.created_at)
+                .limit(1)
+                .with_for_update(skip_locked=True)
+            )
+            job = result.scalar_one_or_none()
+            if job is None:
+                await session.rollback()
+                return None
+
+            if job.attempts >= max_attempts:
+                job.status = JobStatusValue.FAILED
+                job.error = (
+                    f"任务已尝试 {job.attempts} 次仍未完成，已停止重试。可以重新提问。"
+                )
+                job.failure_stage = JobFailureStage.UNKNOWN.value
+                job.finished_at = now
+                await session.commit()
+                logger.warning("任务尝试次数已用尽，置为 FAILED（job=%s）", job.id)
+                continue
+
+            run = await repo.get_run(session, job.resource_id)
+            if run is None:
+                # Run 被删除（会话级联删除）：任务作废，避免空转
+                job.status = JobStatusValue.CANCELLED
+                job.finished_at = now
+                await session.commit()
+                return None
+
+            chat_session = await session.get(ChatSession, run.session_id)
+            if chat_session is None:  # pragma: no cover - 外键保证存在
+                job.status = JobStatusValue.CANCELLED
+                job.finished_at = now
+                await session.commit()
+                return None
+
+            # 本次 input 就是创建 Run 时保存的用户消息
+            source_message = await session.get(ChatMessage, run.input_message_id)
+
+            run_token = secrets.token_hex(16)
+            job.status = JobStatusValue.RUNNING
+            job.started_at = job.started_at or now
+            job.progress = 0
+            job.attempts += 1
+            job.run_token = run_token
+            job.lease_expires_at = now + timedelta(seconds=lease_seconds)
+
+            options = run.options or {}
+            raw_language = options.get("output_language")
+
+            claimed = ClaimedAgentRun(
+                job_id=job.id,
+                run_id=run.id,
+                session_id=run.session_id,
+                course_id=chat_session.course_id,
+                user_id=run.user_id,
+                action=run.action,
+                entity_type=run.entity_type,
+                entity_id=run.entity_id,
+                section_id=run.section_id,
+                selected_text=run.selected_text,
+                question=source_message.content if source_message is not None else "",
+                run_token=run_token,
+                input_message_id=run.input_message_id,
+                output_language=raw_language if isinstance(raw_language, str) else None,
+                attempt=job.attempts,
+            )
             await session.commit()
-            return None
-
-        chat_session = await session.get(ChatSession, run.session_id)
-        if chat_session is None:  # pragma: no cover - 外键保证存在
-            job.status = JobStatusValue.CANCELLED
-            job.finished_at = now
-            await session.commit()
-            return None
-
-        # 本次 input 就是创建 Run 时保存的用户消息
-        source_message = await session.get(ChatMessage, run.input_message_id)
-
-        run_token = secrets.token_hex(16)
-        job.status = JobStatusValue.RUNNING
-        job.started_at = now
-        job.progress = 0
-        job.attempts += 1
-        job.run_token = run_token
-        job.lease_expires_at = now + timedelta(seconds=lease_seconds)
-
-        claimed = ClaimedAgentRun(
-            job_id=job.id,
-            run_id=run.id,
-            session_id=run.session_id,
-            course_id=chat_session.course_id,
-            user_id=run.user_id,
-            action=run.action,
-            entity_type=run.entity_type,
-            entity_id=run.entity_id,
-            section_id=run.section_id,
-            selected_text=run.selected_text,
-            question=source_message.content if source_message is not None else "",
-            run_token=run_token,
-        )
-        await session.commit()
-        return claimed
+            return claimed
+    return None
 
 
 async def renew_lease(
@@ -188,8 +247,13 @@ async def _write_failure(
     claimed: ClaimedAgentRun,
     message: str,
     now: datetime,
+    stage: JobFailureStage = JobFailureStage.UNKNOWN,
 ) -> None:
-    """把任务置为 FAILED（仍要复查令牌与租约，避免覆盖新一轮执行）。"""
+    """把任务置为 FAILED（仍要复查令牌与租约，避免覆盖新一轮执行）。
+
+    ``stage`` 是失败阶段码，前端据此区分"模型侧失败"与"服务不可用"
+    （评审文档「一、#9」要求所有冲突路径都落到可解释终态）。
+    """
     async with session_factory() as session:
         job = await jobs_service.lock_agent_run_job(session, run_id=claimed.run_id)
         if (
@@ -201,6 +265,7 @@ async def _write_failure(
             return
         job.status = JobStatusValue.FAILED
         job.error = message[:ERROR_MAX_LENGTH]
+        job.failure_stage = stage.value
         job.finished_at = now
         run = await repo.get_run_for_update(session, claimed.run_id)
         if run is not None:
@@ -268,8 +333,15 @@ async def _write_success(
             expected_version=chat_session.version,
             now=assistant_at,
         ):
-            await session.rollback()
-            logger.info("会话版本冲突，放弃发布（run=%s）", claimed.run_id)
+            # 冲突也要落到**可解释终态**：任务归我们所有（令牌匹配、租约未过期），
+            # 静默 return 会让 Run 永远停在 RUNNING（评审文档「一、#9」）。
+            job.status = JobStatusValue.FAILED
+            job.error = "会话在生成期间被更新，本次回答未写入，请重新提问。"
+            job.failure_stage = JobFailureStage.PUBLISH.value
+            job.finished_at = written_at
+            run.updated_at = written_at
+            await session.commit()
+            logger.info("会话版本冲突，已置为失败终态（run=%s）", claimed.run_id)
             return False
 
         assistant_message = chat_repo.add_message(
@@ -283,14 +355,15 @@ async def _write_success(
         )
         await session.flush()
 
-        for order, citation in enumerate(validated.citations, start=1):
+        for order, citation in enumerate(validated.display_citations, start=1):
             block = citation.block
+            is_material = block.display_kind != CitationSourceKind.ASSIGNMENT.value
             section_id = None
             section_title = None
-            if block.source_type is AgentSourceType.MATERIAL_OUTLINE:
+            if is_material and block.source_type is AgentSourceType.MATERIAL_OUTLINE:
                 section_id = block.source_id
                 section_title = block.section_title
-            elif block.chunk_id is not None and block.material_id is not None:
+            elif is_material and block.chunk_id is not None and block.material_id is not None:
                 matched = await match_section(
                     session,
                     material_id=block.material_id,
@@ -301,26 +374,40 @@ async def _write_success(
                     section_id = matched.section_id
                     section_title = matched.section_title
 
+            source_type = (
+                (block.source_location_type or "PDF_PAGE")
+                if is_material
+                else NON_MATERIAL_SOURCE_TYPE
+            )
             chat_repo.add_citation(
                 session,
                 citation_id=uuid.uuid4(),
                 message_id=assistant_message.id,
                 order=order,
-                material_id=block.material_id,  # type: ignore[arg-type]
-                material_name=block.material_name or "",
+                source_kind=(
+                    CitationSourceKind.MATERIAL.value
+                    if is_material
+                    else CitationSourceKind.ASSIGNMENT.value
+                ),
+                source_id=block.material_id if is_material else block.source_id,
+                source_label=block.material_name if is_material else block.label,
+                material_id=block.material_id if is_material else None,
+                material_name=block.material_name if is_material else None,
                 section_id=section_id,
                 section_title=section_title,
-                source_type=block.source_location_type or "PDF_PAGE",
-                location_start=block.location_start or 0,
-                location_end=block.location_end or 0,
-                page=block.location_start
-                if (block.source_location_type or "PDF_PAGE") == "PDF_PAGE"
-                else None,
+                source_type=source_type,
+                location_start=block.location_start if is_material else None,
+                location_end=block.location_end if is_material else None,
+                page=(
+                    block.location_start
+                    if is_material and source_type == "PDF_PAGE"
+                    else None
+                ),
                 quote=citation.quote,
                 now=written_at,
             )
 
-        # 记录本次**全部**注入来源（含不可引用的作业/课程摘要），便于审计
+        # 记录本次**全部**注入来源（含不可引用的课程摘要与选中文本），便于审计
         snapshot_limit = settings.agent_source_snapshot_max_chars
         for order, block in enumerate(context.blocks, start=1):
             repo.add_source(
@@ -342,10 +429,13 @@ async def _write_success(
         run.output_message_id = assistant_message.id
         run.prompt_version = prompt_version_for(claimed.action)[:PROMPT_VERSION_MAX_LENGTH]
         run.model = (model or "")[:MODEL_NAME_MAX_LENGTH] or None
+        # 依据充分度落在 Run 上：前端与审计都能看到"这次是完整依据还是部分依据"
+        run.evidence_level = validated.evidence_level[:EVIDENCE_LEVEL_MAX_LENGTH]
         run.updated_at = written_at
         job.status = JobStatusValue.SUCCEEDED
         job.progress = 100
         job.error = None
+        job.failure_stage = None
         job.finished_at = written_at
         await session.commit()
         return True
@@ -402,6 +492,8 @@ async def run_job(
                 section_id=claimed.section_id,
                 selected_text=claimed.selected_text,
                 question=claimed.question,
+                action=claimed.action,
+                input_message_id=claimed.input_message_id,
                 is_staff=is_staff,
                 settings=settings,
             )
@@ -409,6 +501,10 @@ async def run_job(
 
         if aborted["flag"]:
             return
+
+        no_evidence_message = context_module.build_no_evidence_message(
+            resolved, claimed.question
+        )
 
         ai_client: object | None = None
         try:
@@ -423,6 +519,8 @@ async def run_job(
                 api_key=settings.ai_api_key,
                 model=settings.ai_model,
                 timeout_seconds=settings.agent_model_timeout_seconds,
+                no_evidence_message=no_evidence_message,
+                output_language=claimed.output_language,
                 client=ai_client,
             )
         finally:
@@ -445,17 +543,29 @@ async def run_job(
     except generation_ai.AgentModelNotConfiguredError:
         logger.warning("Agent 未配置模型（run=%s）", claimed.run_id)
         await _write_failure(
-            session_factory, claimed=claimed, message="模型服务未配置", now=utc_now()
+            session_factory,
+            claimed=claimed,
+            message="模型服务未配置",
+            now=utc_now(),
+            stage=JobFailureStage.MODEL_CALL,
         )
     except generation_ai.AgentGenerationError as exc:
         logger.warning("Agent 生成失败（run=%s）：%s", claimed.run_id, exc)
         await _write_failure(
-            session_factory, claimed=claimed, message=_safe_error(exc), now=utc_now()
+            session_factory,
+            claimed=claimed,
+            message=_safe_error(exc),
+            now=utc_now(),
+            stage=JobFailureStage.MODEL_CALL,
         )
     except Exception as exc:
         logger.exception("Agent 执行异常（run=%s）", claimed.run_id)
         await _write_failure(
-            session_factory, claimed=claimed, message=_safe_error(exc), now=utc_now()
+            session_factory,
+            claimed=claimed,
+            message=_safe_error(exc),
+            now=utc_now(),
+            stage=JobFailureStage.UNKNOWN,
         )
     finally:
         duration_ms = int((time.monotonic() - started) * 1000)
@@ -478,7 +588,10 @@ async def run_pending_batch(
         if stop_requested is not None and stop_requested():
             break
         claimed = await claim_next(
-            session_factory, now=utc_now(), lease_seconds=settings.agent_run_lease_seconds
+            session_factory,
+            now=utc_now(),
+            lease_seconds=settings.agent_run_lease_seconds,
+            max_attempts=settings.agent_max_attempts,
         )
         if claimed is None:
             break

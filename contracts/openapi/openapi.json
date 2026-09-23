@@ -3523,7 +3523,7 @@
           "agent"
         ],
         "summary": "创建 Agent Run",
-        "description": "在指定会话中创建一个异步 Agent Run：同一事务写入用户消息、`agent_runs` 与 `AGENT_RUN` 任务后立即返回 202，模型调用由独立 Worker 完成。`client_request_id` 在用户范围内唯一，网络重试会返回同一个 Run。第一版每个会话同时只允许一个未结束的 Run。",
+        "description": "在指定会话中创建一个异步 Agent Run：同一事务写入用户消息、`agent_runs` 与 `AGENT_RUN` 任务后立即返回 202，模型调用由独立 Worker 完成。`client_request_id` 在用户范围内唯一，网络重试会返回同一个 Run；把同一个编号用于**不同内容**会返回 409 AGENT_IDEMPOTENCY_CONFLICT。`action` 与 `context` 的组合必须落在允许矩阵内，否则 422。第一版每个会话同时只允许一个未结束的 Run。",
         "operationId": "create_agent_run_api_v1_chat_sessions__session_id__runs_post",
         "security": [
           {
@@ -3584,7 +3584,7 @@
             }
           },
           "409": {
-            "description": "AGENT_RUN_IN_PROGRESS（该会话已有未结束的 Run）、COURSE_ARCHIVED（课程已归档）或 AGENT_CONTEXT_NOT_READY（资料未解析完成）",
+            "description": "AGENT_RUN_IN_PROGRESS（该会话已有未结束的 Run）、AGENT_IDEMPOTENCY_CONFLICT（同一请求编号被用于不同内容）、COURSE_ARCHIVED（课程已归档）或 AGENT_CONTEXT_NOT_READY（资料未解析完成）",
             "content": {
               "application/json": {
                 "schema": {
@@ -3624,6 +3624,174 @@
             }
           }
         }
+      },
+      "get": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "会话内的 Agent Run 列表",
+        "description": "按创建时间倒序返回本会话的 Run（新→旧），含状态、失败阶段与错误摘要。前端用它把 FAILED / CANCELLED 的原因显示在对应提问下面，因此刷新页面后用户仍然知道上一次为什么没有回答。只返回自己的会话。",
+        "operationId": "list_agent_runs_api_v1_chat_sessions__session_id__runs_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 50,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Run 列表（最多 limit 条）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_AgentRunSchema_"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "会话不存在、不是所有者，或目标对象不属于本课程/不可见（RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "limit 超出范围（VALIDATION_ERROR）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/chat-sessions/{session_id}/active-run": {
+      "get": {
+        "tags": [
+          "agent"
+        ],
+        "summary": "会话中尚未结束的 Run",
+        "description": "打开会话时先调用它：`run` 非空则按正常节奏恢复轮询，因此刷新页面不会让「正在生成」的提示消失，也不会丢掉已经发出的提问。没有进行中的 Run 时返回 200 且 `run` 为 null——这是常规状态，不是错误。",
+        "operationId": "get_active_agent_run_api_v1_chat_sessions__session_id__active_run_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "进行中的 Run，或 null",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentActiveRunSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "会话不存在、不是所有者，或目标对象不属于本课程/不可见（RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/agent-runs/{run_id}": {
@@ -3632,7 +3800,7 @@
           "agent"
         ],
         "summary": "查询 Agent Run",
-        "description": "仅 Run 的所有者可读。`status` / `progress` / `error` 来自关联任务；成功后会带上 `output_message_id` 与本次实际注入的来源列表。",
+        "description": "仅 Run 的所有者可读。`status` / `progress` / `error` / `failure_stage` 来自关联任务；成功后会带上 `output_message_id`、`evidence_level` 与本次实际注入的来源列表。",
         "operationId": "get_agent_run_api_v1_agent_runs__run_id__get",
         "security": [
           {
@@ -4884,6 +5052,23 @@
   },
   "components": {
     "schemas": {
+      "AgentActiveRunSchema": {
+        "properties": {
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentRunSchema"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "title": "AgentActiveRunSchema",
+        "description": "``GET /chat-sessions/{session_id}/active-run`` 的响应。\n\n刻意**不用 404** 表示「没有进行中的 Run」：页面打开时这是常规情况，\n用 200 + ``run: null`` 可以让前端一条路径处理，也避免把正常状态记进\n错误监控（评审文档「一、#11」）。"
+      },
       "AgentRunAction": {
         "type": "string",
         "enum": [
@@ -4944,6 +5129,28 @@
               }
             ],
             "title": "Error"
+          },
+          "failure_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Stage"
+          },
+          "evidence_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Level"
           },
           "created_at": {
             "type": "string",
@@ -5387,13 +5594,55 @@
       },
       "Citation": {
         "properties": {
-          "material_id": {
+          "source_kind": {
             "type": "string",
-            "format": "uuid",
+            "title": "Source Kind",
+            "default": "MATERIAL"
+          },
+          "source_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Id"
+          },
+          "source_label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Label"
+          },
+          "material_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Material Id"
           },
           "material_name": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Material Name"
           },
           "section_id": {
@@ -5424,11 +5673,25 @@
             "title": "Source Type"
           },
           "location_start": {
-            "type": "integer",
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Location Start"
           },
           "location_end": {
-            "type": "integer",
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Location End"
           },
           "page": {
@@ -5449,18 +5712,12 @@
         },
         "type": "object",
         "required": [
-          "material_id",
-          "material_name",
-          "section_id",
-          "section_title",
           "source_type",
-          "location_start",
-          "location_end",
           "page",
           "quote"
         ],
         "title": "Citation",
-        "description": "引用（契约 6.6）：取自命中片段，带可核对的原文摘录。"
+        "description": "引用（契约 6.6）：取自命中片段，带可核对的原文摘录。\n\n引用**不限于资料**（评审文档「一、#2」）：``source_kind`` 为 ``MATERIAL`` 时\n指向资料片段/章节，前端可跳转到阅读器；为 ``ASSIGNMENT`` 时指向作业与评分标准，\n这类业务对象没有页码，``material_*`` / ``location_*`` 为空，前端只做展示。\n统一用 ``source_id`` 表示来源自身的 ID，``source_label`` 表示可直接展示的名称。"
       },
       "CourseCreateRequest": {
         "properties": {
@@ -5775,6 +6032,7 @@
           "AGENT_CONTEXT_UNSUPPORTED",
           "AGENT_CONTEXT_NOT_READY",
           "AGENT_RUN_NOT_CANCELLABLE",
+          "AGENT_IDEMPOTENCY_CONFLICT",
           "VALIDATION_ERROR",
           "METHOD_NOT_ALLOWED",
           "INTERNAL_ERROR",
@@ -6084,6 +6342,17 @@
             ],
             "title": "Error"
           },
+          "failure_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Stage"
+          },
           "created_at": {
             "type": "string",
             "title": "Created At"
@@ -6261,6 +6530,17 @@
               }
             ],
             "title": "Error Message"
+          },
+          "failure_stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Stage"
           },
           "created_at": {
             "type": "string",
@@ -6520,6 +6800,37 @@
         ],
         "title": "MaterialUploadInitResponse",
         "description": "初始化上传响应（契约 4.3）。"
+      },
+      "Page_AgentRunSchema_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AgentRunSchema"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "page_size": {
+            "type": "integer",
+            "title": "Page Size"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "page",
+          "page_size",
+          "total"
+        ],
+        "title": "Page[AgentRunSchema]"
       },
       "Page_AssignmentSummarySchema_": {
         "properties": {

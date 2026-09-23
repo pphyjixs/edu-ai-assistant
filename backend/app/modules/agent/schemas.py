@@ -13,6 +13,8 @@ Run 的状态不在这里定义——它来自 Job（见 :mod:`app.modules.agent
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from typing import Literal
 
@@ -121,11 +123,26 @@ class AgentRunSchema(BaseModel):
     input_message_id: uuid.UUID
     output_message_id: uuid.UUID | None
     error: str | None
+    #: 失败阶段码（``DOWNLOAD`` / ``OUTLINE_GENERATION`` / …）；成功时为 null
+    failure_stage: str | None = None
+    #: 本次回答的依据充分度：FULL（完整）/ PARTIAL（只有部分依据）/ NONE（无依据）
+    evidence_level: str | None = None
     created_at: UtcTimestamp
     started_at: UtcTimestamp | None
     finished_at: UtcTimestamp | None
     #: 本次实际注入的来源（不含原文快照），便于前端展示与排错
     sources: list[AgentRunSourceSchema] = Field(default_factory=list)
+
+
+class AgentActiveRunSchema(BaseModel):
+    """``GET /chat-sessions/{session_id}/active-run`` 的响应。
+
+    刻意**不用 404** 表示「没有进行中的 Run」：页面打开时这是常规情况，
+    用 200 + ``run: null`` 可以让前端一条路径处理，也避免把正常状态记进
+    错误监控（评审文档「一、#11」）。
+    """
+
+    run: AgentRunSchema | None = None
 
 
 class AgentRunSourceSchema(BaseModel):
@@ -154,12 +171,21 @@ class GeneratedAgentCitation(BaseModel):
 
 
 class GeneratedAgentAnswer(BaseModel):
-    """模型输出的结构约束；语义校验在 generation_ai 中完成。"""
+    """模型输出的结构约束；语义校验在 generation_ai 中完成。
+
+    ``evidence_level`` 与 ``missing_information`` 是**可选**的：模型偶尔会漏，
+    服务端会自行兜底计算依据等级，不会因为少一个字段就整段作废
+    （评审文档「一、#1.4」：部分命中时要保留已确认的部分）。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     answer: StrictStr
     citations: list[GeneratedAgentCitation] = Field(default_factory=list)
+    #: 模型自评的依据充分度；服务端会结合引用校验结果做最终判定
+    evidence_level: Literal["FULL", "PARTIAL", "NONE"] | None = None
+    #: 模型认为资料无法覆盖的部分，用于向用户说明缺口
+    missing_information: list[StrictStr] = Field(default_factory=list)
 
 
 # ---------------------------- 内部领域枚举 ---------------------------- #
@@ -198,6 +224,66 @@ ENTITY_TYPES_REQUIRING_ID: frozenset[AgentEntityType] = frozenset(
 ENTITY_TYPES_REQUIRING_SECTION: frozenset[AgentEntityType] = frozenset(
     {AgentEntityType.MATERIAL_SECTION}
 )
+
+#: ``action`` ↔ ``context`` 允许矩阵（评审文档「一、#8」）。
+#:
+#: ``None`` 表示"没有 context 字段"，即课程范围——它只对会话式的动作有意义。
+#: 其余组合一律在创建 Run 时就返回 ``422 AGENT_CONTEXT_UNSUPPORTED``：
+#: 让注定无意义的请求当场失败，好过生成一段跑题的回答。
+#: ``CHECK_SUBMISSION`` 只允许 ``SUBMISSION``；该上下文尚未实现，
+#: 因此当前会稳定返回"未实现"而不是悄悄退化成课程问答。
+ACTION_CONTEXT_MATRIX: dict[AgentRunAction, frozenset[AgentEntityType | None]] = {
+    AgentRunAction.ASK: frozenset(
+        {
+            None,
+            AgentEntityType.COURSE,
+            AgentEntityType.MATERIAL,
+            AgentEntityType.MATERIAL_SECTION,
+            AgentEntityType.ASSIGNMENT,
+        }
+    ),
+    AgentRunAction.SUMMARIZE_CONTEXT: frozenset(
+        {
+            None,
+            AgentEntityType.COURSE,
+            AgentEntityType.MATERIAL,
+            AgentEntityType.MATERIAL_SECTION,
+            AgentEntityType.ASSIGNMENT,
+        }
+    ),
+    AgentRunAction.BREAK_DOWN_ASSIGNMENT: frozenset({AgentEntityType.ASSIGNMENT}),
+    AgentRunAction.CHECK_SUBMISSION: frozenset({AgentEntityType.SUBMISSION}),
+}
+
+
+def allowed_contexts(action: AgentRunAction) -> str:
+    """把矩阵里允许的上下文渲染成可读文案，用于 422 的提示。"""
+    names = sorted(
+        "COURSE" if item is None else item.value
+        for item in ACTION_CONTEXT_MATRIX[action]
+    )
+    return "、".join(names)
+
+
+def request_fingerprint(request: AgentRunCreateRequest) -> str:
+    """``client_request_id`` 对应的请求指纹（评审文档「一、#12」）。
+
+    同一个幂等键复用于**不同**请求时，服务端必须报冲突而不是把上一次的结果
+    当成这一次的答案，否则用户改完问题重发会拿到与问题无关的旧回答。
+    指纹只包含语义字段，不包含 ``client_request_id`` 本身。
+    """
+    context = request.context
+    canonical = {
+        "input": request.input,
+        "action": request.action.value,
+        "entity_type": context.entity_type.value if context else None,
+        "entity_id": str(context.entity_id) if context and context.entity_id else None,
+        "section_id": str(context.section_id) if context and context.section_id else None,
+        "selected_text": context.selected_text if context else None,
+        "options": request.options.model_dump(exclude_none=True) if request.options else {},
+    }
+    payload = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 ActionLiteral = Literal[
     "ASK",

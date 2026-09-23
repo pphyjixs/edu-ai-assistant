@@ -22,10 +22,9 @@ import asyncio
 import logging
 import time
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import Callable
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -39,7 +38,8 @@ from app.core.errors import (
 from app.core.pagination import PaginationParams
 from app.core.time import utc_now
 from app.modules.auth.models import User
-from app.modules.chat import answer_ai, repository as repo, retrieval
+from app.modules.chat import answer_ai, retrieval
+from app.modules.chat import repository as repo
 from app.modules.chat.models import (
     ChatAttemptStatus,
     ChatGenerationAttempt,
@@ -47,6 +47,7 @@ from app.modules.chat.models import (
     ChatMessageCitation,
     ChatMessageRole,
     ChatSession,
+    CitationSourceKind,
 )
 from app.modules.chat.schemas import NO_EVIDENCE_ANSWER, Citation
 from app.modules.courses import service as courses_service
@@ -181,6 +182,9 @@ async def _build_citations(
             (
                 item,
                 Citation(
+                    source_kind=CitationSourceKind.MATERIAL.value,
+                    source_id=chunk.material_id,
+                    source_label=chunk.material_name,
                     material_id=chunk.material_id,
                     material_name=chunk.material_name,
                     section_id=section.section_id if section else None,
@@ -438,6 +442,9 @@ async def send_question(
             citation_id=uuid.uuid4(),
             message_id=assistant_message.id,
             order=order,
+            source_kind=citation.source_kind,
+            source_id=citation.source_id,
+            source_label=citation.source_label,
             material_id=citation.material_id,
             material_name=citation.material_name,
             section_id=citation.section_id,

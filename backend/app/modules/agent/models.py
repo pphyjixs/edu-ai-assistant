@@ -35,8 +35,24 @@ from app.db.types import UtcDateTime
 SELECTED_TEXT_MAX_LENGTH = 4_000
 #: 幂等键长度上限
 CLIENT_REQUEST_ID_MAX_LENGTH = 64
+#: 请求指纹长度（sha256 十六进制）
+REQUEST_FINGERPRINT_MAX_LENGTH = 64
 PROMPT_VERSION_MAX_LENGTH = 64
 MODEL_NAME_MAX_LENGTH = 120
+EVIDENCE_LEVEL_MAX_LENGTH = 8
+
+
+class AgentEvidenceLevel(str, enum.Enum):
+    """本次回答的依据充分度（评审文档「二、6」）。
+
+    ``FULL`` 表示问题被资料完整覆盖；``PARTIAL`` 表示只找到部分依据——
+    这时**保留正文并说明缺口**，而不是把整段回答抹成"未找到依据"；
+    ``NONE`` 才走无依据路径。
+    """
+
+    FULL = "FULL"
+    PARTIAL = "PARTIAL"
+    NONE = "NONE"
 
 
 class AgentRunAction(str, enum.Enum):
@@ -137,6 +153,18 @@ class AgentRun(Base):
     #: 幂等键：同一用户重复提交返回同一个 Run（契约 6.3）
     client_request_id: Mapped[str] = mapped_column(
         String(CLIENT_REQUEST_ID_MAX_LENGTH), nullable=False
+    )
+
+    #: 幂等键对应的**请求指纹**（action + context + input + options 的 sha256）。
+    #: 同一个 ``client_request_id`` 复用了不同请求体时，服务端返回 409，
+    #: 而不是把上一次的结果当成这一次的答案（评审文档「一、#12」）。
+    request_fingerprint: Mapped[str | None] = mapped_column(
+        String(REQUEST_FINGERPRINT_MAX_LENGTH), nullable=True
+    )
+
+    #: 本次回答的依据充分度（``AgentEvidenceLevel``）
+    evidence_level: Mapped[str | None] = mapped_column(
+        String(EVIDENCE_LEVEL_MAX_LENGTH), nullable=True
     )
 
     #: 实际使用的提示词版本与模型名，便于回溯是哪个版本产生的回答

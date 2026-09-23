@@ -51,6 +51,24 @@ PROMPT_VERSION_MAX_LENGTH = 32
 #: 模型名称列长度
 MODEL_NAME_MAX_LENGTH = 128
 
+#: 引用来源类别列的取值长度
+SOURCE_KIND_MAX_LENGTH = 16
+
+#: 非资料引用的 ``source_type`` 占位值（资料引用用 PDF_PAGE / PPTX_SLIDE / DOCX_PARAGRAPH）
+NON_MATERIAL_SOURCE_TYPE = "NONE"
+
+
+class CitationSourceKind(str, enum.Enum):
+    """引用的来源类别（评审文档「一、#2」）。
+
+    ``MATERIAL`` 的引用指向资料片段/章节，前端可跳到阅读器；
+    ``ASSIGNMENT`` 的引用指向作业与评分标准这类可信业务对象，
+    它们没有页码，前端只做展示、不跳转。
+    """
+
+    MATERIAL = "MATERIAL"
+    ASSIGNMENT = "ASSIGNMENT"
+
 
 class ChatMessageRole(str, enum.Enum):
     """消息角色（契约 6.6）。"""
@@ -169,6 +187,11 @@ class ChatMessageCitation(Base):
 
     **不设外键**：引用是写入时刻的展示快照，资料被删除、章节被重写后，
     历史对话仍需完整回读（契约 6.1 的读历史语义）。
+
+    引用**不限于资料**（评审文档「一、#2」）：作业与评分标准是可信业务对象，
+    同样可以支撑一次有依据的回答，只是它们没有页码、也不能跳到资料阅读器。
+    因此用 ``source_kind`` 区分来源类别，资料之外的引用把 ``material_*`` 与
+    ``location_*`` 留空，改为填 ``source_id`` / ``source_label``。
     """
 
     __tablename__ = "chat_message_citations"
@@ -188,10 +211,25 @@ class ChatMessageCitation(Base):
     #: 引用顺序，从 1 开始（同一消息内连续）
     order: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    material_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    #: 来源类别：``MATERIAL``（资料片段/章节）或 ``ASSIGNMENT``（作业与评分标准）
+    source_kind: Mapped[str] = mapped_column(
+        String(SOURCE_KIND_MAX_LENGTH),
+        nullable=False,
+        default=CitationSourceKind.MATERIAL.value,
+        server_default=CitationSourceKind.MATERIAL.value,
+    )
 
-    material_name: Mapped[str] = mapped_column(
-        String(MATERIAL_NAME_MAX_LENGTH), nullable=False
+    #: 来源自身的 ID：资料 ID / 作业 ID
+    source_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+
+    #: 人类可读的来源标签，供前端直接展示（例如「作业《实验二》」）
+    source_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    #: 仅 ``source_kind=MATERIAL`` 时有值
+    material_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+
+    material_name: Mapped[str | None] = mapped_column(
+        String(MATERIAL_NAME_MAX_LENGTH), nullable=True
     )
 
     #: 命中章节；片段跨章节或落在章节外时为 NULL（契约 6.6）
@@ -199,12 +237,12 @@ class ChatMessageCitation(Base):
 
     section_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    #: 来源类型：PDF_PAGE / PPTX_SLIDE / DOCX_PARAGRAPH
+    #: 来源类型：PDF_PAGE / PPTX_SLIDE / DOCX_PARAGRAPH；非资料来源为 ``NONE``
     source_type: Mapped[str] = mapped_column(String(32), nullable=False)
 
-    location_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    location_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    location_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    location_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     #: 仅 PDF 有值（等于 location_start）；PPTX 与 DOCX 为 NULL（契约 6.6）
     page: Mapped[int | None] = mapped_column(Integer, nullable=True)
