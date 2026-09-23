@@ -182,6 +182,12 @@ class Settings(BaseSettings):
     #: 送入模型的报告全文上限（字符）；超过直接 FAILED，不截断后宣称成功（契约 9.11）
     submission_grade_max_chars: int = 120_000
 
+    # ------------------- 作业附件（Assignments）-------------------
+    #: 附件单文件大小上限（字节），与课件上传一致：默认 50 MiB
+    assignment_attachment_max_upload_bytes: int = 50 * 1024 * 1024
+    #: 附件上传的完成确认窗口（秒），默认 24 小时（与课件、报告一致）
+    assignment_attachment_confirm_ttl_seconds: int = 24 * 3600
+
     # ------------------------------ AI ------------------------------
     ai_provider: str = ""
     ai_api_key: str = ""

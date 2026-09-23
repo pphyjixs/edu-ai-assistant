@@ -25,6 +25,10 @@ import { CourseManagePage } from "@/features/courses/pages/CourseManagePage";
 import { CourseOverviewPage } from "@/features/courses/pages/CourseOverviewPage";
 import { CoursesPage } from "@/features/courses/pages/CoursesPage";
 import { DashboardPage } from "@/features/dashboard/pages/DashboardPage";
+import { GradesPage } from "@/features/grading/pages/GradesPage";
+import { GradingWorkbenchPage } from "@/features/grading/pages/GradingWorkbenchPage";
+import { SubmissionDetailPage } from "@/features/grading/pages/SubmissionDetailPage";
+import { SubmissionsPage } from "@/features/grading/pages/SubmissionsPage";
 import { MaterialReaderPage } from "@/features/materials/pages/MaterialReaderPage";
 import { MaterialsPage } from "@/features/materials/pages/MaterialsPage";
 import { LearnPage } from "@/features/practice/pages/LearnPage";
@@ -118,25 +122,27 @@ export function AppRoutes() {
           }
         />
 
-        {/* 实验任务已接入真实接口（契约第 8 节）；提交与批改仍未实现 */}
+        {/* 实验任务已接入真实接口（契约第 8 节） */}
         <Route path="assignments" element={<AssignmentsPage />} />
         <Route path="assignments/:assignmentId" element={<AssignmentDetailPage />} />
         <Route
-          path="grades"
+          path="assignments/:assignmentId/submissions"
           element={
-            <PlaceholderPage
-              title="成绩与反馈"
-              description="正式成绩来自教师发布的批改结果，依赖 grading 模块，后端尚未实现，下一阶段补齐。"
-            />
+            <Protected allow={["teacher"]}>
+              <SubmissionsPage />
+            </Protected>
           }
         />
+
+        {/* 提交与批改（契约第 9 节）：学生看成绩，教师批改与发布 */}
+        <Route path="submissions/:submissionId" element={<SubmissionDetailPage />} />
+        <Route path="grades" element={<GradesPage />} />
         <Route
           path="grading"
           element={
-            <PlaceholderPage
-              title="AI 批改"
-              description="提交列表、AI 分项建议与教师复核属于 grading 模块，后端尚未实现，下一阶段补齐。"
-            />
+            <Protected allow={["teacher"]}>
+              <GradingWorkbenchPage />
+            </Protected>
           }
         />
       </Route>

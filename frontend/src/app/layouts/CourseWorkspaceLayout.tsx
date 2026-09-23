@@ -40,6 +40,8 @@ function sectionLabelFor(pathname: string, courseId: string | undefined): string
       return "作业";
     case "grades":
       return "成绩";
+    case "submissions":
+      return "提交详情";
     case "grading":
       return "AI 批改";
     case "manage":
@@ -58,10 +60,16 @@ export function CourseWorkspaceLayout() {
   const { toggleBuddy } = useBuddyPanelControls();
   const sidebarCollapsed = useBuddyStore((state) => state.courseSidebarCollapsed);
   const toggleCourseSidebar = useBuddyStore((state) => state.toggleCourseSidebar);
+  // 用户拖过宽度就用那个值，否则用设计默认值（tokens 里的 --buddy-panel-width）
+  const buddyPanelWidth = useBuddyStore((state) => state.buddyPanelWidth);
 
   const style = {
     "--sidebar-current": sidebarCollapsed ? "0px" : "var(--sidebar-course-width)",
-    "--buddy-column": buddyOpen ? "var(--buddy-panel-width)" : "0px",
+    "--buddy-column": buddyOpen
+      ? buddyPanelWidth === null
+        ? "var(--buddy-panel-width)"
+        : `${buddyPanelWidth}px`
+      : "0px",
   } as CSSProperties;
 
   const sectionLabel = sectionLabelFor(location.pathname, courseId);

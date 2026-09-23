@@ -11,6 +11,7 @@ import type { JobStatusDto } from "@/services/jobs";
 import type { Page, Schemas } from "@/types/api";
 
 export type MaterialDetailDto = Schemas["MaterialDetail"];
+export type MaterialDownloadUrlDto = Schemas["MaterialDownloadUrl"];
 export type MaterialOutlineDto = Schemas["MaterialOutline"];
 export type MaterialSectionDto = Schemas["MaterialSection"];
 export type MaterialKnowledgePointDto = Schemas["MaterialKnowledgePoint"];
@@ -36,6 +37,22 @@ export const materialsApi = {
   /** 契约 5.4：GET /materials/{material_id}/outline */
   outline(materialId: string, signal?: AbortSignal): Promise<MaterialOutlineDto> {
     return http.get<MaterialOutlineDto>(`/materials/${materialId}/outline`, { signal });
+  },
+
+  /**
+   * 契约 4.9：GET /materials/{material_id}/download-url —— 资料原文的下载地址。
+   *
+   * 返回预签名 GET，有效期默认 10 分钟。签名是服务端**纯本地计算**的，
+   * 因此每次请求都会拿到新的有效地址，前端不需要自己推算过期时间。
+   */
+  downloadUrl(
+    materialId: string,
+    signal?: AbortSignal,
+  ): Promise<MaterialDownloadUrlDto> {
+    return http.get<MaterialDownloadUrlDto>(
+      `/materials/${materialId}/download-url`,
+      { signal },
+    );
   },
 
   /** 契约 4.3：POST /courses/{course_id}/materials/uploads */

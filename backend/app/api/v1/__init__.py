@@ -31,6 +31,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.modules.agent.router import agent_router
+from app.modules.assignments.attachments_router import attachments_router
 from app.modules.assignments.router import assignments_router
 from app.modules.auth.router import auth_router, me_router
 from app.modules.chat.router import chat_router
@@ -61,6 +62,8 @@ api_router.include_router(practice_router)
 
 # ----------------------------- assignments ----------------------------
 api_router.include_router(assignments_router)
+# 作业附件与任务同属第 8 节，单独一个 router 便于把上传协议相关的路由聚在一起
+api_router.include_router(attachments_router)
 
 # ------------------------------ agent ----------------------------------
 api_router.include_router(agent_router)

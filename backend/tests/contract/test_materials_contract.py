@@ -81,6 +81,10 @@ def test_complete_response_keeps_material_and_job_shape(schema: dict) -> None:
         "size",
         "status",
         "uploaded_by",
+        # 上传者显示名（详情与列表接口批量补上，上传者注销时为 null）与
+        # 客户端声明的 sha256：资料页要展示完整的文件详情
+        "uploaded_by_name",
+        "sha256",
         "error_message",
         # 解析失败的阶段码（评审文档「一、#4.8」）：让前端能区分
         # 「文件读不出来」与「模型侧失败」，而不是只给一句失败原因

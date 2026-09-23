@@ -1,0 +1,79 @@
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.scoreCard {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-success-soft);
+}
+
+.scoreMain {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.scoreValue {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--color-text-primary);
+}
+
+.scoreMax {
+  font-size: var(--text-body);
+  color: var(--color-text-secondary);
+}
+
+.scoreMeta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.publishedAt {
+  font-size: var(--text-caption);
+  color: var(--color-text-secondary);
+}
+
+.assignment {
+  font-size: var(--text-card-title);
+  font-weight: 650;
+}
+
+.summary {
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-muted);
+}
+
+.summaryTitle {
+  font-size: var(--text-secondary);
+  font-weight: 650;
+  color: var(--color-text-secondary);
+}
+
+.summaryText {
+  margin-top: 6px;
+  font-size: var(--text-secondary);
+  line-height: 1.75;
+  color: var(--color-text-primary);
+  white-space: pre-wrap;
+}
+
+.items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}

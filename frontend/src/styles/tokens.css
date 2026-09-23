@@ -25,6 +25,12 @@
   --color-border-strong: #d8d8d5;
 
   --color-brand-dark: #30302f;
+  /* 深色品牌面上的文字色。
+     这个变量此前被 `AssignmentsPage` 引用过却**从未定义**，于是「新建任务」
+     按钮在深色底上落到继承的深色文字，几乎看不清（测试反馈 UI bug #1）。 */
+  --color-text-on-brand: #ffffff;
+  /* 深色品牌面的悬停态 */
+  --color-brand-dark-hover: #1f1f1e;
   --color-accent-blue: #6f8cff;
   --color-accent-purple: #9d86ff;
   --color-accent-green: #75c9a8;

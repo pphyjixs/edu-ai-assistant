@@ -40,6 +40,13 @@ type BuddyState = {
   clearChatSession: () => void;
   setCourseSidebarCollapsed: (collapsed: boolean) => void;
   toggleCourseSidebar: () => void;
+  /**
+   * 面板宽度（px）。``null`` 表示用设计默认值，用户拖拽过之后才是具体数字。
+   * 只存数字：区间收敛（最小 320、最大视口一半）由 model/panelWidth 负责，
+   * 存储层不做业务判断。
+   */
+  buddyPanelWidth: number | null;
+  setBuddyPanelWidth: (width: number) => void;
 };
 
 export const useBuddyStore = create<BuddyState>()(
@@ -50,6 +57,7 @@ export const useBuddyStore = create<BuddyState>()(
       activeChatSessionId: undefined,
       activeChatCourseId: undefined,
       courseSidebarCollapsed: false,
+      buddyPanelWidth: null,
 
       openBuddy: () => set({ buddyOpen: true }),
       closeBuddy: () => set({ buddyOpen: false }),
@@ -62,14 +70,17 @@ export const useBuddyStore = create<BuddyState>()(
       setCourseSidebarCollapsed: (collapsed) => set({ courseSidebarCollapsed: collapsed }),
       toggleCourseSidebar: () =>
         set((state) => ({ courseSidebarCollapsed: !state.courseSidebarCollapsed })),
+      setBuddyPanelWidth: (width) => set({ buddyPanelWidth: width }),
     }),
     {
       name: "buddy-active-session",
       storage: createJSONStorage(() => sessionStorage),
-      // 只记住"当前会话是哪一条"；面板开合与上下文交给页面重新声明
+      // 只记住"当前会话是哪一条"与用户调过的面板宽度；
+      // 面板开合与上下文交给页面重新声明
       partialize: (state) => ({
         activeChatSessionId: state.activeChatSessionId,
         activeChatCourseId: state.activeChatCourseId,
+        buddyPanelWidth: state.buddyPanelWidth,
       }),
     },
   ),

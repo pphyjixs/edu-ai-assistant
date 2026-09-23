@@ -1,14 +1,18 @@
 /**
  * 资料阅读页。
  *
- * 契约只提供解析产物（章节 + 知识点 + 原文摘录 + 来源定位），
- * 不提供资料正文与下载地址，因此这里展示的就是大纲本身，
- * 不做「伪造原文」或「伪造页码」的事。
+ * 页面由两块组成：
+ *
+ * 1. **文件本身**：上传者、类型、大小、上传时间与校验和，以及原文的下载入口
+ *    （契约 4.9 的预签名地址）；
+ * 2. **解析产物**：章节 + 知识点 + 原文摘录 + 来源定位（契约 5.4）。
+ *
+ * 解析产物不是原文，因此这里不伪造正文；下载按钮给的是教师当初上传的原始文件，
+ * 两者用途不同，界面上也分开呈现。
  *
  * 上下文按**当前是否停在某一节**分流（评审文档「一、#3」）：
  * 有 `?section=` 时声明 `MATERIAL_SECTION` 并把 section_id 一起发出去，
- * 否则才声明整份 `MATERIAL`。旧实现固定声明 `material`，
- * 于是「总结本节」实际读的是整份资料。
+ * 否则才声明整份 `MATERIAL`。
  */
 
 import { useCallback } from "react";
@@ -21,6 +25,7 @@ import { ErrorState } from "@/components/ErrorState/ErrorState";
 import { Skeleton, SkeletonLines } from "@/components/Skeleton/Skeleton";
 import { AgentActionButton } from "@/features/buddy/components/AgentActionButton/AgentActionButton";
 import { useSetBuddyContext } from "@/features/buddy/hooks/useBuddy";
+import { MaterialDownloadLink } from "@/features/materials/components/MaterialDownloadLink/MaterialDownloadLink";
 import { MaterialOutlineView } from "@/features/materials/components/MaterialOutlineView/MaterialOutlineView";
 import { MaterialStatusBadge } from "@/features/materials/components/MaterialStatusBadge/MaterialStatusBadge";
 import {
@@ -114,7 +119,23 @@ export function MaterialReaderPage() {
             <MaterialStatusBadge material={material} />
             <span>{material.typeLabel}</span>
             <span>{material.sizeLabel}</span>
+            {/* 上传者已注销时后端给 null：此时不显示，而不是把 UUID 摆出来 */}
+            {material.uploadedByName ? (
+              <span>上传者：{material.uploadedByName}</span>
+            ) : null}
             <span>上传于 {material.createdAtLabel}</span>
+            {material.sha256 ? (
+              <span
+                className={styles.sha}
+                title={`SHA-256：${material.sha256}`}
+              >
+                校验和 {material.sha256.slice(0, 12)}…
+              </span>
+            ) : null}
+          </div>
+
+          <div className={styles.fileActions}>
+            <MaterialDownloadLink materialId={material.id} filename={material.filename} />
           </div>
         </div>
 

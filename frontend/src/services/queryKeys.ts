@@ -23,6 +23,9 @@ export const queryKeys = {
   materials: (courseId: string) => ["materials", courseId] as const,
   material: (materialId: string) => ["material", materialId] as const,
   materialOutline: (materialId: string) => ["material-outline", materialId] as const,
+  /** 原文下载地址：短时有效，因此不做长期缓存，过期后重新取 */
+  materialDownloadUrl: (materialId: string) =>
+    ["material-download-url", materialId] as const,
 
   /* ------------------------------ 练习 ------------------------------ */
   practiceSets: (courseId: string) => ["practice-sets", courseId] as const,
@@ -33,12 +36,19 @@ export const queryKeys = {
   chatSessions: (courseId: string) => ["chat-sessions", courseId] as const,
   messages: (sessionId: string) => ["messages", sessionId] as const,
 
-  /* ---------------------- 尚未实现（保留 mock）---------------------- */
+  /* ------------------------------ 作业 ------------------------------ */
   assignments: (courseId: string) => ["assignments", courseId] as const,
   assignment: (assignmentId: string) => ["assignment", assignmentId] as const,
-  submission: (assignmentId: string, userId: string) =>
-    ["submission", assignmentId, userId] as const,
-  grade: (assignmentId: string, userId: string) => ["grade", assignmentId, userId] as const,
+  /** 任务附件（契约 8.15）；列表里带短时下载地址，因此不做长期缓存 */
+  assignmentAttachments: (assignmentId: string) =>
+    ["assignment-attachments", assignmentId] as const,
+
+  /* -------------------- 提交与批改（契约第 9 节） -------------------- */
+  /** 某作业的提交列表：教师拿到全班，学生拿到本人 0–1 条 */
+  submissions: (assignmentId: string) => ["submissions", assignmentId] as const,
+  submission: (submissionId: string) => ["submission", submissionId] as const,
+  /** 批改详情（AI 建议 + 教师终稿）；学生仅在发布后可读 */
+  gradeReview: (submissionId: string) => ["grade-review", submissionId] as const,
 
   /* ---------------------------- 异步任务 ---------------------------- */
   job: (jobId: string) => ["job", jobId] as const,

@@ -1,11 +1,17 @@
 """Jobs 业务接口（供其他模块调用）。
 
-第一版不实现 Worker：任务创建后如实保持 ``PENDING``，状态与进度不会自动推进。
-``(type, resource_id)`` 唯一约束保证同一资源上同类任务只有一条，
-因此"重复触发不会产生第二个任务"由数据库兜住，而不是靠先查后插。
+职责边界（契约 10.0 / 10.2）：本模块只承担
+
+1. 任务创建（各业务模块在自身事务内调用，唯一约束兜住重复触发）；
+2. 查询与重试的**公开范围校验**（类型/资源类型必须配对，``AGENT_RUN`` 一律 404）；
+3. **权限优先级**与**类型分派**——把请求交给 Materials / Practice / Grading
+   各自已有的资源权限服务与状态机，不复制任何领域状态推进逻辑。
+
+状态推进仍由各 Worker 负责（解析 5.5、练习 7.10、批改 9.11）。
 
 本模块**不提交事务**：任务必须与业务记录在同一事务内落库
-（例如课件上传：资料与解析任务要么都成功，要么都回滚）。
+（例如课件上传：资料与解析任务要么都成功，要么都回滚）；
+重试的状态重置由资源模块在自己的事务里完成。
 """
 
 from __future__ import annotations
@@ -13,14 +19,19 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ResourceNotFoundError
-from app.core.time import utc_now
+from app.core.errors import JobNotRetryableError, ResourceNotFoundError
 from app.modules.auth.models import User
 from app.modules.jobs import repository as repo
 from app.modules.jobs.models import Job, JobResourceType, JobStatusValue, JobType
+from app.modules.jobs.schemas import is_public_job
+
+if TYPE_CHECKING:  # pragma: no cover - 仅供类型标注，避免模块级循环依赖
+    from app.modules.grading.models import Submission
+    from app.modules.practice.models import PracticeSet
 
 
 def create_material_parse_job(
@@ -137,18 +148,23 @@ def cancel_material_parse_job(
 async def get_job_for_viewer(
     session: AsyncSession, *, user: User, job_id: uuid.UUID
 ) -> Job:
-    """读取任务状态（契约 4.7 / 第 10 节），可见性由关联资源决定。
+    """读取任务状态（契约 4.7 / 10.1），可见性由关联资源决定。
 
-    任务不存在，或当前用户不可见关联资源时，统一抛
-    ``ResourceNotFoundError``（404），不区分「不存在」与「不可见」：
+    任务不存在、不属于公开 Jobs 范围（``AGENT_RUN`` 或类型与资源类型不配对）、
+    或当前用户不可见关联资源时，统一抛 ``ResourceNotFoundError``（404），
+    不区分「不存在」与「不可见」：
 
-    - ``MATERIAL_PARSE``：按资料可见性（资料所属课程的成员）；
+    - ``MATERIAL_PARSE``：按资料可见性（资料所属课程的成员，含归档课程；
+      资料删除后不可读）；
     - ``PRACTICE_GENERATE``：按练习可见性（教师可读任意状态，学生仅在该
       练习 ``PUBLISHED`` 时可见，见契约 7.4）；
     - ``SUBMISSION_GRADE``：按提交可见性（课程创建教师与提交本人可读，见契约 9.5）。
+
+    分派是**显式**的：公开范围之外的组合在这里就返回 404，
+    不会先去查 PracticeSet 之类的资源再依赖偶然的 404。
     """
     job = await repo.get_job_by_id(session, job_id)
-    if job is None:
+    if job is None or not is_public_job(job.type, job.resource_type):
         raise ResourceNotFoundError()
 
     if job.type is JobType.MATERIAL_PARSE:
@@ -167,36 +183,13 @@ async def get_job_for_viewer(
         )
         return job
 
-    if job.type is JobType.SUBMISSION_GRADE:
-        from app.modules.grading import service as grading_service
+    # is_public_job 已排除其他组合，这里只剩 SUBMISSION_GRADE
+    from app.modules.grading import service as grading_service
 
-        await grading_service.require_submission_viewer(
-            session, user=user, submission_id=job.resource_id
-        )
-        return job
-
-    # 其他任务类型的资源不可见逻辑尚未接入，统一按不可见处理
-    raise ResourceNotFoundError()
-
-
-async def retry_practice_generate_job(
-    session: AsyncSession, *, user: User, job_id: uuid.UUID, now: datetime | None = None
-) -> Job:
-    """**已迁移**：练习生成任务的加锁与重置逻辑移到
-    :mod:`app.modules.practice.service`（契约 10.1）。
-
-    保留这个薄封装是为了让直接调用 jobs 服务的既有代码路径仍然可用：
-    它等价于"加锁准备 + 写入"两步，并且与 HTTP 路由一样按
-    ``课程 → 练习 → 任务`` 的顺序加锁。
-    """
-    from app.modules.practice import service as practice_service
-
-    target = await practice_service.lock_retryable_job(
-        session, user=user, job_id=job_id, now=now
+    await grading_service.require_submission_viewer(
+        session, user=user, submission_id=job.resource_id
     )
-    return await practice_service.retry_practice_generate_job(
-        session, target=target, now=now
-    )
+    return job
 
 
 # ------------------------- 上下文 Agent Run（Agent）------------------------- #
@@ -230,16 +223,24 @@ async def lock_agent_run_job(session: AsyncSession, *, run_id: uuid.UUID) -> Job
 
 
 @dataclass(frozen=True, slots=True)
-class RetryTarget:
-    """重试接口的类型分派结果（契约 10.1）。
+class PracticeRetryTarget:
+    """练习生成任务的重试目标：已按 **课程 → 练习 → 任务** 加锁并判定可重试。"""
 
-    关联资源的**可见性与角色检查先于类型分流**，因此这个对象只在全部检查
-    通过后才产生；``practice`` / ``submission`` 分别对应两类可重试任务。
-    """
+    job: Job
+    practice_set: PracticeSet
 
-    job_type: JobType
-    practice: object | None = None
-    submission: object | None = None
+
+@dataclass(frozen=True, slots=True)
+class SubmissionRetryTarget:
+    """提交批改任务的重试目标：守卫已按 **课程 → Assignment → 版本 → Submission** 加锁。"""
+
+    job: Job
+    submission: Submission
+
+
+#: 重试分派的两种结果（契约 10.2）；``MATERIAL_PARSE`` 在分派阶段就以
+#: ``409 JOB_NOT_RETRYABLE`` 结束，不会产生目标对象。
+RetryTarget = PracticeRetryTarget | SubmissionRetryTarget
 
 
 async def lock_retryable_job(
@@ -249,19 +250,38 @@ async def lock_retryable_job(
     job_id: uuid.UUID,
     now: datetime | None = None,
 ) -> RetryTarget:
-    """重试接口的统一前置：先做可见性/角色/归档检查，再按任务类型分流。
+    """重试接口的统一前置：公开范围 → 可见性 → 角色 → 归档，再按类型分流。
 
-    - ``PRACTICE_GENERATE`` / ``MATERIAL_PARSE``：交给
-      :func:`app.modules.practice.service.lock_retryable_job`（后者按 5.3 的
-      约定让资料重试返回 ``409 JOB_NOT_RETRYABLE``）；
-    - ``SUBMISSION_GRADE``：交给 Grading 模块，仅课程创建教师可重试
-      （契约 9.6 / 10.1），状态分流与 ``POST /submissions/{id}/grade`` 共用。
+    检查顺序固定（契约 10.2）：任务存在且属于公开范围（404）→ 关联资源可见性
+    （404）→ 角色与资源管理权限（403）→ 课程归档（409）→ 状态（409）。
 
-    :raises ResourceNotFoundError: 任务或其关联资源不存在/不可见（404）。
+    - ``MATERIAL_PARSE``：资料成员可见性 + 创建教师 + 未归档之后，
+      返回 ``409 JOB_NOT_RETRYABLE``（改走 ``POST /materials/{id}/parse``，5.3）；
+    - ``PRACTICE_GENERATE``：交给 :mod:`app.modules.practice.service`，
+      在持有任务行锁时判定可重试；
+    - ``SUBMISSION_GRADE``：交给 :mod:`app.modules.grading.service`，
+      仅课程创建教师可重试（9.6 / 10.2），状态判定在任务行锁内完成。
+
+    :raises ResourceNotFoundError: 任务不存在、不属于公开范围或关联资源不可见（404）。
+    :raises RoleForbiddenError / CourseForbiddenError: 角色不符（403）。
+    :raises CourseArchivedError: 课程已归档（409）。
+    :raises JobNotRetryableError: 资料任务（改走资料接口）或状态不可重试（409）。
     """
     job = await repo.get_job_by_id(session, job_id)
-    if job is None:
+    if job is None or not is_public_job(job.type, job.resource_type):
+        # AGENT_RUN 与未知组合与"不存在"完全一致：不给探测空间（契约 10.0）
         raise ResourceNotFoundError()
+
+    if job.type is JobType.MATERIAL_PARSE:
+        from app.modules.materials import service as materials_service
+
+        material = await materials_service.get_material_for_member(
+            session, user=user, material_id=job.resource_id
+        )
+        await materials_service.require_material_manager(
+            session, user=user, material=material
+        )
+        raise JobNotRetryableError()
 
     if job.type is JobType.SUBMISSION_GRADE:
         from app.modules.grading import service as grading_service
@@ -269,24 +289,28 @@ async def lock_retryable_job(
         guard = await grading_service.lock_creator_submission(
             session, user=user, submission_id=job.resource_id
         )
-        return RetryTarget(job_type=job.type, submission=guard.submission)
+        return SubmissionRetryTarget(job=job, submission=guard.submission)
 
+    # is_public_job 已排除其他组合，这里只剩 PRACTICE_GENERATE
     from app.modules.practice import service as practice_service
 
     practice_target = await practice_service.lock_retryable_job(
         session, user=user, job_id=job_id, now=now
     )
-    return RetryTarget(job_type=job.type, practice=practice_target)
+    return PracticeRetryTarget(
+        job=practice_target.job, practice_set=practice_target.practice_set
+    )
 
 
 async def retry_submission_grade_job(
-    session: AsyncSession, *, target: RetryTarget, now: datetime | None = None
+    session: AsyncSession,
+    *,
+    target: SubmissionRetryTarget,
+    now: datetime | None = None,
 ) -> Job:
     """重试提交批改：与 ``POST /submissions/{id}/grade`` 共用同一服务逻辑（契约 9.6）。"""
     from app.modules.grading import service as grading_service
 
-    if target.submission is None:  # pragma: no cover - 分派保证存在
-        raise ResourceNotFoundError()
     return await grading_service.request_grade(
-        session, submission=target.submission, now=now  # type: ignore[arg-type]
+        session, submission=target.submission, now=now
     )

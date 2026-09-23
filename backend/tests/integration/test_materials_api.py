@@ -352,6 +352,9 @@ def test_list_requires_membership_and_returns_ordered_page(
         "size",
         "status",
         "uploaded_by",
+        # 上传者显示名（列表接口批量补上）与客户端声明的 sha256
+        "uploaded_by_name",
+        "sha256",
         "error_message",
         # 失败阶段码（评审文档「一、#4.8」）
         "failure_stage",
@@ -1811,3 +1814,81 @@ def test_deleting_material_removes_chunks(
     assert deleted.status_code == 204, deleted.text
 
     assert _chunk_rows(pg_sync_engine, material_id) == []
+
+
+# --------------------------------------------------------------------------- #
+# 4.9 资料原文的临时下载地址
+# --------------------------------------------------------------------------- #
+def test_download_url_available_to_members_only(
+    client: TestClient, fake_storage: FakeStorage
+) -> None:
+    _register(client, "dl-teacher@example.com", "TEACHER")
+    _register(client, "dl-student@example.com", "STUDENT")
+    teacher = _login(client, "dl-teacher@example.com")
+    student = _login(client, "dl-student@example.com")
+    course_id = _create_course(client, teacher)
+    detail = client.get(f"/api/v1/courses/{course_id}", headers=_auth(teacher)).json()
+    _join_course(client, student, course_id, detail["invite_code"])
+
+    material_id = _upload(client, fake_storage, teacher, course_id)["material"]["id"]
+    url = f"/api/v1/materials/{material_id}/download-url"
+
+    # 创建教师与学生都能拿到地址
+    for token in (teacher, student):
+        response = client.get(url, headers=_auth(token))
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["download_url"]
+        assert body["download_expires_at"]
+
+    # 每次请求都签发新的有效地址（不缓存、不落库）
+    first = client.get(url, headers=_auth(teacher)).json()
+    assert first["download_url"]
+
+    # 非成员统一 404，不区分"不存在"与"不可见"
+    _register(client, "dl-outsider@example.com", "TEACHER")
+    outsider = _login(client, "dl-outsider@example.com")
+    hidden = client.get(url, headers=_auth(outsider))
+    assert hidden.status_code == 404
+    assert hidden.json()["error"]["code"] == "RESOURCE_NOT_FOUND"
+
+    # 不存在的资料同样 404
+    missing = client.get(f"/api/v1/materials/{uuid.uuid4()}/download-url", headers=_auth(teacher))
+    assert missing.status_code == 404
+
+
+def test_download_url_does_not_touch_network_but_needs_config(
+    db_isolation: None, pg_app, fake_storage: FakeStorage
+) -> None:
+    """签发下载地址是**纯本地签名**：存储"不可达"不影响它，但"没配置"必须 503。
+
+    这两条都是刻意的：签名不需要访问对象存储，因此不该因为存储抖动而让用户
+    拿不到链接；而存储根本没配置时地址签出来也没用，应该明确报 503。
+    """
+    from app.storage import S3Storage, S3StorageConfig
+    from app.storage.deps import get_storage_dep
+
+    unconfigured = S3Storage(
+        S3StorageConfig(endpoint="", bucket="", access_key="", secret_key="")
+    )
+
+    app = pg_app()
+    app.dependency_overrides[get_storage_dep] = lambda: fake_storage
+    with TestClient(app) as client:
+        _register(client, "dl-outage@example.com", "TEACHER")
+        teacher = _login(client, "dl-outage@example.com")
+        course_id = _create_course(client, teacher)
+        material_id = _upload(client, fake_storage, teacher, course_id)["material"]["id"]
+        url = f"/api/v1/materials/{material_id}/download-url"
+
+        # 网络侧不可达：签名不访问网络，因此照常返回地址
+        fake_storage.as_unavailable("connection refused")
+        still_ok = client.get(url, headers=_auth(teacher))
+        assert still_ok.status_code == 200, still_ok.text
+        assert still_ok.json()["download_url"]
+
+        # 存储未配置：地址签出来也无法使用，明确 503
+        app.dependency_overrides[get_storage_dep] = lambda: unconfigured
+        outage = client.get(url, headers=_auth(teacher))
+        assert outage.status_code == 503, outage.text
+        assert outage.json()["error"]["code"] == "SERVICE_UNAVAILABLE"

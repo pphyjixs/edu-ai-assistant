@@ -90,8 +90,11 @@ export type TokenBundle = {
 /**
  * 令牌存放位置由前端自行决定（契约 2.2），API 不作限制。
  * 这里用 localStorage；契约测试反向断言服务端不下发 Cookie，因此不使用 Cookie。
+ *
+ * 键名导出给**跨标签页登录同步**使用：另一个标签页登录/退出会改写它，
+ * 本页据此重新拉取身份（见 ``AuthSessionBridge``）。
  */
-const TOKEN_KEY = "studybuddy.tokens";
+export const TOKEN_KEY = "studybuddy.tokens";
 
 export const tokenStorage = {
   read(): TokenBundle | null {

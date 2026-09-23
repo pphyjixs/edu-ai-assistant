@@ -106,6 +106,14 @@ class MaterialDetail(BaseModel):
     size: int
     status: MaterialStatus
     uploaded_by: uuid.UUID
+    #: 上传者显示名（详情与列表接口批量补上）。上传者已注销时为 null ——
+    #: 前端此时不显示上传者，而不是把 UUID 摆给用户看。
+    uploaded_by_name: str | None = None
+    #: 客户端在初始化上传时计算的摘要，用于核对文件完整性（契约 4.2）。
+    #: 对**历史完成快照**可空：快照 JSON 在引入该字段之前就已落库，
+    #: 实时查询（详情/列表）总是有值。下发一个更严格的模型会让旧快照
+    #: 在幂等重放时直接校验失败。
+    sha256: str | None = None
     #: 失败原因的安全摘要；非 FAILED 时为 null
     error_message: str | None
     #: 解析失败的阶段码；非 FAILED 时为 null。前端据此说明「失败在读取文件 /
@@ -113,6 +121,18 @@ class MaterialDetail(BaseModel):
     failure_stage: str | None = None
     created_at: UtcTimestamp
     updated_at: UtcTimestamp
+
+
+class MaterialDownloadUrl(BaseModel):
+    """资料原文的临时下载地址（契约 4.9）。
+
+    地址是预签名 ``GET``，**纯本地计算**生成：每次请求都会拿到新的有效地址，
+    过期后前端重新请求一次即可，服务端不缓存也不需要额外的会话记录。
+    """
+
+    download_url: str
+    #: 地址失效时间（UTC）
+    download_expires_at: UtcTimestamp
 
 
 class MaterialUploadCompleteResponse(BaseModel):

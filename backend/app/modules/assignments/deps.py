@@ -62,6 +62,37 @@ async def _locked_closable_assignment(
     )
 
 
+async def _locked_reopenable_assignment(
+    assignment_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
+) -> Assignment:
+    """重新开启接口前置：锁课程与任务 → 必须可重新开启（`CLOSED` / `PUBLISHED`）。"""
+    return await service.lock_writable_assignment(
+        session, user=user, assignment_id=assignment_id, reopenable=True
+    )
+
+
+async def _locked_attachment_assignment(
+    assignment_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
+) -> Assignment:
+    """附件写路径前置：锁课程与任务 → 创建教师 → 课程未归档 → 任务未归档。"""
+    return await service.lock_attachment_writable_assignment(
+        session, user=user, assignment_id=assignment_id
+    )
+
+
+async def _visible_assignment(
+    assignment_id: uuid.UUID, user: CurrentUserDep, session: SessionDep
+) -> Assignment:
+    """附件读路径前置：任务对当前用户可见（学生读草稿按不存在处理）。
+
+    直接复用任务详情的可见性规则，避免附件列表与任务详情给出不一致的结论。
+    """
+    detail = await service.get_assignment_detail(
+        session, user=user, assignment_id=assignment_id
+    )
+    return detail.assignment
+
+
 #: 已锁定的课程（创建接口）
 CreatorCourseDep = Annotated[Course, Depends(_locked_creator_course)]
 #: 已锁定且可修改的任务
@@ -72,10 +103,23 @@ PublishableAssignmentDep = Annotated[
 ]
 #: 已锁定且可关闭的任务
 ClosableAssignmentDep = Annotated[Assignment, Depends(_locked_closable_assignment)]
+#: 已锁定且可重新开启的任务
+ReopenableAssignmentDep = Annotated[
+    Assignment, Depends(_locked_reopenable_assignment)
+]
+#: 已锁定且可改附件的任务（创建教师）
+AttachmentAssignmentDep = Annotated[
+    Assignment, Depends(_locked_attachment_assignment)
+]
+#: 对当前用户可见的任务（附件读路径）
+VisibleAssignmentDep = Annotated[Assignment, Depends(_visible_assignment)]
 
 __all__ = [
+    "AttachmentAssignmentDep",
     "ClosableAssignmentDep",
     "CreatorCourseDep",
     "EditableAssignmentDep",
     "PublishableAssignmentDep",
+    "ReopenableAssignmentDep",
+    "VisibleAssignmentDep",
 ]

@@ -1,4 +1,4 @@
-"""写接口的请求体解析与 OpenAPI 声明（契约 1 / 6.2 / 7.2 / 7.5 / 7.6 / 10.1）。
+"""写接口的请求体解析与 OpenAPI 声明（契约 1 / 6.2 / 7.2 / 7.5 / 7.6 / 10.2）。
 
 两类场景都需要**手工解析**，原因是 FastAPI 会在解析依赖（认证、资源可见性、
 角色、归档与状态检查、行锁）**之前**读取并解析 JSON 请求体，无法满足契约 7.1
@@ -21,7 +21,8 @@ from collections.abc import Callable
 from typing import TypeVar
 
 from fastapi import Request
-from pydantic import BaseModel, ValidationError as PydanticValidationError
+from pydantic import BaseModel
+from pydantic import ValidationError as PydanticValidationError
 
 from app.core.errors import ValidationError
 

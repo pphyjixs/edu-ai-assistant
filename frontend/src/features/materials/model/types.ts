@@ -9,6 +9,7 @@
 import type { PillTone } from "@/components/Pill/Pill";
 import { formatMonthDayTime } from "@/utils/datetime";
 import { failureStageHint, failureStageLabel } from "@/utils/failureStage";
+import { formatBytes } from "@/utils/format";
 import { formatLocation, SOURCE_TYPE_LABEL } from "@/utils/location";
 
 import type {
@@ -46,12 +47,6 @@ function typeLabelOf(filename: string, contentType: string): string {
   return index === -1 ? "文件" : filename.slice(index + 1).toUpperCase();
 }
 
-export function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
 export type MaterialVM = {
   id: string;
   courseId: string;
@@ -74,6 +69,10 @@ export type MaterialVM = {
   /** 失败时给用户的可执行建议；非失败时为 null */
   failureHint: string | null;
   createdAtLabel: string;
+  /** 上传教师显示名；教师已注销时为空（此时界面不显示上传者） */
+  uploadedByName: string | null;
+  /** 客户端上传时声明的 SHA-256；历史完成快照可能为空 */
+  sha256: string | null;
   /** 只有解析完成才能读大纲 */
   isReady: boolean;
   /** 契约 5.3：重试解析对已完成的资料会被拒绝，因此只在失败时提供入口 */
@@ -98,6 +97,8 @@ export function toMaterialVM(dto: MaterialDetailDto): MaterialVM {
     failureStageLabel: failed ? failureStageLabel(dto.failure_stage) : null,
     failureHint: failed ? failureStageHint(dto.failure_stage) : null,
     createdAtLabel: formatMonthDayTime(dto.created_at),
+    uploadedByName: dto.uploaded_by_name ?? null,
+    sha256: dto.sha256 ?? null,
     isReady: mapped.status === "ready",
     canRetry: failed,
   };

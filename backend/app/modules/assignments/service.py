@@ -110,11 +110,12 @@ async def lock_writable_assignment(
     assignment_id: uuid.UUID,
     publishable: bool = False,
     closable: bool = False,
+    reopenable: bool = False,
 ) -> Assignment:
     """写路径第一阶段：读任务（404）→ 锁课程（成员/创建教师/归档）→ 锁任务。
 
-    锁顺序固定为 **课程 → 任务**。状态检查按接口需要执行（发布/关闭接口各自
-    限定允许的状态），因此请求体校验排在权限、归档与状态之后。
+    锁顺序固定为 **课程 → 任务**。状态检查按接口需要执行（发布 / 关闭 /
+    重新开启接口各自限定允许的状态），因此请求体校验排在权限、归档与状态之后。
 
     :raises ResourceNotFoundError: 任务不存在或对当前用户不可见（404）。
     :raises RoleForbiddenError / CourseForbiddenError: 非创建教师（403）。
@@ -131,6 +132,8 @@ async def lock_writable_assignment(
         raise ResourceNotFoundError()
     if closable:
         require_closable(locked)
+    elif reopenable:
+        require_reopenable(locked)
     elif publishable:
         require_publishable(locked)
     else:
@@ -157,6 +160,45 @@ def require_closable(assignment: Assignment) -> None:
     """``PUBLISHED`` 可关闭；``CLOSED`` 幂等；``DRAFT`` / ``ARCHIVED`` 拒绝。"""
     if assignment.status not in (AssignmentStatus.PUBLISHED, AssignmentStatus.CLOSED):
         raise AssignmentNotOpenError()
+
+
+def require_reopenable(assignment: Assignment) -> None:
+    """``CLOSED`` 可重新开启；``PUBLISHED`` 幂等；``DRAFT`` / ``ARCHIVED`` 拒绝。
+
+    重新开启是为了纠正「关早了」：关闭只是停止收作业，不是把任务作废，
+    因此它必须是可逆的。归档课程仍不可写（守卫在状态检查之前就拦下）。
+    """
+    if assignment.status not in (AssignmentStatus.CLOSED, AssignmentStatus.PUBLISHED):
+        raise AssignmentNotOpenError()
+
+
+def require_attachment_writable(assignment: Assignment) -> None:
+    """附件写路径的状态限制：只有**归档的任务**不允许再改附件（契约 8.15）。
+
+    草稿、进行中、已关闭都允许上传附件 —— 附件是教师自己的参考资料，
+    与"学生能不能提交"是两件事：作业关闭后教师仍可能想补一份评分说明。
+    """
+    if assignment.status is AssignmentStatus.ARCHIVED:
+        raise AssignmentNotOpenError()
+
+
+async def lock_attachment_writable_assignment(
+    session: AsyncSession, *, user: User, assignment_id: uuid.UUID
+) -> Assignment:
+    """附件写路径第一阶段：读任务（404）→ 锁课程（成员/创建教师/归档）→ 锁任务。
+
+    锁顺序与其它写路径一致：**课程 → 任务**。
+    """
+    assignment = await repo.get_assignment_by_id(session, assignment_id)
+    if assignment is None:
+        raise ResourceNotFoundError()
+    await lock_creator_course(session, user=user, course_id=assignment.course_id)
+
+    locked = await repo.lock_assignment(session, assignment_id)
+    if locked is None:  # pragma: no cover - 并发删除的兜底
+        raise ResourceNotFoundError()
+    require_attachment_writable(locked)
+    return locked
 
 
 # --------------------------------------------------------------------------- #
@@ -498,6 +540,32 @@ async def close_assignment(
     return assignment
 
 
+async def reopen_assignment(
+    session: AsyncSession, *, assignment: Assignment, now: datetime | None = None
+) -> Assignment:
+    """重新开启任务：``CLOSED`` → ``PUBLISHED``；已发布幂等。
+
+    与关闭对称，但**不改变发布时间**：``published_at`` 记录的是"这份任务第一次
+    对学生开放"的时间，开关一次不该把它改写。``closed_at`` 则被清空 —— 该字段
+    表示"当前处于关闭状态"的时刻，任务重新开放后它不再成立。
+
+    评分规则版本不受影响：重新开启不涉及评分项的实质变化，因此不会生成新版本，
+    学生此前提交的报告仍然按提交时固定的版本评分。
+    学生此前的提交也**不会**被清空，重新开启只是重新开放收作业的入口。
+    """
+    require_reopenable(assignment)
+    await lock_current_rubric_version(session, assignment=assignment)
+    if assignment.status is AssignmentStatus.PUBLISHED:
+        return assignment
+
+    timestamp = now or utc_now()
+    assignment.status = AssignmentStatus.PUBLISHED
+    assignment.closed_at = None
+    assignment.updated_at = timestamp
+    await session.commit()
+    return assignment
+
+
 __all__ = [
     "AssignmentDetail",
     "AssignmentListItem",
@@ -508,12 +576,16 @@ __all__ = [
     "get_assignment_detail",
     "get_rubric_snapshot",
     "list_assignments",
+    "lock_attachment_writable_assignment",
     "lock_creator_course",
     "lock_current_rubric_version",
     "lock_writable_assignment",
     "publish_assignment",
+    "reopen_assignment",
+    "require_attachment_writable",
     "require_closable",
     "require_editable",
     "require_publishable",
+    "require_reopenable",
     "update_assignment",
 ]

@@ -72,7 +72,9 @@ Access Token 有效期 1 小时，Refresh Token 自登录签发起有效 7 天�
 
 解析状态：`UPLOADING`、`UPLOADED`、`PROCESSING`、`READY`、`FAILED`；任务状态：`PENDING`、`RUNNING`、`SUCCEEDED`、`FAILED`、`CANCELLED`。
 
-解析 Worker（契约 5.5）：完成上传与重试解析后由后台任务执行解析，推进任务 `PENDING → RUNNING → SUCCEEDED/FAILED` 与资料 `PROCESSING → READY/FAILED`；解析结果（章节、知识点与**可检索原文片段**）在同一事务内一次性落库，失败只写安全摘要、不产生部分数据。片段是课程问答的检索单位：按约 1,000 字符切分、相邻片段重叠约 100 字符，并记录来源位置（PDF 页码 / PPTX 幻灯片号 / DOCX 段落序号）；片段先清后写，因此重复解析不会累积，删除资料时一并清空。第一版不做扫描版 PDF 的 OCR，也不提供通用 `POST /jobs/{job_id}/retry`。
+解析 Worker（契约 5.5）：完成上传与重试解析后由后台任务执行解析，推进任务 `PENDING → RUNNING → SUCCEEDED/FAILED` 与资料 `PROCESSING → READY/FAILED`；解析结果（章节、知识点与**可检索原文片段**）在同一事务内一次性落库，失败只写安全摘要、不产生部分数据。片段是课程问答的检索单位：按约 1,000 字符切分、相邻片段重叠约 100 字符，并记录来源位置（PDF 页码 / PPTX 幻灯片号 / DOCX 段落序号）；片段先清后写，因此重复解析不会累积，删除资料时一并清空。第一版不做扫描版 PDF 的 OCR；通用重试接口 `POST /jobs/{job_id}/retry` 已在第 10 节交付，
+但**资料解析的重试仍应经由 `POST /materials/{material_id}/parse`**（契约 5.3），
+通用接口对 `MATERIAL_PARSE` 返回 `409 JOB_NOT_RETRYABLE`。
 
 ## 5. Learning 模块
 
@@ -191,9 +193,35 @@ Access Token 有效期 1 小时，Refresh Token 自登录签发起有效 7 天�
 
 职责：统一管理资料解析、练习生成和报告批改的异步状态。
 
-任务类型：`MATERIAL_PARSE`、`PRACTICE_GENERATE`、`SUBMISSION_GRADE`。
+**公开任务范围**（契约 10.0）：`MATERIAL_PARSE / MATERIAL`、`PRACTICE_GENERATE / PRACTICE_SET`、
+`SUBMISSION_GRADE / SUBMISSION` 三类。Agent 的 `AGENT_RUN / AGENT_RUN` 是**内部任务**，
+只通过 `/agent-runs` 系列接口读写；两个通用 Jobs 路由对它统一返回 `404 RESOURCE_NOT_FOUND`。
 
 任务状态：`PENDING`、`RUNNING`、`SUCCEEDED`、`FAILED`、`CANCELLED`。
+
+响应（契约 10.0）：`id`、`type`、`status`、`progress`（**0–100**）、`resource_type`、
+`resource_id`、`error`（最长 **500** 字符的安全摘要）、`created_at`、`started_at`、`finished_at`
+（三个时间字段导出 `format: date-time`）。响应**不暴露** `attempts`、`run_token`、
+`lease_expires_at` 等内部调度字段。
+
+### 实现说明（第 10 节，迁移 `0013_jobs_contract`）
+
+- **公开枚举与内部枚举分离**：ORM 的 `JobType` / `JobResourceType` 保留 `AGENT_RUN`
+  供 Agent Worker 使用；响应 Schema 定义只含三类公开任务的同名枚举（组件名保持
+  `JobType` / `JobResourceType`），内部枚举在 Schema 模块以 `DbJobType` 别名引用，
+  转换在字段校验器中按取值完成（`AGENT_RUN` 会校验失败，属防御性兜底）。
+- **数据库约束**（`0013_jobs_contract`）：`ck_jobs_progress_range`（`progress BETWEEN 0 AND 100`）
+  与 `ck_jobs_type_resource_match`（类型与资源类型必须配对，含内部 `AGENT_RUN / AGENT_RUN`）；
+  受项目命名约定影响，落库名为 `ck_jobs_ck_jobs_progress_range` 与
+  `ck_jobs_ck_jobs_type_resource_match`，表达式与 ORM `Job.__table_args__` 逐字一致。
+- **显式分派**：查询与重试都先校验"类型/资源类型配对"，公开范围之外直接 404，
+  不再依赖"查错资源后偶然得到 404"；三类公开任务分别调用 Materials / Practice / Grading
+  各自的资源权限服务。重试目标是强类型的两种结果（练习 / 提交批改），
+  移除 `object | None` 式弱类型传递。
+- **检查顺序与锁**（契约 10.2）：认证 → 公开范围 → 关联资源可见性 → 角色 →
+  课程归档 → 状态 → 请求体 → 写入；状态判定在按 **课程 → 资源 → 任务** 取得行锁**之后**完成。
+- **职责边界**：Jobs 只做查找、权限优先级与类型分派；状态重置由资源模块负责，
+  Worker 的领取、心跳与回写协议不变（解析 5.5、练习 7.10、批改 9.11）。
 
 任务需要支持幂等触发、失败原因、进度、开始时间、结束时间和安全重试。
 

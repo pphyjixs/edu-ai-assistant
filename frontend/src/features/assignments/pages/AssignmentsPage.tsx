@@ -9,7 +9,7 @@ import { Card } from "@/components/Card/Card";
 import { ErrorState } from "@/components/ErrorState/ErrorState";
 import { Skeleton } from "@/components/Skeleton/Skeleton";
 import { useState } from "react";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 
 import { AssignmentForm } from "@/features/assignments/components/AssignmentForm/AssignmentForm";
 import { AssignmentList } from "@/features/assignments/components/AssignmentList/AssignmentList";
@@ -22,6 +22,7 @@ import styles from "./AssignmentsPage.module.css";
 
 export function AssignmentsPage() {
   const { courseId } = useParams<{ courseId: string }>();
+  const navigate = useNavigate();
   const courseQuery = useCourse(courseId);
   const assignmentsQuery = useAssignments(courseId);
   const createAssignment = useCreateAssignment(courseId ?? "");
@@ -57,12 +58,20 @@ export function AssignmentsPage() {
           <h2 className={styles.formTitle}>新建实验任务</h2>
           <p className={styles.formHint}>
             创建后是草稿，确认无误再发布；学生看不到草稿。评分项分值合计必须等于总分。
+            附件（实验指导、数据集说明等）在创建后进入任务详情页上传 —— 附件挂在任务上，
+            需要先有任务才能上传。
           </p>
           <AssignmentForm
             isPending={createAssignment.isPending}
             error={createAssignment.error}
             onSubmitCreate={(body) =>
-              createAssignment.mutate(body, { onSuccess: () => setCreating(false) })
+              createAssignment.mutate(body, {
+                // 创建成功后直接进入任务详情：那里才有「作业附件」入口
+                onSuccess: (created) => {
+                  setCreating(false);
+                  navigate(`/courses/${courseId}/assignments/${created.id}`);
+                },
+              })
             }
             onCancel={() => setCreating(false)}
           />

@@ -57,6 +57,17 @@
   color: var(--color-text-tertiary);
 }
 
+/* 校验和用等宽字体，便于与本地算出的摘要逐字对照 */
+.sha {
+  font-family: var(--font-mono);
+  font-size: var(--text-caption);
+}
+
+/* 下载入口单独一行：它与「上传于/大小」这类只读信息不同，是可操作的东西 */
+.fileActions {
+  margin-top: var(--space-3);
+}
+
 /* ------------------------------ 状态卡 ------------------------------ */
 .stateCard {
   display: flex;
