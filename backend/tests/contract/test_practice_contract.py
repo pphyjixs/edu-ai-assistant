@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import pytest
-
 from app.main import create_app
 
 GENERATE_PATH = "/api/v1/courses/{course_id}/practice-sets/generate"
@@ -63,7 +62,7 @@ def test_six_practice_endpoints_are_documented(schema: dict) -> None:
 
 
 def test_retry_endpoint_is_documented(schema: dict) -> None:
-    """契约 10.1：任务重试接口返回 202 并声明冲突错误。"""
+    """契约 10.2：任务重试接口返回 202 并声明冲突错误。"""
     operation = schema["paths"][RETRY_PATH]["post"]
     assert {"202", "403", "404", "409", "422"} <= operation["responses"].keys()
 
@@ -229,7 +228,7 @@ def test_published_list_uses_page_of_summaries(schema: dict) -> None:
 # 任务与错误码
 # --------------------------------------------------------------------------- #
 def test_job_status_documents_practice_task(schema: dict) -> None:
-    """任务响应能表达练习生成任务（契约 7.2 / 10.1）。"""
+    """任务响应能表达练习生成任务（契约 7.2 / 10.2）。"""
     job = _component(schema, "JobStatus")
     assert {"id", "type", "status", "progress", "resource_type", "resource_id"} <= set(
         job["properties"]
@@ -239,6 +238,6 @@ def test_job_status_documents_practice_task(schema: dict) -> None:
 
 
 def test_error_code_enum_includes_practice_codes(schema: dict) -> None:
-    """契约 7.11 / 10.1 新增的三个稳定错误码必须出现在枚举里。"""
+    """契约 7.11 / 10.2 新增的三个稳定错误码必须出现在枚举里。"""
     enum = set(_component(schema, "ErrorCode")["enum"])
     assert {"PRACTICE_NOT_READY", "PRACTICE_ALREADY_ATTEMPTED", "JOB_NOT_RETRYABLE"} <= enum
