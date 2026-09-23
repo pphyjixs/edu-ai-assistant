@@ -1,6 +1,6 @@
 """练习链路的确定性并发与竞态回归（真实 PostgreSQL）。
 
-覆盖 ``docs/api-contract.md`` 7.11 / 10.1 与统一锁协议
+覆盖 ``docs/api-contract.md`` 7.11 / 10.2 与统一锁协议
 （**课程 → 练习 → 任务 → 按 ID 升序的资料**）：
 
 - 生成 / 发布 / 提交 / 重试 四个写接口 × 两个方向：
@@ -30,16 +30,25 @@ from dataclasses import dataclass
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import text
-
 from app.core.time import utc_now
 from app.modules.jobs import service as jobs_service
 from app.modules.practice import generation_ai
 from app.modules.practice import repository as practice_repo
 from app.modules.practice import worker as practice_worker
 from app.modules.practice.models import PracticeDifficulty, PracticeQuestionType
+from fastapi.testclient import TestClient
+from sqlalchemy import text
+
 from tests.integration.test_chat_api import _make_chat_client
+from tests.integration.test_materials_api import (
+    _auth,
+    _fake_model_client,
+    _login,
+    _register,
+)
+from tests.integration.test_materials_api import (
+    fake_storage as fake_storage,  # noqa: PLC0414 - pytest fixture registration
+)
 from tests.integration.test_practice_api import (
     _ALLOCATION,
     ATTEMPTS_URL,
@@ -58,13 +67,6 @@ from tests.integration.test_practice_api import (
     _ready_course,
     practice_model_factory,
 )
-from tests.integration.test_materials_api import (
-    _auth,
-    _fake_model_client,
-    _login,
-    _register,
-)
-from tests.integration.test_materials_api import fake_storage as fake_storage  # noqa: F401
 
 ARCHIVE_URL = "/api/v1/courses/{course_id}/archive"
 

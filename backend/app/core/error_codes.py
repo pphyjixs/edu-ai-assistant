@@ -48,7 +48,7 @@ class ErrorCode(str, Enum):
     PRACTICE_NOT_READY = "PRACTICE_NOT_READY"
     #: 同一学生对同一练习重复提交（契约 7.6）
     PRACTICE_ALREADY_ATTEMPTED = "PRACTICE_ALREADY_ATTEMPTED"
-    #: 任务当前状态不可重试（契约 10.1）
+    #: 任务当前状态不可重试（契约 10.2）
     JOB_NOT_RETRYABLE = "JOB_NOT_RETRYABLE"
     #: 同一会话已有未结束的 Agent Run（docs/local-development-agent-backend.md 6.5）
     AGENT_RUN_IN_PROGRESS = "AGENT_RUN_IN_PROGRESS"

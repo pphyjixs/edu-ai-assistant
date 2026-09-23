@@ -185,7 +185,7 @@ class PracticeAlreadyAttemptedError(ApiError):
 
 
 class JobNotRetryableError(ApiError):
-    """任务当前状态不可重试（契约 10.1）。"""
+    """任务当前状态不可重试（契约 10.2）。"""
 
     code = ErrorCode.JOB_NOT_RETRYABLE
 

@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Iterator
 
 import pytest
@@ -17,10 +18,11 @@ from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
-from sqlalchemy import Engine, create_engine, inspect, text
-
 from app.core.config import BACKEND_DIR
 from app.db.registry import target_metadata
+from sqlalchemy import Engine, create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
+
 from tests import pg_support
 
 EXPECTED_TABLES = {
@@ -47,6 +49,7 @@ EXPECTED_TABLES = {
     "practice_attempt_answers",
     "practice_generation_attempts",
     "assignments",
+    "assignment_attachments",
     "assignment_rubric_versions",
     "assignment_rubric_items",
     "agent_runs",
@@ -105,7 +108,19 @@ EXPECTED_ENUMS: dict[str, list[str]] = {
 COMPARE_OPTIONS = {"compare_type": True, "compare_server_default": True}
 
 #: head 对应的最新迁移
-REVISION = "0014_assignment_attachments"
+REVISION = "01d9328a578b"
+
+#: jobs 的两条契约约束（库侧实际名字带双重前缀，见命名约定）
+JOBS_PROGRESS_CONSTRAINT = "ck_jobs_ck_jobs_progress_range"
+JOBS_TYPE_RESOURCE_CONSTRAINT = "ck_jobs_ck_jobs_type_resource_match"
+
+#: 合法的「任务类型 / 资源类型」四种组合（含内部 AGENT_RUN）
+LEGAL_JOB_COMBINATIONS = [
+    ("MATERIAL_PARSE", "MATERIAL"),
+    ("PRACTICE_GENERATE", "PRACTICE_SET"),
+    ("SUBMISSION_GRADE", "SUBMISSION"),
+    ("AGENT_RUN", "AGENT_RUN"),
+]
 
 
 @pytest.fixture(scope="module")
@@ -428,33 +443,114 @@ def test_upload_session_partial_unique_index(migrated_engine: Engine) -> None:
 def test_upgrade_downgrade_round_trip(
     alembic_config: Config, migration_database_url: str
 ) -> None:
-    """``0011_agent_runs → 0012 → 0011_agent_runs → 0012`` 往返必须成功。
+    """``0012 → 0013 → 0012 → 0013`` 往返必须成功。
 
-    覆盖契约 9 的迁移验收与 Agent → Grading 的相邻迁移边界：
-    降级只回退第 9 节的五张表，Agent 的两张表与枚举值必须保留。
+    覆盖契约 10 的迁移验收与 Agent → Grading → Jobs 的相邻迁移边界：
+    0013 只增删两条 CHECK 约束，降级回 ``0012_submissions_grading`` 后
+    Agent 两表与第 9 节的五张表都必须保留，约束全部消失。
     结束状态为 ``head``，因此可以安全地作为后续用例的起点。
     """
     engine = create_engine(pg_support.to_sync(migration_database_url))
     try:
         with pg_support.alembic_database_url(migration_database_url):
-            command.downgrade(alembic_config, "0011_agent_runs")
+            command.downgrade(alembic_config, "0012_submissions_grading")
             after_downgrade = set(inspect(engine).get_table_names())
-            # 回退到 0011：第 9 节的五张表消失，Agent 两表与任务表仍在
-            assert "assignments" in after_downgrade
             assert "agent_runs" in after_downgrade
-            assert "agent_run_sources" in after_downgrade
-            assert "submissions" not in after_downgrade
-            assert "grade_reviews" not in after_downgrade
+            assert "submissions" in after_downgrade
+            assert "grade_reviews" in after_downgrade
+
+            remaining = {
+                constraint["name"]
+                for constraint in inspect(engine).get_check_constraints("jobs")
+            }
+            assert JOBS_PROGRESS_CONSTRAINT not in remaining
+            assert JOBS_TYPE_RESOURCE_CONSTRAINT not in remaining
 
             command.upgrade(alembic_config, "head")
 
         assert EXPECTED_TABLES <= set(inspect(engine).get_table_names())
+        restored = {
+            constraint["name"]
+            for constraint in inspect(engine).get_check_constraints("jobs")
+        }
+        assert JOBS_PROGRESS_CONSTRAINT in restored
+        assert JOBS_TYPE_RESOURCE_CONSTRAINT in restored
         with engine.connect() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one() == REVISION
     finally:
         engine.dispose()
+
+
+def _insert_job(
+    connection, *, job_type: str, resource_type: str, progress: int = 0
+) -> None:
+    """向 ``jobs`` 插入一行（列名与类型来自测试常量）。"""
+    connection.execute(
+        text(
+            "INSERT INTO jobs"
+            " (id, type, status, progress, resource_type, resource_id, created_at)"
+            " VALUES (CAST(:id AS uuid), CAST(:job_type AS job_type),"
+            " 'PENDING'::job_status, :progress,"
+            " CAST(:resource_type AS job_resource_type),"
+            " CAST(:resource_id AS uuid), now())"
+        ),
+        {
+            "id": str(uuid.uuid4()),
+            "job_type": job_type,
+            "progress": progress,
+            "resource_type": resource_type,
+            "resource_id": str(uuid.uuid4()),
+        },
+    )
+
+
+def test_jobs_check_constraints_are_enforced(migrated_engine: Engine) -> None:
+    """进度越界与类型/资源不匹配在库侧被拒绝（契约 10.0）。"""
+    inspector = inspect(migrated_engine)
+    names = {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints("jobs")
+    }
+    assert JOBS_PROGRESS_CONSTRAINT in names
+    assert JOBS_TYPE_RESOURCE_CONSTRAINT in names
+
+    for progress in (-1, 101):
+        with pytest.raises(IntegrityError), migrated_engine.begin() as connection:
+            _insert_job(
+                connection,
+                job_type="MATERIAL_PARSE",
+                resource_type="MATERIAL",
+                progress=progress,
+            )
+
+    mismatches = [
+        ("PRACTICE_GENERATE", "SUBMISSION"),
+        ("SUBMISSION_GRADE", "PRACTICE_SET"),
+        ("AGENT_RUN", "MATERIAL"),
+        ("MATERIAL_PARSE", "AGENT_RUN"),
+    ]
+    for job_type, resource_type in mismatches:
+        with pytest.raises(IntegrityError), migrated_engine.begin() as connection:
+            _insert_job(
+                connection,
+                job_type=job_type,
+                resource_type=resource_type,
+            )
+
+    # 四种合法组合（含内部 AGENT_RUN）都能写入
+    with migrated_engine.begin() as connection:
+        for job_type, resource_type in LEGAL_JOB_COMBINATIONS:
+            _insert_job(connection, job_type=job_type, resource_type=resource_type)
+        stored = connection.execute(
+            text(
+                "SELECT count(*) FROM jobs WHERE type IN"
+                " ('MATERIAL_PARSE', 'PRACTICE_GENERATE', 'SUBMISSION_GRADE',"
+                " 'AGENT_RUN')"
+            )
+        ).scalar_one()
+    assert stored == len(LEGAL_JOB_COMBINATIONS)
 
 
 def test_rollback_to_base_removes_every_schema_object(
