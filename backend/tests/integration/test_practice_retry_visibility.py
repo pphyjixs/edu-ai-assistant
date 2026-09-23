@@ -1,4 +1,4 @@
-"""任务重试接口的关联资源可见性与权限优先级（契约 10.1）。
+"""任务重试接口的关联资源可见性与权限优先级（契约 10.2）。
 
 回归：非成员不能借 ``POST /jobs/{job_id}/retry`` 探测任务是否存在或其类型。
 ``MATERIAL_PARSE`` 任务也必须先按关联资料做可见性（404）→ 角色（403）→
@@ -15,9 +15,19 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from tests.integration.test_chat_api import _make_chat_client
-from tests.integration.test_practice_api import RETRY_URL, _ready_course, practice_model_factory
-from tests.integration.test_materials_api import _auth, _login, _register
-from tests.integration.test_materials_api import fake_storage as fake_storage  # noqa: F401
+from tests.integration.test_materials_api import (
+    _auth,
+    _login,
+    _register,
+)
+from tests.integration.test_materials_api import (
+    fake_storage as fake_storage,  # noqa: PLC0414 - pytest fixture registration
+)
+from tests.integration.test_practice_api import (
+    RETRY_URL,
+    _ready_course,
+    practice_model_factory,
+)
 
 
 @pytest.fixture
@@ -48,7 +58,7 @@ def test_non_member_cannot_probe_material_parse_job(
 ) -> None:
     """非成员 + MATERIAL_PARSE 任务 → 404 RESOURCE_NOT_FOUND（而非 409）。"""
     suffix = uuid.uuid4().hex[:8]
-    course_id, teacher, material_id = _ready_course(
+    _course_id, _teacher, material_id = _ready_course(
         client, fake_storage, pg_session_factory, make_settings,
         email=f"rv-nonmember-{suffix}@example.com",
     )

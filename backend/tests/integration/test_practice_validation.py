@@ -1,4 +1,4 @@
-"""练习写接口的校验优先级、严格类型与请求体边界（契约 7.1 / 7.2 / 7.5 / 7.6 / 10.1）。
+"""练习写接口的校验优先级、严格类型与请求体边界（契约 7.1 / 7.2 / 7.5 / 7.6 / 10.2）。
 
 固定优先级：**认证 → 资源可见性 → 角色 → 课程归档/资源状态 → 请求体结构与字段
 → 业务写入冲突**。实现方式是把"资源检查 + 行锁"放在依赖里（FastAPI 先解析依赖、
@@ -19,6 +19,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from tests.integration.test_chat_api import _make_chat_client
+from tests.integration.test_materials_api import (
+    _auth,
+    _login,
+    _register,
+)
+from tests.integration.test_materials_api import (
+    fake_storage as fake_storage,  # noqa: PLC0414 - pytest fixture registration
+)
 from tests.integration.test_practice_api import (
     ATTEMPTS_URL,
     GENERATE_URL,
@@ -33,8 +41,6 @@ from tests.integration.test_practice_api import (
     _ready_course,
     practice_model_factory,
 )
-from tests.integration.test_materials_api import _auth, _login, _register
-from tests.integration.test_materials_api import fake_storage as fake_storage  # noqa: F401
 
 MALFORMED_BODIES: tuple[tuple[str, bytes], ...] = (
     ("非 JSON", b"not-json"),

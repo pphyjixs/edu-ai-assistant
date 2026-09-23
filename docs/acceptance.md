@@ -315,7 +315,10 @@ HeadObject 带 `x-amz-checksum-mode: ENABLED` 后，MinIO 回显已存储的
 推进资料 `PROCESSING → READY/FAILED` 与任务 `PENDING → RUNNING → SUCCEEDED/FAILED`；
 大纲/知识点查询（`GET /materials/{material_id}/outline`）、失败重试
 （`POST /materials/{material_id}/parse`）、资料列表与删除接口均已交付并验收。
-第一版不做扫描版 PDF 的 OCR，也不提供通用 `POST /jobs/{job_id}/retry`；
+第一版不做扫描版 PDF 的 OCR；~~也不提供通用 `POST /jobs/{job_id}/retry`~~
+（**该表述已被第 10 节取代**：通用重试接口已交付，见下方"异步任务接口"一节；
+资料解析的重试仍经由 `POST /materials/{material_id}/parse`，通用接口对其返回
+`409 JOB_NOT_RETRYABLE`）；
 前端对解析状态、大纲与重试入口的展示仍属后续阶段。
 
 对象存储验收怎么跑（`tests/integration/test_storage_minio.py`，用例对服务端不做假设）:
@@ -1001,3 +1004,154 @@ integration 427），OpenAPI 重导出后与运行时逐字节一致（41 条路
    测试库、`_migration_check` 库、MinIO 测试对象与超时日志均无残留。
 7. **尚未验收**（与此前一致，不因集成而改变）：真实模型批改/出题/问答质量、
    前端提交与批改页面接入、部署环境各 Worker 常驻运行演练。
+
+## 14. 异步任务接口（第 10 节）验收记录
+
+本轮把分散在 Materials / Practice / Grading 的任务能力**收口**为第 10 节公开契约，
+修复公开 Schema 与内部模型的边界、补数据库约束并新增独立 Jobs 回归。
+**不新增接口路径、不改现有成功状态码**；数据库新增迁移 `0013_jobs_contract`。
+
+### 1. 契约冻结（`docs/api-contract.md` 第 10 节）
+
+第 10 节拆为 10.0（公开范围与通用规则）、10.1（查询）、10.2（重试）：
+
+- **公开范围**只含 `MATERIAL_PARSE / MATERIAL`、`PRACTICE_GENERATE / PRACTICE_SET`、
+  `SUBMISSION_GRADE / SUBMISSION`；内部 `AGENT_RUN / AGENT_RUN` 只走 `/agent-runs`，
+  两个通用 Jobs 路由对它统一 `404 RESOURCE_NOT_FOUND`；
+- **响应约束**：`progress` 0–100、`error` ≤ 500 字符安全摘要、三个时间字段
+  `format: date-time`、**不暴露** `attempts` / `run_token` / `lease_expires_at`；
+- **可见性矩阵**逐类写清（资料删除后不可读、练习发布前学生 404、批改仅创建教师与提交本人、
+  归档课程历史任务仍可读）；
+- **检查顺序固定 8 步**，类型分流表把四条分支（资料改走 5.3、练习状态机、批改共用 9.6、
+  Agent 404）全部写明，并要求状态判定发生在任务行锁之后。
+
+同时修正了历史文档中"第一版不提供通用 `POST /jobs/{job_id}/retry`"的过时表述
+（`docs/modules.md`、`docs/api-contract.md` 5.5、本文件第 5 节），注明已被第 10 节取代。
+
+### 2. Schema 与数据库约束
+
+- **公开枚举与内部枚举分离**：ORM 枚举保留 `AGENT_RUN` 供 Agent Worker 使用；
+  `JobStatus` 使用只含三类公开任务的同名枚举（组件名仍是 `JobType` / `JobResourceType`，
+  不破坏生成类型名称），内部枚举以 `DbJobType` / `DbJobResourceType` 别名引用，
+  字段校验器按取值完成转换（`AGENT_RUN` 校验失败属防御性兜底，服务层先返回 404）。
+- **Schema 边界**：`progress` 声明 `minimum: 0` / `maximum: 100`，
+  `error` 的 string 分支声明 `maxLength: 500`，`created_at` / `started_at` / `finished_at`
+  声明 `format: date-time`（此前 `PlainSerializer` 只声明了 `type: string`）。
+- **迁移 `0013_jobs_contract`**（`down_revision = 0012_submissions_grading`）：
+  `ck_jobs_progress_range`（`progress BETWEEN 0 AND 100`）与
+  `ck_jobs_type_resource_match`（类型与资源类型必须配对，含 `AGENT_RUN / AGENT_RUN`）；
+  受命名约定影响落库名为 `ck_jobs_ck_jobs_*`，表达式与 ORM 逐字一致，
+  `alembic check` 报告无差异。降级只删除这两条约束
+  （注意：Alembic 在 drop 时同样套用命名约定，因此传基础名）。
+- **开发库**：升级前建快照 `edu_ai_dev_before_0013_jobs_contract_backup`，
+  升级后 `alembic current` 与 `heads` 均为 `0013_jobs_contract`（单一线性 head）。
+- 迁移测试覆盖 `0012 → 0013 → 0012 → 0013` 往返、进度 `-1` / `101` 被拒、
+  非法组合（4 种）被拒、四种合法组合可写入。
+
+### 3. 服务层收口
+
+- **显式分派**：查询与重试都先校验"类型/资源类型配对"，公开范围之外（含 `AGENT_RUN`
+  与未知组合）直接 404，不再依赖"查错资源后偶然得到 404"；三类公开任务分别调用
+  Materials / Practice / Grading 各自的资源权限服务。
+- **强类型重试目标**：`PracticeRetryTarget` 与 `SubmissionRetryTarget` 两种结果，
+  移除 `job_type` + `object | None` 的弱类型传递；路由按类型分流。
+- **资料重试的权限来自 Materials**：新增公开的 `require_material_manager`
+  （成员可见性 → 角色 → 归档），Jobs 不再复制这套顺序；练习侧删除了重复的
+  `_require_material_member_for_retry`，Practice 的 `lock_retryable_job` 收窄为
+  只处理 `PRACTICE_GENERATE`，并清理了已无调用方的 `practice.deps.RetryTargetDep`。
+- **职责边界**：Jobs 只做查找、权限优先级与类型分派；状态重置仍由资源模块完成，
+  Worker 的领取、心跳与回写协议未改动。
+
+### 4. 测试与变异验证
+
+新增 **63 项** Jobs 回归：
+
+| 层 | 文件 | 数量 | 覆盖 |
+| --- | --- | --- | --- |
+| unit | `test_jobs_schemas.py` | 20 | 字段集合与必填、内部枚举→公开枚举、`AGENT_RUN` 拒绝、progress 边界（-1/101/0/100）、error 500 字符、时间序列化 `Z`、公开范围判定 |
+| contract | `test_jobs_contract.py` | 9 | 两条路径与状态码、Bearer、`JobStatus` 字段/必填/uuid/date-time/progress/error 上限、公开枚举不含 `AGENT_RUN`、retry 请求体可省略非 nullable、导出物一致、生成类型含三值枚举 |
+| integration | `test_jobs_api.py` | 27 | 可见性矩阵（资料/练习/批改/Agent/未知）、重试四类分流、请求体 5 种非法形态、非法 JSON/UTF-8、错误优先级叠加、响应不含内部字段 |
+| integration | `test_jobs_races.py` | 7 | 并发重试只重置一次、并发批改重试同一 job、持有 jobs 行锁时重试等待、**持锁期间状态被推进后必须按最新状态分流**（练习与批改各一）、重试后旧令牌的成功/失败回写均被拒 |
+| integration | `test_migrations.py` | +1 | 0013 约束落库、进度越界与非法组合被拒、四种合法组合可写入 |
+
+**变异验证**（临时改动实现，对应用例必须失败，随后立即恢复）：
+
+| 变异 | 被捕获的用例 |
+| --- | --- |
+| M8：练习重试不锁任务行（`lock_practice_generate_job` → 普通读） | `test_practice_retry_decides_state_after_job_lock`（用过期状态把 SUCCEEDED 误重置为 PENDING） |
+| M9：状态判定移到锁之前（用锁前**标量快照**判定） | 同上（返回 202 而非 409） |
+
+M9 的一个关键发现：如果只是"改引用旧对象"，ORM 身份映射会让 `FOR UPDATE` 重读**就地刷新**
+同一实例，变异不可观测；真实缺陷形态是"锁前取标量快照再判定"，因此变异按该形态复现。
+
+### 5. 契约与生成物
+
+- OpenAPI 重导出：**44 条路径**（路径集合未变，`/jobs/{job_id}` 与 `/jobs/{job_id}/retry`
+  两个操作升级为第 10 节契约），
+  `JobType` = `MATERIAL_PARSE | PRACTICE_GENERATE | SUBMISSION_GRADE`，
+  `JobResourceType` = `MATERIAL | PRACTICE_SET | SUBMISSION`，导出物与运行时逐字节一致。
+- `contracts/generated/api-types.ts` 重新生成，`JobType` / `JobResourceType` 的联合类型
+  已与公开枚举一致（契约测试断言该字面量）；`npm run build`（含 `tsc --noEmit`）通过。
+
+### 6. 完整验收（真实 PostgreSQL + MinIO）
+
+| 环境 | 收集 | 通过 | 失败 | 错误 | 跳过 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 默认 | 1008 | 1008 | 0 | 0 | 0 |
+| `PYTHONIOENCODING=utf-8` | 1008 | 1008 | 0 | 0 | 0 |
+| `TEST_TIMEOUT_SECONDS=120` | 1008 | 1008 | 0 | 0 | 0 |
+
+- 分层数量：**unit 415 / contract 119 / integration 474**（合计数以本轮实际收集为准，
+  不再沿用此前的 944）。
+- PostgreSQL 与 MinIO 用例全部真实执行、**无跳过**（三次运行均无 `s` 标记），
+  无 `INTERNALERROR`；测试库与 `_migration_check` 库运行后无残留。
+- `git diff --check` 通过；`alembic check` 无差异。
+
+### 7. 明确未验收（本计划边界）
+
+- **前端**：轮询与终态停止、重试按钮均未实现；本轮只验证生成类型与前端构建兼容。
+- **`AGENT_RUN`**：不提供通用查询或重试入口（继续使用 `/agent-runs`）。
+- **未新增能力**：任务列表、批量重试、强制取消、管理员任务管理接口均不在本计划范围。
+- 真实模型效果与部署环境 Worker 常驻运行演练仍为后续工作。
+
+
+### 8. Jobs 改动文件 lint 修复
+
+本次门禁为**相对 `origin/main` 的全部已修改及新增 Python 文件**，使用
+Ruff **0.16.8**。修复前共 **29** 条报告（13 条新增、16 条所涉文件的历史问题），
+修复后 **0** 条，退出码 0（`All checks passed!`）。这不代表全仓 lint 零告警；
+未涉及文件的历史问题不在本次门禁范围内。
+
+在仓库根目录复现检查（包含尚未跟踪的新增文件）：
+
+```powershell
+$files = @(
+  git diff --name-only --diff-filter=AM origin/main -- '*.py'
+  git ls-files --others --exclude-standard -- '*.py'
+) | Sort-Object -Unique
+uvx --from ruff==0.16.8 ruff check @files
+```
+
+- Materials 补回 `datetime` 导入；Jobs 类型标注保留 `TYPE_CHECKING` 与延迟求值，
+  去除多余引号；未使用的解包变量改为下划线名称。
+- 迁移测试合并两处上下文，保持事务先回滚、再由 `pytest.raises` 捕获异常的顺序。
+- 修正计划中的 fixture 别名假设：未显式指定 `name` 的 fixture 按模块属性名注册，
+  改为 `_fake_storage` 会改变 fixture 名称。因此五处保留 `fake_storage as fake_storage`，
+  移除无效的 `F401` 豁免，使用附带用途说明的 `PLC0414` 行级豁免；直接导入也会触发
+  参数重名的 `F811`，同名别名保留 pytest 注册语义。
+- 其余仅为导入排序；未使用 `--unsafe-fixes`，未执行全仓自动修复。
+
+修复后复验（本轮重新执行默认环境；上方另两种环境为此前记录）：
+
+| 检查 | 实测结果 |
+| --- | --- |
+| Ruff 0.16.8：全部 21 个改动 Python 文件 | 0 条报告，退出码 0 |
+| Jobs、迁移与受影响 Practice 定向回归 | 141 passed，0 失败、0 错误、0 跳过；fixture 注册正常 |
+| 完整套件（真实 PostgreSQL + MinIO，配置 `TEST_S3_*`） | 1008 passed，0 失败、0 错误、0 跳过，939.63 秒 |
+| OpenAPI 一致性 | 完整套件内通过，未重新导出 |
+| 临时数据库 | 测试库与 `_migration_check` 均不存在 |
+| 开发库及代码 head | 均为 `0013_jobs_contract`；`alembic check` 无差异 |
+| 工作区 | `git diff --check` 通过；未提交、未推送、未创建 PR |
+
+完整套件的 10 条 pytest 告警为依赖弃用、既有事务清理与循环外键排序告警，
+与 Ruff 报告分开记录；不将 lint 零告警写成 pytest 零告警。本次未重复 M8/M9 变异验证。

@@ -38,7 +38,7 @@ from app.modules.courses import repository as courses_repo
 from app.modules.courses import service as courses_service
 from app.modules.courses.models import Course
 from app.modules.jobs import service as jobs_service
-from app.modules.jobs.models import JobStatusValue
+from app.modules.jobs.models import Job, JobStatusValue
 from app.modules.materials.models import MaterialStatus
 from app.modules.practice import repository as repo
 from app.modules.practice import scoring
@@ -423,7 +423,7 @@ async def submit_attempt(
 class RetryTarget:
     """重试目标：已按统一顺序加锁的任务与练习。"""
 
-    job: object
+    job: Job
     practice_set: PracticeSet
 
 
@@ -439,22 +439,16 @@ def _is_retryable(job, *, now: datetime) -> bool:
 async def lock_retryable_job(
     session: AsyncSession, *, user: User, job_id: uuid.UUID, now: datetime | None = None
 ) -> RetryTarget:
-    """重试的前置阶段（契约 10.1）。
+    """练习生成任务的重试前置（契约 10.2）。
 
-    检查顺序固定为 **任务存在 → 关联资源可见性 → 角色 → 课程归档 → 类型/状态**，
-    与契约 7.1 / 10.1 一致：类型分流（如"资料重试改走资料接口"）排在权限与归档
-    之后，因此**非成员不能借重试接口探测任务是否存在或其类型**。
+    只处理 ``PRACTICE_GENERATE``：公开范围校验与类型分派由
+    :func:`app.modules.jobs.service.lock_retryable_job` 在调用本函数之前完成
+    （``MATERIAL_PARSE`` / ``SUBMISSION_GRADE`` / ``AGENT_RUN`` 不会走到这里）。
 
-    - ``PRACTICE_GENERATE``：锁顺序固定为 **课程 → 练习 → 任务**，可重试检查
-      在持有任务行锁时完成；
-    - ``MATERIAL_PARSE``：先按关联资料做成员可见性（404）→ 创建教师（403）→
-      未归档（409），最后才返回 ``409 JOB_NOT_RETRYABLE``（资料重试经由
-      ``POST /materials/{material_id}/parse``，契约 5.3）；
-    - ``SUBMISSION_GRADE``：由 :func:`app.modules.jobs.service.lock_retryable_job`
-      在类型分流阶段交给 Grading 模块处理（契约 9.6 与 10.1 共用同一逻辑），
-      不会走到本函数。
+    锁顺序固定为 **课程 → 练习 → 任务**，可重试检查在持有任务行锁时完成，
+    因此并发的回写与重试只会形成一个符合串行顺序的结果。
 
-    :raises ResourceNotFoundError: 任务/关联资源不存在或不可见（404）。
+    :raises ResourceNotFoundError: 任务/练习不存在或不可见（404）。
     :raises RoleForbiddenError / CourseForbiddenError: 非创建教师（403）。
     :raises CourseArchivedError: 课程已归档（409）。
     :raises JobNotRetryableError: 状态不可重试（409）。
@@ -464,18 +458,9 @@ async def lock_retryable_job(
     from app.modules.jobs.models import JobType
 
     job = await jobs_repo.get_job_by_id(session, job_id)
-    if job is None:
+    if job is None or job.type is not JobType.PRACTICE_GENERATE:
+        # 防御性兜底：直接调用本函数时只接受练习生成任务，避免误走其他领域
         raise ResourceNotFoundError()
-
-    if job.type is JobType.SUBMISSION_GRADE:
-        # 理论上不可达：jobs 分派层（app.modules.jobs.service.lock_retryable_job）
-        # 已把该类型交给 Grading 模块。保留兜底，避免直接调用本函数时误走练习路径。
-        raise ResourceNotFoundError()
-
-    if job.type is JobType.MATERIAL_PARSE:
-        # 关联资源是资料：先做可见性 → 角色 → 归档，再按类型分流（避免暴露任务存在性）
-        await _require_material_member_for_retry(session, user=user, material_id=job.resource_id)
-        raise JobNotRetryableError()
 
     practice_set = await repo.get_set_by_id(session, job.resource_id)
     if practice_set is None:
@@ -494,33 +479,18 @@ async def lock_retryable_job(
     return RetryTarget(job=locked_job, practice_set=locked_set)
 
 
-async def _require_material_member_for_retry(
-    session: AsyncSession, *, user: User, material_id: uuid.UUID
-) -> None:
-    """资料任务的可见性 → 角色 → 归档检查（供重试接口复用，契约 10.1）。
-
-    顺序与 :func:`lock_teacher_course` 一致：资料（含已删除）不可见或非成员
-    统一 404；学生 403 ``ROLE_FORBIDDEN``、非创建教师 403 ``COURSE_FORBIDDEN``；
-    课程已归档 409 ``COURSE_ARCHIVED``。
-    """
-    from app.modules.materials import service as materials_service
-
-    material = await materials_service.get_material_for_member(
-        session, user=user, material_id=material_id
-    )
-    await lock_teacher_course(session, user=user, course_id=material.course_id)
-
-
 async def retry_practice_generate_job(
-    session: AsyncSession, *, target: RetryTarget, now: datetime | None = None
-) -> object:
-    """重试的写入阶段（契约 10.1）：清空旧题目并重置任务，复用原 ID。
+    session: AsyncSession,
+    *,
+    job: Job,
+    practice_set: PracticeSet,
+    now: datetime | None = None,
+) -> Job:
+    """重试的写入阶段（契约 10.2）：清空旧题目并重置任务，复用原 ID。
 
     调用方必须先用 :func:`lock_retryable_job` 加锁并完成全部检查。
     """
     timestamp = now or utc_now()
-    practice_set = target.practice_set
-    job = target.job
     await repo.delete_questions(session, practice_set_id=practice_set.id)
     job.status = JobStatusValue.PENDING
     job.progress = 0

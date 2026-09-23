@@ -178,7 +178,7 @@ python scripts/grading_worker.py
 独立维护命令清理：`python scripts/cleanup_expired_submission_uploads.py`
 （幂等，可周期运行；删除对象后会再次 HeadObject 复查，发现晚到 PUT 则本轮不标记过期）。
 
-发布顺序：**先执行数据库迁移（`0010 → 0011_agent_runs → 0012_submissions_grading`），再启动全部 Worker（解析、练习、批改与 Agent），最后开放前端入口**。
+发布顺序：**先执行数据库迁移（`0010 → 0011_agent_runs → 0012_submissions_grading → 0013_jobs_contract`），再启动全部 Worker（解析、练习、批改与 Agent），最后开放前端入口**。
 `0009_practice_sets`、`0010_assignments`、`0011_agent_runs` 与 `0012_submissions_grading` 都只新增表与原生枚举，
 不与前序迁移冲突，可在同一发布中按序执行。
 
@@ -196,6 +196,13 @@ python scripts/grading_worker.py
 迁移可回退（`downgrade` 按外键反序删表，最后删除枚举），
 `backend/tests/integration/test_migrations.py` 覆盖 `0011_agent_runs → 0012 → 0011_agent_runs → 0012` 往返，
 并断言提交唯一、批改唯一、评分项唯一与分数范围约束在库侧生效。
+
+**异步任务（Jobs）配套**：`0013_jobs_contract` 不新增表，只在 `jobs` 上增加两条 CHECK 约束：
+`progress BETWEEN 0 AND 100`，以及"任务类型与资源类型必须配对"（含三类公开任务与内部
+`AGENT_RUN / AGENT_RUN`）。降级只删除这两条约束，不影响数据与枚举；
+`backend/tests/integration/test_migrations.py` 覆盖 `0012 → 0013 → 0012 → 0013` 往返，
+并断言进度越界（`-1` / `101`）与非法组合被数据库拒绝。该迁移不含数据回填，
+升级前建议按惯例做一次库级快照。
 
 开发、Preview 和 Production 使用独立配置。任何密钥都不能使用 `VITE_` 前缀，也不能提交到仓库。
 
