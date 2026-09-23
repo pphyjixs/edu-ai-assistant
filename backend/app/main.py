@@ -28,6 +28,7 @@ from app.core.schemas import ErrorResponse
 from app.db.session import dispose_engines
 from app.modules.agent.router import AGENT_REQUEST_MODELS
 from app.modules.assignments.router import ASSIGNMENT_REQUEST_MODELS
+from app.modules.grading.router import GRADING_REQUEST_MODELS
 from app.modules.practice.router import PRACTICE_REQUEST_MODELS
 
 logger = logging.getLogger("app.main")
@@ -105,6 +106,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             *PRACTICE_REQUEST_MODELS,
             *ASSIGNMENT_REQUEST_MODELS,
             *AGENT_REQUEST_MODELS,
+            *GRADING_REQUEST_MODELS,
         ),
     )
 

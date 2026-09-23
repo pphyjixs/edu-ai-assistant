@@ -22,9 +22,10 @@ from app.core.schemas import ErrorResponse
 from app.db.session import SessionDep
 from app.modules.auth.permissions import CurrentUserDep
 from app.modules.jobs import service
+from app.modules.jobs.deps import RetryTargetDep
+from app.modules.jobs.models import JobType
 from app.modules.jobs.schemas import JobStatus
 from app.modules.practice import service as practice_service
-from app.modules.practice.deps import RetryTargetDep
 
 jobs_router = APIRouter(tags=["jobs"])
 
@@ -68,13 +69,14 @@ async def get_job(
     "/jobs/{job_id}/retry",
     status_code=status.HTTP_202_ACCEPTED,
     response_model=JobStatus,
-    summary="重试练习生成任务",
+    summary="重试异步任务",
     description=(
-        "仅课程创建教师可调用。只接受 FAILED，或租约已过期的 RUNNING"
-        "（崩溃遗留）；复用原练习与 job ID，清除运行令牌、租约、错误与旧题目，"
-        "重置为 GENERATING / PENDING 供 Worker 重新领取。"
-        "MATERIAL_PARSE 任务返回 409 JOB_NOT_RETRYABLE（改走资料重试接口）；"
-        "SUBMISSION_GRADE 未实现，统一 404。请求体可省略或传 {}。"
+        "仅资源管理者（课程创建教师）可调用。只接受 FAILED，或租约已过期的 "
+        "RUNNING（崩溃遗留）；复用原资源与 job ID，清除运行令牌、租约与错误，"
+        "重置为 PENDING 供 Worker 重新领取。"
+        "MATERIAL_PARSE 任务返回 409 JOB_NOT_RETRYABLE（改走资料重试接口，见 5.3）；"
+        "SUBMISSION_GRADE 任务按 9.6 的分流重置（与 `POST /submissions/{id}/grade` 共用逻辑），"
+        "已有复核结果时返回 409 SUBMISSION_NOT_READY。请求体可省略或传 {}。"
     ),
     responses={
         202: {"description": "已重置，返回同一个任务"},
@@ -105,7 +107,12 @@ async def retry_job(
     session: SessionDep,
     target: RetryTargetDep,
 ) -> JobStatus:
-    # 依赖已按 课程 → 练习 → 任务 的顺序加锁并完成全部检查，请求体校验在其后
+    # 依赖已按 课程 → 资源 → 任务 的顺序加锁并完成全部检查，请求体校验在其后
     await validate_empty_object_body(request)
-    job = await practice_service.retry_practice_generate_job(session, target=target)
+    if target.job_type is JobType.SUBMISSION_GRADE:
+        job = await service.retry_submission_grade_job(session, target=target)
+    else:
+        job = await practice_service.retry_practice_generate_job(
+            session, target=target.practice
+        )
     return JobStatus.model_validate(job)

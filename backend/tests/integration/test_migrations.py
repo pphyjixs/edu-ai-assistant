@@ -51,6 +51,11 @@ EXPECTED_TABLES = {
     "assignment_rubric_items",
     "agent_runs",
     "agent_run_sources",
+    "submissions",
+    "submission_upload_sessions",
+    "grade_reviews",
+    "grade_items",
+    "submission_grade_attempts",
 }
 
 #: 迁移引入的原生枚举类型，回滚时必须全部清理
@@ -86,12 +91,21 @@ EXPECTED_ENUMS: dict[str, list[str]] = {
         "GRADE",
     ],
     "agent_source_type": ["COURSE", "MATERIAL_CHUNK", "MATERIAL_OUTLINE", "ASSIGNMENT"],
+    "submission_status": [
+        "UPLOADING",
+        "SUBMITTED",
+        "GRADING",
+        "REVIEW_REQUIRED",
+        "PUBLISHED",
+        "FAILED",
+    ],
+    "submission_grade_attempt_status": ["SUCCEEDED", "FAILED"],
 }
 
 COMPARE_OPTIONS = {"compare_type": True, "compare_server_default": True}
 
 #: head 对应的最新迁移
-REVISION = "0011_agent_runs"
+REVISION = "0012_submissions_grading"
 
 
 @pytest.fixture(scope="module")
@@ -295,6 +309,152 @@ def test_upload_session_has_expired_at_column(migrated_engine: Engine) -> None:
         for column in inspect(migrated_engine).get_columns("material_upload_sessions")
     }
     assert "expired_at" in columns
+
+
+def test_grade_items_reference_historical_rubric_items(migrated_engine: Engine) -> None:
+    """批改按提交固定的评分版本评分：评分项外键指向历史 RubricItem（RESTRICT）。"""
+    inspector = inspect(migrated_engine)
+    grade_item_fks = {
+        fk["name"]: fk for fk in inspector.get_foreign_keys("grade_items")
+    }
+
+    assert "fk_grade_items_rubric_item_id_rubric_items" in grade_item_fks
+    assert "fk_grade_items_review_id_grade_reviews" in grade_item_fks
+    grade_item_unique = {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints("grade_items")
+    }
+    assert "uq_grade_items_review_rubric_item" in grade_item_unique
+
+    submission_unique = {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints("submissions")
+    }
+    # 一位学生对同一任务只能有一份提交：并发由这条约束兜住
+    assert "uq_submissions_assignment_student" in submission_unique
+
+    review_unique = {
+        constraint["name"]
+        for constraint in inspector.get_unique_constraints("grade_reviews")
+    }
+    # 每份提交唯一一条批改记录：重复触发不会创建第二条
+    assert "uq_grade_reviews_submission_id" in review_unique
+
+    submission_fks = {
+        fk["name"] for fk in inspector.get_foreign_keys("submissions")
+    }
+    # 提交固定评分版本是**历史外键**：删除版本必须被拒绝，不能静默丢历史
+    assert "fk_submissions_rubric_version_id_versions" in submission_fks
+
+
+def test_grade_items_score_check_constraints(migrated_engine: Engine) -> None:
+    """分数范围约束必须在库侧生效（AI 与教师终稿都不能超出满分）。
+
+    名称沿用项目统一的命名约定（``ck_%(table_name)s_%(constraint_name)s``）：
+    模型与迁移里显式给出的名字本身已带 ``ck_`` 前缀，因此实际落库名是双前缀
+    —— 与 assignments / practice 的既有约束完全一致，不能只在本模块"改漂亮"。
+    """
+    checks = {
+        constraint["name"]
+        for constraint in inspect(migrated_engine).get_check_constraints("grade_items")
+    }
+
+    assert "ck_grade_items_ck_grade_items_ai_score" in checks
+    assert "ck_grade_items_ck_grade_items_final_score" in checks
+    assert "ck_grade_items_ck_grade_items_max_score" in checks
+    assert "ck_grade_items_ck_grade_items_order" in checks
+
+    with migrated_engine.connect() as connection:
+        score_checks = connection.execute(
+            text(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint"
+                " WHERE contype = 'c' AND conrelid = 'grade_items'::regclass"
+                " AND conname LIKE '%ai_score'"
+            )
+        ).scalars().all()
+    assert score_checks and "max_score" in score_checks[0]
+
+
+def test_grade_items_evidence_constraints(migrated_engine: Engine) -> None:
+    """证据定位的结构断言：四列齐备且非空，来源/位置/区间三条 CHECK 生效。
+
+    对应修复计划第 2 类：证据必须"类型 + 位置 + 区间"可核验，库侧兜底。
+    """
+    inspector = inspect(migrated_engine)
+    checks = {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints("grade_items")
+    }
+    assert "ck_grade_items_ck_grade_items_evidence_source" in checks
+    assert "ck_grade_items_ck_grade_items_evidence_start" in checks
+    assert "ck_grade_items_ck_grade_items_evidence_range" in checks
+
+    columns = {
+        column["name"]: column for column in inspector.get_columns("grade_items")
+    }
+    for name in (
+        "evidence_quote",
+        "evidence_source_type",
+        "evidence_location_start",
+        "evidence_location_end",
+    ):
+        assert name in columns, f"grade_items 缺少证据列 {name}"
+        assert columns[name]["nullable"] is False, f"证据列 {name} 必须非空"
+
+
+def test_upload_session_partial_unique_index(migrated_engine: Engine) -> None:
+    """同一提交同时最多一个"已完成"的上传会话：部分唯一索引必须带谓词。"""
+    inspector = inspect(migrated_engine)
+    indexes = {
+        index["name"]: index
+        for index in inspector.get_indexes("submission_upload_sessions")
+    }
+    partial = indexes.get("uq_submission_upload_sessions_submission_completed")
+    assert partial is not None, "缺少完成态上传会话的部分唯一索引"
+    assert partial["unique"] is True
+    assert partial["column_names"] == ["submission_id"]
+
+    with migrated_engine.connect() as connection:
+        indexdef = connection.execute(
+            text(
+                "SELECT indexdef FROM pg_indexes"
+                " WHERE indexname = 'uq_submission_upload_sessions_submission_completed'"
+            )
+        ).scalar_one()
+    # 部分索引的谓词：只约束"已完成"的会话，进行中的会话可以并存
+    assert "WHERE" in indexdef and "completed_at IS NOT NULL" in indexdef
+
+
+def test_upgrade_downgrade_round_trip(
+    alembic_config: Config, migration_database_url: str
+) -> None:
+    """``0011_agent_runs → 0012 → 0011_agent_runs → 0012`` 往返必须成功。
+
+    覆盖契约 9 的迁移验收与 Agent → Grading 的相邻迁移边界：
+    降级只回退第 9 节的五张表，Agent 的两张表与枚举值必须保留。
+    结束状态为 ``head``，因此可以安全地作为后续用例的起点。
+    """
+    engine = create_engine(pg_support.to_sync(migration_database_url))
+    try:
+        with pg_support.alembic_database_url(migration_database_url):
+            command.downgrade(alembic_config, "0011_agent_runs")
+            after_downgrade = set(inspect(engine).get_table_names())
+            # 回退到 0011：第 9 节的五张表消失，Agent 两表与任务表仍在
+            assert "assignments" in after_downgrade
+            assert "agent_runs" in after_downgrade
+            assert "agent_run_sources" in after_downgrade
+            assert "submissions" not in after_downgrade
+            assert "grade_reviews" not in after_downgrade
+
+            command.upgrade(alembic_config, "head")
+
+        assert EXPECTED_TABLES <= set(inspect(engine).get_table_names())
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == REVISION
+    finally:
+        engine.dispose()
 
 
 def test_rollback_to_base_removes_every_schema_object(

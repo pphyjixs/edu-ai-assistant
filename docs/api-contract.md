@@ -1698,18 +1698,217 @@ Python `jsonschema` 因此把合法值 `40.55` 判为非法（实测 4.26.0）�
 
 | 方法 | 路径 | 说明 | 权限 |
 | --- | --- | --- | --- |
-| POST | `/assignments/{assignment_id}/submissions/uploads` | 初始化报告上传 | 学生 |
-| POST | `/assignments/{assignment_id}/submissions/uploads/{upload_id}/complete` | 完成提交 | 学生 |
-| GET | `/assignments/{assignment_id}/submissions` | 提交列表 | 课程教师 |
-| GET | `/submissions/{submission_id}` | 提交详情 | 本人或课程教师 |
-| POST | `/submissions/{submission_id}/grade` | 触发或重试 AI 批改 | 课程教师 |
-| GET | `/submissions/{submission_id}/grade-review` | 批改详情 | 教师；发布后本人 |
-| PATCH | `/grade-reviews/{review_id}` | 教师修改分数和反馈 | 课程教师 |
-| POST | `/grade-reviews/{review_id}/publish` | 发布正式结果 | 课程教师 |
+| POST | `/assignments/{assignment_id}/submissions/uploads` | 创建或复用 `UPLOADING` 提交并签发 PUT 地址 | 课程学生 |
+| POST | `/assignments/{assignment_id}/submissions/uploads/{upload_id}/complete` | 确认对象并完成提交（同一 upload 幂等） | 课程学生 |
+| GET | `/assignments/{assignment_id}/submissions` | 提交列表（教师全班分页 / 学生本人 0–1 条） | 课程成员 |
+| GET | `/submissions/{submission_id}` | 提交详情与临时下载地址 | 本人或课程教师 |
+| POST | `/submissions/{submission_id}/grade` | 触发或重试 AI 批改 | 课程创建教师 |
+| GET | `/submissions/{submission_id}/grade-review` | 批改详情 | 教师始终；学生仅发布后 |
+| PATCH | `/grade-reviews/{review_id}` | 教师提交完整复核结果 | 课程创建教师 |
+| POST | `/grade-reviews/{review_id}/publish` | 发布正式成绩（重复发布幂等） | 课程创建教师 |
 
-触发批改返回 `202` 和 `SUBMISSION_GRADE` 任务。
+本节消费第 8 节提供的内部服务：是否允许提交（`8.10`）与"任务当前评分规则版本"（`8.9`）。
 
-教师修改请求：
+### 9.1 通用规则与权限
+
+提交状态机：
+
+```text
+UPLOADING → SUBMITTED → GRADING → REVIEW_REQUIRED → PUBLISHED
+GRADING → FAILED          （Worker 失败）
+FAILED  → GRADING         （教师触发重试）
+```
+
+| 状态 | 含义 |
+| --- | --- |
+| `UPLOADING` | 已初始化上传/提交记录，等待对象直传与完成确认 |
+| `SUBMITTED` | 报告已确认并固定关联评分规则版本，尚未触发批改 |
+| `GRADING` | `SUBMISSION_GRADE` 任务执行中 |
+| `REVIEW_REQUIRED` | AI 批改完成，等待教师复核 |
+| `PUBLISHED` | 教师已发布正式成绩，不可再修改 |
+| `FAILED` | 批改失败（或课程归档导致取消），可由教师重试 |
+
+规则：
+
+- **一位学生对同一任务只能有一份提交**：由 `(assignment_id, student_id)` 唯一约束兜住并发，不靠"先查后插"。
+- 重新初始化上传时**复用**尚处于 `UPLOADING` 的提交记录（同一 `submission_id`），并签发**新的**上传会话与对象键；被替换的旧会话标记"被替代"，其对象进入孤立对象清理范围。
+- 报告正式提交后（`submitted_at` 非空）再次初始化上传返回 `409 SUBMISSION_ALREADY_EXISTS`。
+- 完成提交时**固定关联当时的评分规则版本**；之后教师修改 Rubric 生成新版本也不影响已提交记录，批改始终按提交引用的版本评分。
+- **批改只由课程创建教师触发**，上传完成后**不自动**调用模型。
+- AI 结果必须经教师复核才能发布；发布后不可继续修改，重复发布幂等（不覆盖首次 `published_at`）。
+- 文件类型只接受 **PDF** 与 **DOCX**；**不接受旧版 `.doc`**，文件名、MIME、大小、校验和与空值规则沿用第 4 节上传协议（`4.2`）。
+- 分页沿用第 1 节（`page` / `page_size`，默认 20、最大 100，越界 `422`）。
+- **写接口检查顺序固定**：认证 → 资源可见性 → 角色 → 课程归档 → 业务状态 → 请求结构 → 字段与分数语义 → 数据写入。因此带非法请求体的越权或归档请求返回 `401`/`404`/`403`/`409`，而不是 `422`。
+- **统一锁顺序**：
+  - 初始化上传：课程 → Assignment → 当前 RubricVersion → Submission；
+  - 完成上传：在上述之后再加 UploadSession；
+  - 批改触发/重试：课程 → Assignment → 提交固定 RubricVersion → Submission → Job；
+  - Worker 回写：课程 → Assignment → 提交固定 RubricVersion → Submission → Job → GradeReview；
+  - 复核与发布：课程 → Assignment → 提交固定 RubricVersion → Submission → GradeReview。
+- 读接口不加写锁。
+
+权限与可见性：
+
+| 接口 | 提交学生 | 课程的**非创建教师成员** | 课程创建教师 | 非成员（含未加入的其他教师） |
+| --- | --- | --- | --- | --- |
+| 初始化/完成上传 | 允许 | `403 ROLE_FORBIDDEN` | `403 ROLE_FORBIDDEN` | `404` |
+| 提交列表 | 仅本人 0–1 条 | `403 ROLE_FORBIDDEN` | 全班分页 | `404` |
+| 提交详情 | 仅本人 | `403 COURSE_FORBIDDEN` | 全部 | `404` |
+| 触发批改 / 复核 / 发布 | `403 ROLE_FORBIDDEN` | `403 COURSE_FORBIDDEN` | 允许 | `404` |
+| 批改详情 | 仅发布后本人，否则 `404` | `403 COURSE_FORBIDDEN` | 始终可读 | `404` |
+
+> 「非创建教师成员」是指**已是课程成员但不是创建教师**的情况。当前第 3 节只允许学生
+> 通过邀请码加入课程，因此正常 API 流程下其他教师一律是**非成员**，拿到的是 `404`；
+> 表里的 `403` 分支是为"课程成员身份与创建者不一致"预留的防御性行为，仍由集成测试
+> 直接构造成员记录来锁定，不能因为当前不可达就放任实现跑偏。
+
+- 学生只能看到**自己的**提交；不存在、不可见、非本人一律统一 `404 RESOURCE_NOT_FOUND`。
+- 教师列表**不含**未完成的 `UPLOADING` 记录（草稿态上传不进入教师正式提交列表）。
+- 归档课程允许读取历史提交与已发布成绩；所有写入返回 `409 COURSE_ARCHIVED`。
+- 学生在成绩发布前可看到自己的提交状态，但**看不到** AI 草稿与教师未发布分数（批改详情对未发布提交返回 `404`）。
+
+### 9.2 初始化报告上传
+
+```http
+POST /api/v1/assignments/{assignment_id}/submissions/uploads
+Authorization: Bearer <access_token>
+```
+
+```json
+{
+  "filename": "report.pdf",
+  "content_type": "application/pdf",
+  "size": 1048576,
+  "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}
+```
+
+| 字段 | 类型 | 规则 |
+| --- | --- | --- |
+| `filename` | string（**严格**） | 必填，去除首尾空白后 1–255 字符，不含路径分隔符 |
+| `content_type` | string（**严格**） | 必填，必须与扩展名对应的规范 MIME 一致 |
+| `size` | integer（**严格**） | 必填，1 字节到 `SUBMISSION_MAX_UPLOAD_BYTES`（默认 50 MiB） |
+| `sha256` | string（**严格**） | 必填，64 位十六进制（大小写不敏感，落库转小写） |
+
+- 仅 `.pdf`（`application/pdf`）与 `.docx`（`application/vnd.openxmlformats-officedocument.wordprocessingml.document`）；`.doc`、`.pptx` 及其他类型返回 `422 UPLOAD_INVALID`（`details.reason = FILE_TYPE_NOT_ALLOWED`）。
+- 除上述字段外拒绝未知字段与显式 `null`（`422 VALIDATION_ERROR`）。
+- 任务必须为 `PUBLISHED` 且允许提交（`8.10`：`due_at` 为 `null`、`now < due_at` 或 `allow_late_submission`；`now == due_at` 视为已截止；`DRAFT`/`CLOSED`/`ARCHIVED` 返回 `409 ASSIGNMENT_NOT_OPEN`）。
+- 响应 `201`，`SubmissionUploadInit`：
+
+```json
+{
+  "submission_id": "uuid",
+  "upload_id": "uuid",
+  "upload_url": "https://...",
+  "method": "PUT",
+  "headers": {
+    "Content-Type": "application/pdf",
+    "If-None-Match": "*",
+    "x-amz-checksum-sha256": "..."
+  },
+  "expires_at": "2026-09-18T08:40:00Z",
+  "confirm_deadline_at": "2026-09-19T08:30:00Z"
+}
+```
+
+- 对象键完全由课程、任务与上传会话 UUID 推导，**不含用户文件名**。
+- 已存在正式提交（`submitted_at` 非空）时返回 `409 SUBMISSION_ALREADY_EXISTS`。
+
+### 9.3 完成提交
+
+```http
+POST /api/v1/assignments/{assignment_id}/submissions/uploads/{upload_id}/complete
+Authorization: Bearer <access_token>
+```
+
+无请求字段（可省略请求体或传 `{}`；显式 `null`、非对象与多余字段返回 `422`）。
+
+处理顺序：认证 → 成员可见性（`404`）→ 学生角色（`403 ROLE_FORBIDDEN`）→ 课程归档（`409`）→ 上传会话属于本人与该任务（`404`）→ **会话与提交状态检查（见下）** → 任务仍允许提交（`409 ASSIGNMENT_NOT_OPEN`）→ 对象确认（`422`/`503`）→ 写入。
+
+**会话与提交状态检查的优先级固定**（全部发生在 HeadObject 之前）：
+
+| 顺序 | 情形 | 结果 |
+| --- | --- | --- |
+| 1 | 该 `upload_id` 已完成（`completed_at` 非空），且提交确已正式提交 | `201`，返回**首次响应快照**（幂等，不再受确认窗口限制） |
+| 2 | 会话已被替代（`superseded_at` 非空），或提交的 `object_key` 不再指向该会话 | `422 UPLOAD_INVALID`，`details.reason = UPLOAD_SUPERSEDED` |
+| 3 | 会话已被清理（`expired_at` 非空）或超过确认窗口 | `422 UPLOAD_INVALID`，`details.reason = UPLOAD_EXPIRED` |
+| 4 | 提交已由**其他**上传会话正式提交（`submitted_at` 非空） | `409 SUBMISSION_ALREADY_EXISTS` |
+| 5 | 提交状态不是 `UPLOADING`（已开始批改等） | `409 SUBMISSION_NOT_READY` |
+| 6 | 任务不再允许提交 | `409 ASSIGNMENT_NOT_OPEN` |
+
+- **未完成 Submission 必须同时满足**：状态为 `UPLOADING`、`submitted_at` 为空、`object_key` 与目标上传会话一致；任一不满足即按上表拒绝。
+- **不变量**：每份 Submission 最多只有一个**完成**的上传会话（数据库部分唯一索引 `(submission_id) WHERE completed_at IS NOT NULL`）。无论顺序完成还是并发完成不同会话，都只有一个成功——命中该约束的请求返回 `409 SUBMISSION_ALREADY_EXISTS`；**其他数据库错误原样抛出**，不会被转换成成功的幂等响应。
+- 成功完成时把同 Submission 的其他**未完成**会话标记为被替代，其对象进入清理范围。
+- 完成时再次检查任务仍允许提交（`can_submit`），截止边界与初始化一致；用 HeadObject 校验对象**存在、大小、MIME 与存储侧 SHA-256**（不使用 ETag 代替摘要）。
+- 写入提交时间、补交标志（`is_late`：完成时已过截止时间且允许补交时为 `true`）与**当时**的评分规则版本。
+- **锁顺序**：课程 → Assignment → 当前（首次完成）或提交固定（幂等重放）的 RubricVersion → Submission → UploadSession；允许在加锁前普通读取上传会话与提交的标量 ID，拿到前序锁后必须重新读取并复核。
+
+### 9.4 提交列表
+
+```http
+GET /api/v1/assignments/{assignment_id}/submissions?page=1&page_size=20
+Authorization: Bearer <access_token>
+```
+
+- 课程创建教师返回**全班**正式提交（`submitted_at` 非空），按 `submitted_at DESC, id DESC` 分页；`UPLOADING` 记录不出现。
+- 学生只返回**本人的正式提交**（`submitted_at` 非空的 0–1 条）：只有 `UPLOADING` 记录时返回 `{items: [], total: 0}`，正式完成后返回一条。
+- 其他教师 `403 ROLE_FORBIDDEN`；非成员或任务不可见统一 `404 RESOURCE_NOT_FOUND`；归档课程可读。
+- 响应 `200`，`Page<SubmissionSummary>`。
+
+### 9.5 提交详情
+
+```http
+GET /api/v1/submissions/{submission_id}
+Authorization: Bearer <access_token>
+```
+
+- 提交本人或课程创建教师可读；其他教师 `403 COURSE_FORBIDDEN`；非成员、非本人统一 `404`。
+- 响应 `200`，`SubmissionDetail`。正式提交（`submitted_at` 非空）额外返回短时有效的 `download_url` 与 `download_expires_at`（预签名 GET，有效期 `STORAGE_UPLOAD_URL_TTL_SECONDS`，默认 10 分钟）；`UPLOADING` 时为 `null`。
+- 学生的提交在成绩发布前**不含**任何 AI 分数或教师未发布分数（详情只含文件元数据与状态）。
+
+### 9.6 触发或重试 AI 批改
+
+```http
+POST /api/v1/submissions/{submission_id}/grade
+Authorization: Bearer <access_token>
+```
+
+无请求字段（规则同 `9.3`）。仅课程创建教师可调用。
+
+| 当前提交状态 | 结果 |
+| --- | --- |
+| `SUBMITTED` | `202`，创建唯一 `SUBMISSION_GRADE` 任务，提交置为 `GRADING` |
+| `GRADING`，任务 `PENDING` 或租约仍有效的 `RUNNING` | `202`，**幂等**返回原任务 |
+| `GRADING`，任务 `RUNNING` 但**租约已过期** | `202`，按重试处理（复用原任务与 job ID） |
+| `FAILED` | `202`，复用原 job ID：清理运行令牌、租约与错误，重置为 `PENDING` |
+| `REVIEW_REQUIRED` / `PUBLISHED` | `409 SUBMISSION_NOT_READY`（避免覆盖已有复核结果） |
+| `UPLOADING`（未完成提交） | `409 SUBMISSION_NOT_READY` |
+
+- 重试时**不删除**已有 `GradeReview`（仅 `REVIEW_REQUIRED`/`PUBLISHED` 会因上面的分流被拒绝，不存在可覆盖的复核结果）。
+- 响应 `202`，Schema 为 `JobStatus`（`type = SUBMISSION_GRADE`、`resource_type = SUBMISSION`）。
+
+### 9.7 批改详情
+
+```http
+GET /api/v1/submissions/{submission_id}/grade-review
+Authorization: Bearer <access_token>
+```
+
+- 课程创建教师始终可读（含未复核、未发布）。
+- 学生**仅在该提交 `PUBLISHED` 后**可读本人批改；未发布时统一 `404`。
+- 其他教师 `403 COURSE_FORBIDDEN`；非成员、非本人 `404`。
+- 响应 `200`，`GradeReviewDetail`：
+  - 教师视角（或已发布后的学生视角）包含：`ai_summary`、`teacher_summary`、`suggested_total_score`、`final_total_score`、`items[]`（每项含 `title`、`max_score`、`ai_score`、`final_score`、`ai_comment`、`evidence_quote`、`evidence_source_type`、`evidence_location_start`、`evidence_location_end`、`error_type`、`improvement_suggestion`、`teacher_comment`）、`reviewed_at`、`published_at`。
+  - **证据定位**：`evidence_source_type` 为 `PDF_PAGE`（PDF 页码）或 `DOCX_PARAGRAPH`（DOCX 段落号），由报告 MIME 在服务端确定；`evidence_location_start` 与 `evidence_location_end` 从 1 开始且结束不小于起点，**两个端点都必须是报告实际提取到的单元**（页/段落）——区间中间包含没有文本的空页或空段落不影响合法性，但模型不能虚报实际不存在的端点（如 `1–999`）；服务端已核对证据摘录确实出现在该区间内的实际文本中。
+  - **学生视角在发布后返回最终摘要、最终分、教师评语与证据及定位**；AI 原始建议分与"AI → 教师"的修改差异仅教师可见（学生响应中 `ai_score`、`ai_comment`、`suggested_total_score` 为 `null`）。
+- 批改尚未生成（`GRADING`/`FAILED`）时教师返回 `409 SUBMISSION_NOT_READY`。
+
+### 9.8 教师复核
+
+```http
+PATCH /api/v1/grade-reviews/{review_id}
+Authorization: Bearer <access_token>
+```
 
 ```json
 {
@@ -1723,6 +1922,132 @@ Python `jsonschema` 因此把合法值 `40.55` 判为非法（实测 4.26.0）�
   ]
 }
 ```
+
+| 字段 | 类型 | 规则 |
+| --- | --- | --- |
+| `summary` | string（**严格**） | 必填，去除首尾空白后 1–20,000 字符（空字符串返回 `422`） |
+| `items` | 对象数组 | 必填，**完整快照**：必须恰好覆盖该提交所引用评分版本的**全部**评分项，不多不少、不重复 |
+
+评分项字段：
+
+| 字段 | 类型 | 规则 |
+| --- | --- | --- |
+| `rubric_item_id` | UUID（**严格**） | 必填，必须属于该提交引用的评分版本 |
+| `final_score` | number（**严格**） | 必填，`0 ≤ final_score ≤ max_score`，最多两位小数；只接受 JSON number |
+| `teacher_comment` | string | 可省略，默认 `""`，最多 2,000 字符 |
+
+- 复核请求是**完整快照**：items 与该提交引用的评分版本的评分项集合必须**完全一致**（缺失、多余、重复、跨版本一律 `422 VALIDATION_ERROR`）。
+- 教师最终总分由分项求和；服务端按 `Decimal` 精确比较，不使用二进制浮点。
+- 保存后写入 `reviewed_by` 与 `reviewed_at`，并把 `final_score` 复制为教师终稿；**AI 原始字段（`ai_score`、`ai_comment`、`suggested_total_score`、`ai_summary`）保持不变**，因此 AI 建议与教师终稿可同时审计。
+- AI 批改成功后，AI 建议自动复制为初始最终分，但 `reviewed_at` 仍为空（未复核）。
+- `PUBLISHED` 后再修改返回 `409 GRADE_ALREADY_PUBLISHED`。
+- 响应 `200`，`GradeReviewDetail`（教师视角）。
+
+### 9.9 发布成绩
+
+```http
+POST /api/v1/grade-reviews/{review_id}/publish
+Authorization: Bearer <access_token>
+```
+
+无请求字段（规则同 `9.3`）。仅课程创建教师可调用。
+
+| 情形 | 结果 |
+| --- | --- |
+| 已复核（`reviewed_at` 非空）且未发布 | `200`，写入 `published_at`，提交置为 `PUBLISHED` |
+| 已发布 | `200`，**幂等**返回，不覆盖首次 `published_at` |
+| 未复核（`reviewed_at` 为空） | `409 GRADE_NOT_REVIEWED` |
+| 批改未生成 | `409 SUBMISSION_NOT_READY` |
+
+- 发布与复核使用相同锁顺序；发布先完成时后到的 PATCH 返回 `409 GRADE_ALREADY_PUBLISHED`，PATCH 先完成时发布读取最新终稿。
+- 响应 `200`，`GradeReviewDetail`（教师视角）。
+
+### 9.10 响应 Schema
+
+`SubmissionSummary`：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | UUID | 提交 ID |
+| `assignment_id` | UUID | 所属任务 |
+| `course_id` | UUID | 所属课程 |
+| `student_id` | UUID | 提交学生 |
+| `status` | 枚举 | 见 9.1 状态机 |
+| `filename` | string | 报告文件名 |
+| `content_type` | string | 规范 MIME |
+| `size` | integer | 字节数 |
+| `is_late` | boolean | 是否为补交 |
+| `rubric_version` | integer | 提交固定的评分规则版本号（未提交时为 `null`） |
+| `submitted_at` | string / `null` | 提交时间（UTC） |
+| `created_at` | string | 记录创建时间 |
+| `updated_at` | string | 最后更新时间 |
+
+`SubmissionDetail` = `SubmissionSummary` + `sha256`（string）+ `download_url`（string / `null`）+ `download_expires_at`（string / `null`）。
+
+`SubmissionUploadInit`：`submission_id`、`upload_id`、`upload_url`、`method`、`headers`、`expires_at`、`confirm_deadline_at`。
+
+`GradeItemDetail`：`id`、`rubric_item_id`、`order`、`title`、`max_score`、`ai_score`（教师视角；学生已发布视角为 `null`）、`final_score`、`ai_comment`、`evidence_quote`、`evidence_source_type`、`evidence_location_start`、`evidence_location_end`、`error_type`、`improvement_suggestion`、`teacher_comment`。
+
+`GradeReviewDetail`：`id`、`submission_id`、`ai_summary`、`teacher_summary`、`suggested_total_score`、`final_total_score`、`items`、`reviewed_by`、`reviewed_at`、`published_at`。
+
+`JobStatus` 见第 10 节。
+
+列表统一为 `{items, page, page_size, total}`（第 1 节）。
+
+### 9.11 批改 Worker
+
+独立进程 `scripts/grading_worker.py`，沿用练习生成 Worker 的领取、租约、运行令牌与心跳协议（`7.10`）：
+
+1. 用 `FOR UPDATE SKIP LOCKED` 领取一个 `PENDING` 的 `SUBMISSION_GRADE` 任务，置 `RUNNING`、递增 `attempts`、生成运行令牌与租约。
+2. 读取提交、**固定的** Rubric 版本与评分项的**标量快照**后结束数据库事务。
+3. 从对象存储下载并复核大小与 SHA-256，复用文档提取能力解析 PDF/DOCX，并**保留提取单元的位置**（PDF 页码 / DOCX 段落号，从 1 开始）；扫描版 PDF、损坏文件、无文本与超出字符预算均**安全失败**。
+4. **在无活动数据库事务时**调用 Chat Completions 兼容端点（`AI_BASE_URL` / `AI_MODEL` / `AI_API_KEY` / `AI_TIMEOUT_SECONDS`）。提示词按来源位置标注报告内容。
+5. 要求模型对每个 RubricItem **恰好返回一项**：建议分数、判断说明、原文证据、**证据位置区间（`location_start` / `location_end`，严格整数、从 1 开始、不倒序，两个端点都必须是实际提取单元；区间中间允许空页/空段落）**、错误类型与改进建议。
+6. 服务端校验：
+   - 评分项无缺失、无重复，分数不超过满分；
+   - **位置必须存在于报告实际提取单元中**，且来源类型由报告 MIME 在服务端确定（`PDF_PAGE` / `DOCX_PARAGRAPH`），模型不能自行决定；
+   - **证据摘录必须出现在模型声明的位置区间内**，不能只在报告其他位置出现；
+   - 缺失、重复、越界、错误位置或虚构证据均使整次批改失败，**不写部分批改结果**。
+7. 成功回写按 9.1 的固定锁序一次性创建 `GradeReview` 与全部 `GradeItem`（含来源类型与位置区间），任务置 `SUCCEEDED`，提交置 `REVIEW_REQUIRED`。
+8. 失败回写使用新事务与标量 ID；**租约过期或运行令牌不匹配**的旧执行者必须放弃回写。
+9. 生成期间课程归档时把任务置 `CANCELLED`、提交置 `FAILED`，不留下批改草稿。
+
+配置：`SUBMISSION_GRADE_LEASE_SECONDS`（默认 300）、`SUBMISSION_GRADE_MAX_CHARS`（默认 120000）、`GRADING_WORKER_POLL_SECONDS`（默认 5）、`GRADING_WORKER_BATCH_SIZE`（默认 5）。
+
+**孤立对象清理协议**（独立维护命令 `scripts/cleanup_expired_submission_uploads.py`）：
+
+- 领取条件：`completed_at IS NULL`（已完成会话及其对象**永不清理**）、`expired_at IS NULL`、（已超过确认窗口或已被替代）、且 `upload_url_expires_at + SUBMISSION_UPLOAD_DELETE_BUFFER_SECONDS` 已过——预签名 PUT 到期前浏览器仍可能直传，立即删除会留下重建窗口（默认缓冲 3600 秒）；
+- 用 `FOR UPDATE SKIP LOCKED` 与并发的完成请求互斥，不会误删已确认对象；
+- 删除对象后**再次 HeadObject 复查**：确认对象不存在才设置 `expired_at`；对象重新出现（晚到 PUT）或存储不可用时保持未过期，留给下一轮重试；
+- 命令可重复执行（幂等）：已标记 `expired_at` 的会话不再扫描。
+
+### 9.12 错误响应
+
+| 场景 | HTTP | 错误码 |
+| --- | --- | --- |
+| 缺少、无效或过期的 Access Token | 401 | `AUTH_TOKEN_EXPIRED` |
+| 提交/任务/课程不存在，或当前用户不可见 | 404 | `RESOURCE_NOT_FOUND` |
+| 学生调用批改/复核/发布，或其他教师调用学生上传接口 | 403 | `ROLE_FORBIDDEN` |
+| 其他教师读取或管理他人提交 | 403 | `COURSE_FORBIDDEN` |
+| 归档课程的初始化、完成、批改、复核与发布 | 409 | `COURSE_ARCHIVED` |
+| 任务未发布/已关闭/已归档 | 409 | `ASSIGNMENT_NOT_OPEN` |
+| 同一任务重复初始化上传（已有正式提交） | 409 | `SUBMISSION_ALREADY_EXISTS` |
+| 未完成提交、批改未生成、或已有复核结果时重复触发 | 409 | `SUBMISSION_NOT_READY` |
+| 成绩已发布后再修改复核 | 409 | `GRADE_ALREADY_PUBLISHED` |
+| 未完成教师复核就发布 | 409 | `GRADE_NOT_REVIEWED` |
+| 文件类型、MIME、大小、sha256、对象缺失/不符、确认窗口已过或已被清理（`UPLOAD_EXPIRED`）、已被替代或对象键不匹配（`UPLOAD_SUPERSEDED`）、会话与提交状态不一致（`UPLOAD_STATE_CONFLICT`） | 422 | `UPLOAD_INVALID` |
+| 请求结构、字段类型/长度、显式 `null`、未知字段、分页越界、空对象 | 422 | `VALIDATION_ERROR` |
+| 对象存储未配置或不可达 | 503 | `SERVICE_UNAVAILABLE`（`details.component = storage`） |
+| 批改任务失败导致无法读取批改详情 | 502 | `AI_JOB_FAILED`（`details.job_id` 指向批改任务） |
+
+### 9.13 前端 mock 与正式契约的差异
+
+第 9 节接口在前端当前由 mock adapter 提供数据，**前端真实接入不在本轮后端实施范围内**，但以正式契约为准：
+
+- 列表：mock 直接返回数组；正式接口返回**分页包装** `{items, page, page_size, total}`。
+- 文件类型：mock 允许旧版 `.doc`；正式接口**只接受 PDF 与 DOCX**，`.doc` 返回 `422 UPLOAD_INVALID`。
+- mock 未实现下载地址、批改触发、复核与发布；正式接口的权限、状态机与错误码以本节为准。
+- 学生的批改详情：mock 直接返回 AI 建议分；正式接口在发布前返回 `404`，发布后仅返回终稿（AI 建议分对学生为 `null`）。
 
 ## 10. 异步任务接口
 
@@ -1752,7 +2077,7 @@ Python `jsonschema` 因此把合法值 `40.55` 判为非法（实测 4.26.0）�
 
 前端轮询建议：前 30 秒每 2 秒一次，之后每 5 秒一次；页面离开时停止轮询。`FAILED` 后展示后端返回的安全错误信息和重试入口（`MATERIAL_PARSE` 任务的失败重试经由 `POST /materials/{material_id}/parse`，见 5.3；`PRACTICE_GENERATE` 任务经由 `POST /jobs/{job_id}/retry`，见下）。
 
-**任务可见性**：`GET /jobs/{job_id}` 按任务关联资源的可见性返回——`MATERIAL_PARSE` 按资料可见性（5.1 / 5.4 的规则）；`PRACTICE_GENERATE` 按练习可见性（7.4 的规则，学生仅在该练习 `PUBLISHED` 时可见）。不可见与不存在统一 `404 RESOURCE_NOT_FOUND`。
+**任务可见性**：`GET /jobs/{job_id}` 按任务关联资源的可见性返回——`MATERIAL_PARSE` 按资料可见性（5.1 / 5.4 的规则）；`PRACTICE_GENERATE` 按练习可见性（7.4 的规则，学生仅在该练习 `PUBLISHED` 时可见）；`SUBMISSION_GRADE` 按提交可见性（9.5 的规则，**课程创建教师与提交本人**可读）。不可见与不存在统一 `404 RESOURCE_NOT_FOUND`。
 
 ### 10.1 重试练习生成任务
 
@@ -1770,12 +2095,12 @@ Authorization: Bearer <access_token>
 > 归档 `409 COURSE_ARCHIVED`），**之后**才按"资料重试改走资料接口"返回
 > `409 JOB_NOT_RETRYABLE`。这样非成员拿到任务 UUID 也无法探测任务是否存在或其类型。
 
-加锁顺序固定为 **课程 → 练习 → 任务**（与 7.1 的统一锁协议一致），不使用"任务 → 练习"的反向顺序；状态检查在持有任务行锁时完成，因此并发的回写与重试只会形成一个符合串行顺序的结果。
+加锁顺序固定为 **课程 → 资源 → 任务**（与 7.1 / 9.1 的统一锁协议一致），不使用"任务 → 资源"的反向顺序；状态检查在持有任务行锁时完成，因此并发的回写与重试只会形成一个符合串行顺序的结果。
 
 可重试：`FAILED`，以及**租约已过期**的 `RUNNING`（崩溃遗留）。重试时：
 
-- 复用原练习 ID 与 job ID；
-- 清除运行令牌、租约、错误与**旧题目**，把任务重置为 `PENDING`、练习重置为 `GENERATING`；
+- 复用原资源 ID 与 job ID；
+- 清除运行令牌、租约、错误与**旧产物**，把任务重置为 `PENDING`、资源重置为进行中状态；
 - 成功响应为 `202 Accepted`，Schema `JobStatus`。
 
 | 情形 | 结果 |
@@ -1785,9 +2110,14 @@ Authorization: Bearer <access_token>
 | `RUNNING` 且租约仍有效 | `409 JOB_NOT_RETRYABLE` |
 | `SUCCEEDED` / `CANCELLED` | `409 JOB_NOT_RETRYABLE` |
 | `MATERIAL_PARSE` 任务 | `409 JOB_NOT_RETRYABLE`（改走 `POST /materials/{material_id}/parse`，见 5.3） |
-| `SUBMISSION_GRADE` 任务 | 本次未实现该任务类型，统一 `404 RESOURCE_NOT_FOUND` |
+| `SUBMISSION_GRADE` 任务 | `202`，按 9.6 的分流重置（与 `POST /submissions/{id}/grade` 共用同一服务逻辑） |
 
-练习生成 Worker 的状态推进行为见 7.10。
+`SUBMISSION_GRADE` 的重试与 `POST /submissions/{submission_id}/grade` 等价：
+`SUBMITTED` / `FAILED` / 租约过期的 `RUNNING` 会被重置为 `PENDING` 并复用原 job ID；
+`PENDING` / 租约有效的 `RUNNING` 幂等返回原任务；`REVIEW_REQUIRED`、`PUBLISHED`
+与已有复核结果的提交返回 `409 SUBMISSION_NOT_READY`。
+
+练习生成 Worker 的状态推进行为见 7.10，提交批改 Worker 见 9.11。
 
 ## 11. Dashboard 接口
 
@@ -1816,7 +2146,10 @@ Dashboard 只返回页面首屏需要的摘要和最近记录，不返回完整�
 | `MATERIAL_NOT_READY` | 409 | 资料尚未解析完成 |
 | `MATERIAL_ALREADY_READY` | 409 | 资料已解析完成，无需再次解析（见 5.3） |
 | `ASSIGNMENT_NOT_OPEN` | 409 | 任务未发布或已关闭 |
+| `SUBMISSION_ALREADY_EXISTS` | 409 | 同一学生对同一任务已有正式提交，不能重复初始化上传（见 9.2） |
+| `SUBMISSION_NOT_READY` | 409 | 提交未完成或批改未生成；或已有复核结果时重复触发批改（见 9.6 / 9.9） |
 | `GRADE_NOT_REVIEWED` | 409 | 未完成教师复核，不能发布 |
+| `GRADE_ALREADY_PUBLISHED` | 409 | 成绩已发布，不能继续修改复核结果（见 9.8） |
 | `AI_JOB_FAILED` | 502 | AI 或解析任务失败 |
 | `CHAT_CONFLICT` | 409 | 会话在回答生成期间被并发修改，本次发送未写入（见 6.1 / 6.5） |
 | `PRACTICE_NOT_READY` | 409 | 练习尚未生成成功（非 `DRAFT` 状态发布、提交未发布练习，见 7.5 / 7.6） |

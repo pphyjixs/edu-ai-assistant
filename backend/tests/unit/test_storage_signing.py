@@ -179,10 +179,12 @@ def test_presigned_put_requires_configuration() -> None:
 
 
 def test_adapter_never_accepts_file_content() -> None:
-    """适配器不提供任何接收文件内容的**写入**入口（契约 4.4 / 5.5）。
+    """适配器不提供任何接收文件内容的**写入**入口（契约 4.4 / 5.5 / 9.1）。
 
-    浏览器直传协议下文件不经后端写入对象存储；``get_object`` 是契约 5.5
-    允许的唯一服务端读取路径（解析 Worker 拉取字节流做解析）。
+    浏览器直传协议下文件不经后端写入对象存储；``get_object`` 与
+    ``get_object_verified`` 是允许的服务端读取路径（解析 Worker / 批改 Worker
+    拉取字节流做解析与批改）；``create_presigned_get`` 只签发地址，供
+    提交详情下发临时下载链接（契约 9.5），同样不接触文件内容。
     """
     public_methods = {
         name
@@ -193,6 +195,7 @@ def test_adapter_never_accepts_file_content() -> None:
     assert public_methods == {
         "bucket_exists",
         "close",
+        "create_presigned_get",
         "create_presigned_put",
         "delete_object",
         "ensure_bucket",

@@ -20,7 +20,10 @@ from app.core.config import BACKEND_DIR
 MAINTENANCE_SCRIPTS = (
     "scripts/parse_worker.py",
     "scripts/practice_worker.py",
+    "scripts/grading_worker.py",
     "scripts/cleanup_deleted_materials.py",
+    "scripts/cleanup_expired_uploads.py",
+    "scripts/cleanup_expired_submission_uploads.py",
     "scripts/backfill_material_chunks.py",
 )
 

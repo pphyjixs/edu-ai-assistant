@@ -134,8 +134,26 @@ class AssignmentNotOpenError(ApiError):
     code = ErrorCode.ASSIGNMENT_NOT_OPEN
 
 
+class SubmissionAlreadyExistsError(ApiError):
+    """同一学生对同一任务已有正式提交（契约 9.2）。"""
+
+    code = ErrorCode.SUBMISSION_ALREADY_EXISTS
+
+
+class SubmissionNotReadyError(ApiError):
+    """提交未完成、批改未生成，或已有复核结果时重复触发（契约 9.6 / 9.9）。"""
+
+    code = ErrorCode.SUBMISSION_NOT_READY
+
+
 class GradeNotReviewedError(ApiError):
     code = ErrorCode.GRADE_NOT_REVIEWED
+
+
+class GradeAlreadyPublishedError(ApiError):
+    """成绩已发布，不能继续修改复核结果（契约 9.8）。"""
+
+    code = ErrorCode.GRADE_ALREADY_PUBLISHED
 
 
 class AiJobFailedError(ApiError):

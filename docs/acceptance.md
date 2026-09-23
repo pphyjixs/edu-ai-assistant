@@ -821,3 +821,183 @@ $ python scripts/backfill_material_chunks.py          # 第二次（幂等）
 "全部未删除 `READY` 资料都有片段"的覆盖检查已在本地开发库完成（见上），
 本轮修复未新增迁移，开发库复核仍为 `0009_practice_sets` / 23 张表；
 **部署与真实模型效果在真实模型联调完成前继续标记为未验收**。
+
+
+## 13. 提交与批改（第 9 节）验收记录
+
+本轮在 `feat/backend-submission-grading` 分支交付 `docs/api-contract.md` 第 9 节的八个接口、
+迁移 `0011_submissions_grading` 与批改 Worker。
+> 迁移编号说明：该迁移最初为 `0011_submissions_grading`；在集成最新 `main` 的
+> Agent 功能（其迁移占用 `0011_agent_runs`）时顺延为 **`0012_submissions_grading`**，
+> `down_revision = 0011_agent_runs`，开发库经快照 → 降级 → 重新升级完成迁移。
+
+### 1. 契约冻结
+
+- `docs/api-contract.md` 第 9 节扩写为 9.1–9.13：状态机、权限矩阵、锁顺序、八个接口的
+  请求/响应/幂等规则、错误表、批改 Worker 协议与前端 mock 差异。
+- 第 10 节补充 `SUBMISSION_GRADE` 的可见性与重试分流；第 12 节新增
+  `SUBMISSION_ALREADY_EXISTS`、`SUBMISSION_NOT_READY`、`GRADE_ALREADY_PUBLISHED`。
+- OpenAPI 重新导出（集成后）：**44 条路径**（第 9 节 8 条、Agent 3 条），
+  导出物与运行时逐字节一致
+  （`test_openapi_contract.py::test_exported_file_matches_current_code`）。
+
+### 2. 迁移与开发库
+
+- `0012_submissions_grading`（原 `0011_submissions_grading`）新增五张表与两个原生枚举；
+  `grade_items.rubric_item_id` 与 `submissions.rubric_version_id` 为指向历史评分版本的
+  RESTRICT 外键。
+- 升级前先做开发库快照（`edu_ai_dev_before_0011_backup`），再 `alembic upgrade head`；
+  `alembic check` 报告 `No new upgrade operations detected`（ORM 与迁移一致）。
+- `test_migrations.py` 覆盖 `0011_agent_runs → 0012 → 0011_agent_runs → 0012` 往返、
+  回滚到底无表/枚举残留、提交唯一 / 批改唯一 / 评分项唯一 / 分数范围约束在库侧生效。
+- 开发库 `alembic current` 与代码 head 均为 `0012_submissions_grading`。
+
+### 3. 测试
+
+新增测试：
+
+| 层 | 文件 | 数量 | 覆盖 |
+| --- | --- | --- | --- |
+| unit | `test_grading_schemas.py` | 62 | 上传严格类型、白名单（拒绝 `.doc`）、复核完整快照、`Decimal` 分数、AI 输出校验、证据链核对与状态机 |
+| contract | `test_grading_contract.py` | 15 | 八个接口状态码、请求体组件、nullable/optional、错误码、分页、学生字段隐藏、证据字段声明 |
+| integration | `test_grading_api.py` | 34 | 直传/完成/幂等、角色化列表、固定评分版本、触发分流、复核与发布、权限矩阵、归档 |
+| integration | `test_grading_protocol.py` | 9 | 完成协议、清理协议与锁后复核的错误优先级与幂等行为 |
+| integration | `test_grading_races.py` | 21 | 并发初始化/完成只产生一份提交、统一锁顺序（含"锁被持有时请求不可能提前完成"与"锁后复核状态"）、并发触发只产生一个任务、清理与完成互斥、复核与发布串行化 |
+| integration | `test_grading_worker.py` | 11 | 非法输出不留部分结果、旧令牌/过期租约不能回写、归档取消、按固定版本批改、领取互斥、模型调用期间无长事务、DOCX 报告批改 |
+| integration | `test_grading_minio.py` | 6 | 真实 MinIO 直传、条件写入、校验和拒绝、预签名 GET、Worker 从真实桶批改、被替代对象清理、CORS 预检 |
+| integration | `test_migrations.py` | +5 | 0011 迁移结构（含部分唯一索引谓词与证据列约束）、往返与历史外键 |
+| unit | `test_maintenance_scripts_metadata.py` | +3 | 新增 `grading_worker.py`、`cleanup_expired_submission_uploads.py` 等脚本可独立加载完整 ORM 元数据 |
+
+完整套件（真实 PostgreSQL + MinIO，依赖配置齐备，**无跳过**；数量为集成 Agent
+功能并顺延迁移为 `0012_submissions_grading` 之后的重新收集结果）：
+
+- 默认环境：**944 收集，944 通过，0 失败，0 错误，0 跳过**
+- `PYTHONIOENCODING=utf-8`：**944 全部通过，0 跳过**
+- `TEST_TIMEOUT_SECONDS=120`：**944 全部通过，0 跳过**（验证超时配置在全量运行下不产生 `INTERNALERROR`）
+- 分层数量：**unit 395 / contract 110 / integration 439**
+- 测试库与 `_migration_check` 库无残留，`git diff --check` 通过
+
+### 4. 明确未验收（不得由本地结果冒充）
+
+- **真实模型效果**：批改链路使用 `httpx.MockTransport` 本地假模型，真实 Chat Completions
+  联调、批改质量与提示词效果均未验收。
+- **部署环境 Worker 常驻运行**：`scripts/grading_worker.py` 的常驻运行与优雅退出尚未在
+  真实部署环境演练。
+- **前端接入**：提交、批改复核与成绩发布页面未接入；前端 mock 与正式契约的差异见 9.13。
+- **报告对象的删除接口**：报告对象没有公开删除接口；过期与被替代会话的孤立对象由
+  `scripts/cleanup_expired_submission_uploads.py` 清理（含 PUT 到期缓冲与删除后复查）。
+
+### 提交与批改修复验收（代码审查后的复查修复）
+
+本轮修复复查确认的六类缺陷并补上永久回归，**不新增接口、不改成功状态码与响应 Schema
+的语义、不新增迁移之外的数据库对象**（迁移 `0011` 内部补充了证据列、对应 CHECK
+约束与"每份提交最多一个完成会话"的部分唯一索引）。
+
+| 缺陷类别 | 修复 |
+| --- | --- |
+| 证据不可核验：AI 的摘录与位置是自说自话 | `grade_items` 增加 `evidence_quote`（非空）、`evidence_source_type`（`PDF_PAGE`/`DOCX_PARAGRAPH`，由报告 MIME 在服务端确定）、`evidence_location_start/end`（从 1 开始）与三条 CHECK；Worker 从报告原文构建带真实来源定位的证据，服务端校验摘录确实出现在所指页/段落区间内，任何一项不成立整次失败 |
+| 锁顺序不完整 | 完成上传按 **课程 → Assignment → RubricVersion → Submission → UploadSession** 取锁，并在锁内**复核**锁前读到的会话与提交状态；触发/重试、Worker 回写、复核与发布沿用同一顺序 |
+| 完成协议缺陷 | 状态检查全部在 HeadObject 之前并按固定优先级（已完成幂等 → 被替代 → 过期 → 已提交 409 → 非 UPLOADING → 任务关闭 → 对象确认）；并发完成只产生一个完成会话（部分唯一索引 + 行锁），失败方对象进入孤立清理范围 |
+| 清理协议缺陷 | 清理对候选会话 `FOR UPDATE SKIP LOCKED` 领取、删除对象前**先标过期再复查**，与完成请求并发时不会删除已确认或正被确认的对象；命令重复运行幂等 |
+| 错误优先级 | 写接口统一按 认证 → 资源可见性 → 角色 → 归档 → 业务状态 → 请求结构 → 分数语义 排序，畸形请求体不再抢先返回 422 |
+| 测试执行可观测性 | 引入 `pytest-timeout`（单测试默认 120s，`--timeout`/`PYTEST_TIMEOUT`/`TEST_TIMEOUT_SECONDS`/用例标记可覆盖）；超时自动取消，事件与全部线程栈快照写入 `backend/test-reports/timeout-events.log`（已 gitignore）供死锁分析。**平台行为**：POSIX `signal` 方法使当前测试失败、pytest 继续生成正常报告；Windows `thread` 方法在记录事件与全部线程栈后**终止整个 pytest 进程**，异常退出时 **fixture 清理不保证执行** |
+
+**变异验证**（临时移除/错置关键锁，对应用例必须失败，随后全部恢复）：
+
+| 变异 | 被捕获的用例 |
+| --- | --- |
+| 完成路径把 Submission 锁放在 RubricVersion 之前 | `test_complete_locks_rubric_version_before_submission`（以"锁序与契约 9.1 不一致"失败） |
+| 触发批改不锁 Job 行 | `test_grade_trigger_waits_for_job_row_lock` |
+| 触发批改用普通读代替 Submission 行锁 | `test_trigger_decides_after_submission_lock`（持锁期间状态被推进，触发不得用过期状态重置任务） |
+| 完成路径不锁 UploadSession 行 | `test_complete_rechecks_session_state_after_lock`（持锁期间会话被标记被替代，完成不得用过期状态写下提交） |
+| 复核/发布用普通读代替 GradeReview 行锁 | `test_publish_waits_for_review_row_lock`、`test_review_patch_rechecks_published_after_lock`（已发布成绩不得被改写） |
+
+五个变异均被捕获后恢复实现，`test_grading_races.py` 21 项全绿。
+注意：仅断言"请求被行锁挡住"的用例**不能**捕获 M3/M4 这类变异——commit 时的
+`UPDATE` 本身会拿行锁，阻塞依旧；因此新增的
+`test_trigger_decides_after_submission_lock`、`test_complete_rechecks_session_state_after_lock`、
+`test_review_patch_rechecks_published_after_lock` 改为断言"**锁后**必须基于最新状态分流"，
+这才是锁位置的可观测语义。
+
+DOCX 报告批补齐端到端用例（`test_worker_grades_docx_report_with_paragraph_evidence`）：
+真实 `python-docx` 构造报告 → 直传 → 触发 → Worker 批改成功，证据来源类型为
+`DOCX_PARAGRAPH` 且摘录可回查原文（PDF 路径已有等价覆盖）。
+
+修复后完整套件两种环境均为 **910/910 通过、0 跳过**（unit 373 / contract 110 /
+integration 427），OpenAPI 重导出后与运行时逐字节一致（41 条路径）。
+
+### 证据位置与测试超时配置修复验收（复查修复第二轮）
+
+本轮修复验收中发现的两项缺陷，**不新增迁移、不改接口路径与状态码**。
+修复后总量 **932 项**（unit 395 / contract 110 / integration 427）。
+
+| 缺陷 | 修复 |
+| --- | --- |
+| **证据区间允许虚假端点**：`_validate_location` 只要求起点存在且"区间与实际单元有任意交集"，`(1, 999)` 这类"有效起点 + 不存在的终点"可以通过 | 两个端点都必须存在于 `ReportSource.locations()`；区间中间允许没有文本的空页/空段落（只校验端点），证据摘录仍必须在区间内的实际文本中命中；来源类型继续由报告 MIME 确定 |
+| **`TEST_TIMEOUT_SECONDS` 原始字符串写入 pytest-timeout**：字符串与内部整数比较抛 `TypeError`，pytest 报 `INTERNALERROR` | `conftest.py` 新增独立解析函数：转 `float`，拒绝空字符串、非数字、`NaN`、正负无穷、零与负数，非法值抛含变量名与原始值的 `pytest.UsageError`（pytest 以**配置错误**退出而非内部异常）；仅在 CLI 未显式给 `--timeout` 时读取。固定优先级 marker > CLI > `TEST_TIMEOUT_SECONDS` > `PYTEST_TIMEOUT` > ini |
+
+同步修正：`GradeItemDetailSchema` 的两个位置字段改为 `ge=1` 的整数（OpenAPI 导出
+`type: integer` + `minimum: 1`）；`api-contract.md` 9.7/9.11 明确"区间两个端点都必须
+实际存在、空页/空段落不影响合法性"；超时文档措辞改为 POSIX = 当前测试失败并继续
+生成报告、Windows = 记录事件与线程栈后**终止整个 pytest 进程**（fixture 清理不保证执行）。
+
+**回归测试**（新增 20 项：超时解析纯函数 14 项 + 隔离子进程 6 项）：
+
+- 证据位置：`start=1, end=999` 拒绝、`start=999, end=999` 拒绝、
+  端点真实且中间为空单元的区间允许、摘录只在区间外仍拒绝（既有用例继续通过）、
+  契约断言两个位置字段为 `integer` 且 `minimum: 1`；
+- 超时解析（纯函数）：`"1"` / `"0.5"` / `"120"` 正确转换；
+  `"abc"` / `""` / `"0"` / `"-1"` / `"nan"` / `"inf"` / `"-inf"` 等返回配置错误；
+- 超时配置（子进程，独立 `--basetemp` 与独立事件日志，结束即清理）：
+  `TEST_TIMEOUT_SECONDS=1` 无 `INTERNALERROR`；非法值以配置错误退出且输出含变量名、
+  无 Python 类型错误堆栈；`--timeout=1` 存在时不读取不校验环境变量；
+  `PYTEST_TIMEOUT=1` 继续可用；两个环境变量并存时 `TEST_TIMEOUT_SECONDS` 优先
+  （子进程内断言 pytest-timeout 最终读到 2.0）；独立子进程故意挂起被取消，
+  事件日志包含 nodeid、时长、PID 与线程栈（Windows）或超时报告（POSIX）。
+
+**变异验证**（临时恢复缺陷实现，对应用例必须失败，随后立即还原）：
+
+| 变异 | 被捕获的用例 |
+| --- | --- |
+| M6：证据校验退回"只查起点 + 区间任意交集" | `test_validate_generated_rejects_fabricated_interval_end`（`(1, 999)` 不再被拒绝） |
+| M7：超时配置退回"原始字符串直接写入" | `test_env_timeout_runs_without_internalerror` 与 `test_invalid_env_timeout_is_usage_error`（子进程出现 `INTERNALERROR> TypeError: '>' not supported between instances of 'str' and 'int'`） |
+
+两个变异恢复实现后重跑证据定位单元、Worker、契约、DOCX 端到端、
+21 项批改竞态与全部超时配置测试（174 项）均通过。
+
+### Agent 功能集成与迁移顺延验收（`feat/backend-submissions-grading`）
+
+本地批改工作基于旧 `main`（迁移占用 `0011_submissions_grading`），最新 `main`
+已合入 Agent 功能并占用 `0011_agent_runs`，形成修订号冲突。集成处理：
+
+1. **保护与恢复**：工作区先做本地 checkpoint 提交与备份分支
+   （`backup/submissions-grading-checkpoint`），开发库建快照
+   `edu_ai_dev_before_0012_integration_backup` 后用旧迁移把开发库降级回
+   `0010_assignments`（五张批改表当时均为 0 行）。
+2. **rebase 与冲突合并**：rebase 到 `f9835e8`（Agent 合并提交），共享文件
+   两侧能力全部保留——路由注册、`create_app` 请求模型、`Settings`（Agent 与
+   Grading 配置并存）、ORM registry（Agent 两表 + Grading 五表）、错误码、
+   Jobs 的 `SUBMISSION_GRADE` 与 `AGENT_RUN` 枚举及各自的任务分派；
+   删除被真实 Grading 模块替代的 `grading/.gitkeep` 占位。
+3. **迁移顺延**：批改迁移更名为 `0012_submissions_grading`，
+   `down_revision = 0011_agent_runs`，形成单一 head 线性链
+   `0010_assignments → 0011_agent_runs → 0012_submissions_grading`。
+   迁移测试合并两侧预期：Agent 两表与三个枚举（0011）、提交批改五表与两个
+   枚举（0012），并覆盖 `0011_agent_runs → 0012 → 0011_agent_runs → 0012`
+   往返（降级后 Agent 表保留）与从空库到单一 head 的全量升级。
+4. **开发库重新升级**：`0010 → 0011_agent_runs → 0012_submissions_grading`
+   成功，Agent 两表、Grading 五表与全部枚举同时存在，`alembic current` 与
+   代码 head 一致。
+5. **契约与生成物**：OpenAPI 重导出为 **44 条路径**（Agent 3 条 + 第 9 节
+   8 条），`JobType` 同时含 `SUBMISSION_GRADE` 与 `AGENT_RUN`，证据位置字段
+   仍为 `integer + minimum: 1`；`contracts/generated/api-types.ts` 由
+   `npm run api:types` 重新生成（重复运行无差异），包含两侧类型；
+   `npm run build` 通过。
+6. **完整验收**（真实 PostgreSQL + MinIO，数量为集成后重新收集）：
+   默认环境 **944/944**、`PYTHONIOENCODING=utf-8` **944/944**、
+   `TEST_TIMEOUT_SECONDS=120` **944/944**（unit 395 / contract 110 /
+   integration 439），0 失败、0 错误、0 跳过、无 `INTERNALERROR`；
+   超时配置回归实际收集为 **20 项**（纯函数 14 + 子进程 6）。
+   测试库、`_migration_check` 库、MinIO 测试对象与超时日志均无残留。
+7. **尚未验收**（与此前一致，不因集成而改变）：真实模型批改/出题/问答质量、
+   前端提交与批改页面接入、部署环境各 Worker 常驻运行演练。

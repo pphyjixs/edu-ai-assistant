@@ -23,6 +23,13 @@ from app.modules.chat.models import (
     ChatSession,
 )
 from app.modules.courses.models import Course, CourseMember
+from app.modules.grading.models import (
+    GradeItem,
+    GradeReview,
+    Submission,
+    SubmissionGradeAttempt,
+    SubmissionUploadSession,
+)
 from app.modules.jobs.models import Job
 from app.modules.materials.models import (
     Material,
@@ -57,6 +64,8 @@ __all__ = [
     "ChatSession",
     "Course",
     "CourseMember",
+    "GradeItem",
+    "GradeReview",
     "Job",
     "LoginAttempt",
     "Material",
@@ -71,6 +80,9 @@ __all__ = [
     "PracticeQuestion",
     "PracticeSet",
     "PracticeSetMaterial",
+    "Submission",
+    "SubmissionGradeAttempt",
+    "SubmissionUploadSession",
     "User",
     "target_metadata",
 ]

@@ -162,6 +162,19 @@ class Settings(BaseSettings):
     #: 单条来源快照落库的字符上限（避免把整份课件写进审计表）
     agent_source_snapshot_max_chars: int = 500
 
+    # ------------------- 提交与批改（Grading）-------------------
+    #: 实验报告单文件大小上限（字节），契约 9.2 默认 50 MiB
+    submission_max_upload_bytes: int = 50 * 1024 * 1024
+    #: 报告上传的完成确认窗口（秒），契约 9.2/9.3 默认 24 小时
+    submission_upload_confirm_ttl_seconds: int = 24 * 3600
+    #: 报告上传对象清理缓冲（秒）：预签名 PUT 到期后再等该时长才真正删除孤立对象，
+    #: 覆盖晚到 PUT 的重建窗口（契约 9.3 的清理协议）
+    submission_upload_delete_buffer_seconds: int = 3600
+    #: 批改任务的租约（秒）；崩溃后超过租约的 RUNNING 任务可被重试回收（契约 9.11）
+    submission_grade_lease_seconds: int = 300
+    #: 送入模型的报告全文上限（字符）；超过直接 FAILED，不截断后宣称成功（契约 9.11）
+    submission_grade_max_chars: int = 120_000
+
     # ------------------------------ AI ------------------------------
     ai_provider: str = ""
     ai_api_key: str = ""
