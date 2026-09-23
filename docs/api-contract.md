@@ -869,7 +869,9 @@ Authorization: Bearer <access_token>
 6. **崩溃安全**：Worker 中断后任务停留于 `RUNNING` 直到租约到期；5.3 的重试对“任务 `SUCCEEDED` 但资料未 `READY`”等异常窗口同样可重置（见 5.3 分流表），不要求 Worker 自身实现租约续期。
 7. **独立进程部署**：Worker 由独立进程运行（``scripts/parse_worker.py``），直接轮询数据库领取任务，不依赖 API 请求进程或内存队列；API 进程只创建 ``PENDING`` 任务。轮询间隔与批大小由部署配置决定（``WORKER_POLL_SECONDS`` / ``WORKER_BATCH_SIZE``）。
 
-第一版不实现：扫描版 PDF 的 OCR（图片型页面按空章节处理或解析失败，失败原因写入安全摘要）；通用 `POST /jobs/{job_id}/retry`（重试一律经由 5.3，按资源类型收口）。
+第一版不实现：扫描版 PDF 的 OCR（图片型页面按空章节处理或解析失败，失败原因写入安全摘要）。
+资料解析的重试**按资源类型收口**：`POST /materials/{material_id}/parse`（5.3）；
+通用 `POST /jobs/{job_id}/retry` 已在第 10 节交付，对 `MATERIAL_PARSE` 返回 `409 JOB_NOT_RETRYABLE`。
 
 ## 6. 课程问答接口
 
@@ -2056,7 +2058,22 @@ Authorization: Bearer <access_token>
 | GET | `/jobs/{job_id}` | 查询任务状态 | 任务关联资源访问者 |
 | POST | `/jobs/{job_id}/retry` | 重试失败任务 | 对应资源管理者 |
 
-任务响应：
+### 10.0 公开范围与通用规则
+
+**公开任务范围**：通用 Jobs 接口只服务三类任务（其余一律不可见）：
+
+| 任务类型 | 资源类型 | 关联模块 |
+| --- | --- | --- |
+| `MATERIAL_PARSE` | `MATERIAL` | 课件解析（第 5 节） |
+| `PRACTICE_GENERATE` | `PRACTICE_SET` | 课程练习（第 7 节） |
+| `SUBMISSION_GRADE` | `SUBMISSION` | 提交与批改（第 9 节） |
+
+- `AGENT_RUN / AGENT_RUN` 属于内部任务：Agent 的运行状态与取消**只通过 `/agent-runs` 系列接口**读写，
+  两个通用 Jobs 路由对它统一返回 `404 RESOURCE_NOT_FOUND`（与"不存在"不可区分）。
+- 任务类型与资源类型的组合由数据库 CHECK 约束保证只有四种（含 `AGENT_RUN`）；
+  公开 Schema 只声明上表三种，内部枚举不进入公开文档。
+
+**响应**（结构与 4.7 的 `JobStatus` 一致）：
 
 ```json
 {
@@ -2073,51 +2090,97 @@ Authorization: Bearer <access_token>
 }
 ```
 
-任务响应结构与第 4.7 节的 `JobStatus` 一致；课件上传产生的任务为 `MATERIAL_PARSE`，`resource_type` 为 `MATERIAL`，`resource_id` 为资料 ID。
+| 字段 | 类型 | 约束 |
+| --- | --- | --- |
+| `id` | UUID | 任务 ID |
+| `type` | 枚举 | 上表三种公开任务之一 |
+| `status` | 枚举 | `PENDING` / `RUNNING` / `SUCCEEDED` / `FAILED` / `CANCELLED` |
+| `progress` | integer | **0–100**（Schema 与数据库双重约束）；`PENDING` 为 0，`SUCCEEDED` 为 100 |
+| `resource_type` | 枚举 | 与 `type` 一一对应（`MATERIAL` / `PRACTICE_SET` / `SUBMISSION`） |
+| `resource_id` | UUID | 关联资源 ID |
+| `error` | string / `null` | 失败原因安全摘要，**最长 500 字符**；不包含堆栈、提示词或报告原文；非 `FAILED` 时为 `null` |
+| `created_at` | string | UTC ISO 8601（`format: date-time`） |
+| `started_at` | string / `null` | UTC ISO 8601；未开始为 `null` |
+| `finished_at` | string / `null` | UTC ISO 8601；未结束为 `null` |
 
-前端轮询建议：前 30 秒每 2 秒一次，之后每 5 秒一次；页面离开时停止轮询。`FAILED` 后展示后端返回的安全错误信息和重试入口（`MATERIAL_PARSE` 任务的失败重试经由 `POST /materials/{material_id}/parse`，见 5.3；`PRACTICE_GENERATE` 任务经由 `POST /jobs/{job_id}/retry`，见下）。
+- 响应**不暴露**内部调度字段：`attempts`、`run_token`、`lease_expires_at` 等一律不出现在任何响应中。
+- 不存在、资源不可见、资源已删除、以及不属于公开范围的任务（含 `AGENT_RUN`）统一返回
+  `404 RESOURCE_NOT_FOUND`，不区分原因。
+- 归档课程中的**历史任务仍可读取**（按原资源权限）；归档只禁止写操作（重试返回 `409 COURSE_ARCHIVED`）。
 
-**任务可见性**：`GET /jobs/{job_id}` 按任务关联资源的可见性返回——`MATERIAL_PARSE` 按资料可见性（5.1 / 5.4 的规则）；`PRACTICE_GENERATE` 按练习可见性（7.4 的规则，学生仅在该练习 `PUBLISHED` 时可见）；`SUBMISSION_GRADE` 按提交可见性（9.5 的规则，**课程创建教师与提交本人**可读）。不可见与不存在统一 `404 RESOURCE_NOT_FOUND`。
+**可见性矩阵**（两类接口一致，写接口另有角色要求）：
 
-### 10.1 重试练习生成任务
+| 任务类型 | 可读取者 | 不可读 |
+| --- | --- | --- |
+| `MATERIAL_PARSE` | 资料所属课程成员（含归档课程） | 非成员、资料已删除 → `404` |
+| `PRACTICE_GENERATE` | 创建教师可读全部状态；学生仅在该练习 `PUBLISHED` 后可读 | 发布前对学生 → `404` |
+| `SUBMISSION_GRADE` | 课程创建教师与提交本人 | 其他学生、其他教师、非成员 → `404` |
+| `AGENT_RUN` | 不通过本接口读取 | 一律 `404` |
+
+前端轮询建议：前 30 秒每 2 秒一次，之后每 5 秒一次；页面离开时停止轮询，命中终态
+（`SUCCEEDED` / `FAILED` / `CANCELLED`）后停止。`FAILED` 后展示 `error` 安全摘要与重试入口
+（`MATERIAL_PARSE` 经由 `POST /materials/{material_id}/parse`，见 5.3；
+`PRACTICE_GENERATE` 与 `SUBMISSION_GRADE` 经由 `POST /jobs/{job_id}/retry`，见 10.2）。
+
+### 10.1 查询任务状态
+
+```http
+GET /api/v1/jobs/{job_id}
+Authorization: Bearer <access_token>
+```
+
+- 可见性按 10.0 的矩阵执行；不可见与不存在统一 `404 RESOURCE_NOT_FOUND`。
+- 响应 `200`，Schema `JobStatus`（10.0 的字段表）。
+- 归档课程的历史任务可读。
+
+### 10.2 重试任务
 
 ```http
 POST /api/v1/jobs/{job_id}/retry
 Authorization: Bearer <access_token>
 ```
 
-仅**课程创建教师**可调用。请求体可省略或传 `{}`（显式 `null` 与多余字段 `422`）。
+无请求字段：请求体可**省略**或传 `{}`；显式 `null`、数组、标量、非法 JSON、非法 UTF-8
+与多余字段统一 `422 VALIDATION_ERROR`（Schema 声明为可省略、**非 nullable**、无额外属性的对象）。
 
-处理顺序：认证（401）→ 任务存在且**关联资源可见**（404）→ 课程创建教师（403 / 404）→ 课程未归档（409）→ 状态分流（409）→ 请求体（422）。
+**检查顺序固定为**：
 
-> 关联资源的可见性与权限检查**先于**任务类型分流：`MATERIAL_PARSE` 任务也必须先
+1. 认证（`401`）；
+2. 任务存在且属于公开 Jobs 范围（`404`，含 `AGENT_RUN` 与未知组合）；
+3. 关联资源存在与可见性（`404`）；
+4. 角色及资源管理权限（`403`）；
+5. 课程归档状态（`409`）；
+6. 任务与资源状态（`409`）；
+7. 请求体结构（`422`）；
+8. 状态写入。
+
+> 关联资源的可见性与权限检查**先于**状态与类型分流：`MATERIAL_PARSE` 任务也必须先
 > 校验资料所属课程的成员可见性与角色（非成员 `404`、学生 `403 ROLE_FORBIDDEN`、
 > 归档 `409 COURSE_ARCHIVED`），**之后**才按"资料重试改走资料接口"返回
 > `409 JOB_NOT_RETRYABLE`。这样非成员拿到任务 UUID 也无法探测任务是否存在或其类型。
 
-加锁顺序固定为 **课程 → 资源 → 任务**（与 7.1 / 9.1 的统一锁协议一致），不使用"任务 → 资源"的反向顺序；状态检查在持有任务行锁时完成，因此并发的回写与重试只会形成一个符合串行顺序的结果。
+加锁顺序固定为 **课程 → 资源 → 任务**（与 7.1 / 9.1 的统一锁协议一致），不使用"任务 → 资源"的反向顺序；
+**状态判定必须在取得任务行锁之后完成**，因此并发的回写与重试只会形成一个符合串行顺序的结果。
 
-可重试：`FAILED`，以及**租约已过期**的 `RUNNING`（崩溃遗留）。重试时：
+**类型分流**：
 
-- 复用原资源 ID 与 job ID；
-- 清除运行令牌、租约、错误与**旧产物**，把任务重置为 `PENDING`、资源重置为进行中状态；
-- 成功响应为 `202 Accepted`，Schema `JobStatus`。
-
-| 情形 | 结果 |
+| 类型 | 行为 |
 | --- | --- |
-| `FAILED`，或租约已过期的 `RUNNING` | `202`，按上述重置 |
-| `PENDING` | `409 JOB_NOT_RETRYABLE` |
-| `RUNNING` 且租约仍有效 | `409 JOB_NOT_RETRYABLE` |
-| `SUCCEEDED` / `CANCELLED` | `409 JOB_NOT_RETRYABLE` |
-| `MATERIAL_PARSE` 任务 | `409 JOB_NOT_RETRYABLE`（改走 `POST /materials/{material_id}/parse`，见 5.3） |
-| `SUBMISSION_GRADE` 任务 | `202`，按 9.6 的分流重置（与 `POST /submissions/{id}/grade` 共用同一服务逻辑） |
+| `MATERIAL_PARSE` | 完成资料可见性、角色与归档检查后返回 `409 JOB_NOT_RETRYABLE`；重试走 `POST /materials/{material_id}/parse`（5.3） |
+| `PRACTICE_GENERATE` | 仅 `FAILED` 或租约已过期的 `RUNNING` 可重置；`PENDING` / 有效 `RUNNING` / `SUCCEEDED` / `CANCELLED` 返回 `409 JOB_NOT_RETRYABLE` |
+| `SUBMISSION_GRADE` | 与 `POST /submissions/{id}/grade` 共用同一逻辑（9.6）：`FAILED` / 租约过期的 `RUNNING` 复用原任务重置；`PENDING` / 有效 `RUNNING` 幂等返回；`REVIEW_REQUIRED`、`PUBLISHED` 与已有复核结果返回 `409 SUBMISSION_NOT_READY` |
+| `AGENT_RUN` | 对所有调用者统一 `404 RESOURCE_NOT_FOUND`（改走 `/agent-runs`） |
 
-`SUBMISSION_GRADE` 的重试与 `POST /submissions/{submission_id}/grade` 等价：
-`SUBMITTED` / `FAILED` / 租约过期的 `RUNNING` 会被重置为 `PENDING` 并复用原 job ID；
-`PENDING` / 租约有效的 `RUNNING` 幂等返回原任务；`REVIEW_REQUIRED`、`PUBLISHED`
-与已有复核结果的提交返回 `409 SUBMISSION_NOT_READY`。
+成功重试必须：
 
-练习生成 Worker 的状态推进行为见 7.10，提交批改 Worker 见 9.11。
+- 复用原资源 ID 与 job ID（不创建第二个任务）；
+- 清除运行令牌、租约、`error`、`started_at`、`finished_at` 与**旧产物**；
+- 把任务重置为 `PENDING / progress = 0`，并把关联资源恢复到对应的处理中状态
+  （练习 → `GENERATING`；提交 → `GRADING`）；
+- 返回 `202 Accepted`，Schema `JobStatus`。
+
+练习生成 Worker 的状态推进行为见 7.10，提交批改 Worker 见 9.11，
+资料解析 Worker 见 5.5；Jobs 模块只负责查找、权限优先级与类型分派，不复制领域状态机。
 
 ## 11. Dashboard 接口
 
@@ -2154,7 +2217,7 @@ Dashboard 只返回页面首屏需要的摘要和最近记录，不返回完整�
 | `CHAT_CONFLICT` | 409 | 会话在回答生成期间被并发修改，本次发送未写入（见 6.1 / 6.5） |
 | `PRACTICE_NOT_READY` | 409 | 练习尚未生成成功（非 `DRAFT` 状态发布、提交未发布练习，见 7.5 / 7.6） |
 | `PRACTICE_ALREADY_ATTEMPTED` | 409 | 同一学生对同一练习重复提交（见 7.6） |
-| `JOB_NOT_RETRYABLE` | 409 | 任务当前状态不可重试（见 10.1） |
+| `JOB_NOT_RETRYABLE` | 409 | 任务当前状态不可重试（见 10.2） |
 | `VALIDATION_ERROR` | 422 | 请求体或查询参数未通过校验，`details.errors` 为字段级说明 |
 | `METHOD_NOT_ALLOWED` | 405 | 请求方法不被该路径支持 |
 | `INTERNAL_ERROR` | 500 | 未预期的服务端错误，响应不含异常堆栈 |
