@@ -22,7 +22,8 @@ dashboard       ``/dashboard``
 
 当前已接入：``auth``（含 ``/users/me``）、``courses``、``materials``、
 ``chat``（课程问答，契约第 6 节）、``practice``（课程练习，契约第 7 节）、
-``assignments``（实验任务，契约第 8 节）、``jobs``。其余模块由各自负责人实现后在此登记。
+``assignments``（实验任务，契约第 8 节）、``grading``（提交与批改，契约第 9 节）、
+``jobs``。其余模块由各自负责人实现后在此登记。
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ from app.modules.assignments.router import assignments_router
 from app.modules.auth.router import auth_router, me_router
 from app.modules.chat.router import chat_router
 from app.modules.courses.router import courses_router
+from app.modules.grading.router import grading_router
 from app.modules.jobs.router import jobs_router
 from app.modules.materials.router import materials_router
 from app.modules.practice.router import practice_router
@@ -60,8 +62,11 @@ api_router.include_router(practice_router)
 # ----------------------------- assignments ----------------------------
 api_router.include_router(assignments_router)
 
-# -------------------------- agent（异步 Run）--------------------------
+# ------------------------------ agent ----------------------------------
 api_router.include_router(agent_router)
+
+# ------------------------------- grading -------------------------------
+api_router.include_router(grading_router)
 
 # -------------------------------- jobs -------------------------------
 api_router.include_router(jobs_router)

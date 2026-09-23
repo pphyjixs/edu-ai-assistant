@@ -7,6 +7,10 @@
 
 不使用 ``allow_origins=["*"]``：本服务需要携带 ``Authorization`` 头，
 通配来源与凭据不能共存，且会把接口暴露给任意站点。
+
+实验报告直传（契约 9.1）还要求预检放行浏览器直传对象存储所需的方法与头：
+``PUT`` / ``HEAD`` 与 ``x-amz-checksum-sha256``、``If-None-Match``——
+预签名地址要求客户端逐字回传这些头，缺一个预检就会失败。
 """
 
 from __future__ import annotations
@@ -15,15 +19,17 @@ from typing import Any
 
 from app.core.config import Settings
 
-#: 允许的请求方法，按契约只使用 REST 子集
-ALLOWED_METHODS = ["GET", "POST", "PATCH", "DELETE", "OPTIONS"]
+#: 允许的请求方法，按契约只使用 REST 子集（PUT/HEAD 供对象直传与下载）
+ALLOWED_METHODS = ["GET", "POST", "PATCH", "PUT", "HEAD", "DELETE", "OPTIONS"]
 
-#: 允许的请求头：认证、JSON 与 request ID 透传
+#: 允许的请求头：认证、JSON、request ID 透传，以及对象直传的签名请求头
 ALLOWED_HEADERS = [
     "Authorization",
     "Content-Type",
     "Accept",
     "X-Request-ID",
+    "x-amz-checksum-sha256",
+    "If-None-Match",
 ]
 
 #: 需要暴露给浏览器脚本读取的响应头（前端用 request ID 报障）

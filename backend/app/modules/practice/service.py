@@ -450,7 +450,9 @@ async def lock_retryable_job(
     - ``MATERIAL_PARSE``：先按关联资料做成员可见性（404）→ 创建教师（403）→
       未归档（409），最后才返回 ``409 JOB_NOT_RETRYABLE``（资料重试经由
       ``POST /materials/{material_id}/parse``，契约 5.3）；
-    - ``SUBMISSION_GRADE``：资源类型未实现，统一按不可见处理（404）。
+    - ``SUBMISSION_GRADE``：由 :func:`app.modules.jobs.service.lock_retryable_job`
+      在类型分流阶段交给 Grading 模块处理（契约 9.6 与 10.1 共用同一逻辑），
+      不会走到本函数。
 
     :raises ResourceNotFoundError: 任务/关联资源不存在或不可见（404）。
     :raises RoleForbiddenError / CourseForbiddenError: 非创建教师（403）。
@@ -466,7 +468,8 @@ async def lock_retryable_job(
         raise ResourceNotFoundError()
 
     if job.type is JobType.SUBMISSION_GRADE:
-        # 资源类型未实现：统一按不可见处理
+        # 理论上不可达：jobs 分派层（app.modules.jobs.service.lock_retryable_job）
+        # 已把该类型交给 Grading 模块。保留兜底，避免直接调用本函数时误走练习路径。
         raise ResourceNotFoundError()
 
     if job.type is JobType.MATERIAL_PARSE:

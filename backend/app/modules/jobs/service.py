@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,6 +50,38 @@ async def create_practice_generate_job(
         resource_type=JobResourceType.PRACTICE_SET,
         resource_id=practice_set_id,
         now=now,
+    )
+
+
+def create_submission_grade_job(
+    session: AsyncSession, *, submission_id: uuid.UUID, now: datetime
+) -> Job:
+    """创建提交批改任务（与提交状态变更在同一事务写入，契约 9.6）。"""
+    return repo.add_job(
+        session,
+        job_id=uuid.uuid4(),
+        job_type=JobType.SUBMISSION_GRADE,
+        resource_type=JobResourceType.SUBMISSION,
+        resource_id=submission_id,
+        now=now,
+    )
+
+
+async def get_submission_grade_job(
+    session: AsyncSession, *, submission_id: uuid.UUID
+) -> Job | None:
+    """取某提交的批改任务（一条提交至多一个）。"""
+    return await repo.get_job_for_resource(
+        session, job_type=JobType.SUBMISSION_GRADE, resource_id=submission_id
+    )
+
+
+async def lock_submission_grade_job(
+    session: AsyncSession, *, submission_id: uuid.UUID
+) -> Job | None:
+    """锁住某提交的批改任务行（触发/重试与 Worker 回写的临界区）。"""
+    return await repo.get_job_for_resource_for_update(
+        session, job_type=JobType.SUBMISSION_GRADE, resource_id=submission_id
     )
 
 
@@ -112,7 +145,7 @@ async def get_job_for_viewer(
     - ``MATERIAL_PARSE``：按资料可见性（资料所属课程的成员）；
     - ``PRACTICE_GENERATE``：按练习可见性（教师可读任意状态，学生仅在该
       练习 ``PUBLISHED`` 时可见，见契约 7.4）；
-    - ``SUBMISSION_GRADE``：本次未实现该资源，统一按不可见处理。
+    - ``SUBMISSION_GRADE``：按提交可见性（课程创建教师与提交本人可读，见契约 9.5）。
     """
     job = await repo.get_job_by_id(session, job_id)
     if job is None:
@@ -131,6 +164,14 @@ async def get_job_for_viewer(
 
         await practice_service.get_practice_set(
             session, user=user, set_id=job.resource_id
+        )
+        return job
+
+    if job.type is JobType.SUBMISSION_GRADE:
+        from app.modules.grading import service as grading_service
+
+        await grading_service.require_submission_viewer(
+            session, user=user, submission_id=job.resource_id
         )
         return job
 
@@ -185,4 +226,67 @@ async def lock_agent_run_job(session: AsyncSession, *, run_id: uuid.UUID) -> Job
     """锁住某个 Run 对应的任务行（回写与取消的临界区）。"""
     return await repo.get_job_for_resource_for_update(
         session, job_type=JobType.AGENT_RUN, resource_id=run_id
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class RetryTarget:
+    """重试接口的类型分派结果（契约 10.1）。
+
+    关联资源的**可见性与角色检查先于类型分流**，因此这个对象只在全部检查
+    通过后才产生；``practice`` / ``submission`` 分别对应两类可重试任务。
+    """
+
+    job_type: JobType
+    practice: object | None = None
+    submission: object | None = None
+
+
+async def lock_retryable_job(
+    session: AsyncSession,
+    *,
+    user: User,
+    job_id: uuid.UUID,
+    now: datetime | None = None,
+) -> RetryTarget:
+    """重试接口的统一前置：先做可见性/角色/归档检查，再按任务类型分流。
+
+    - ``PRACTICE_GENERATE`` / ``MATERIAL_PARSE``：交给
+      :func:`app.modules.practice.service.lock_retryable_job`（后者按 5.3 的
+      约定让资料重试返回 ``409 JOB_NOT_RETRYABLE``）；
+    - ``SUBMISSION_GRADE``：交给 Grading 模块，仅课程创建教师可重试
+      （契约 9.6 / 10.1），状态分流与 ``POST /submissions/{id}/grade`` 共用。
+
+    :raises ResourceNotFoundError: 任务或其关联资源不存在/不可见（404）。
+    """
+    job = await repo.get_job_by_id(session, job_id)
+    if job is None:
+        raise ResourceNotFoundError()
+
+    if job.type is JobType.SUBMISSION_GRADE:
+        from app.modules.grading import service as grading_service
+
+        guard = await grading_service.lock_creator_submission(
+            session, user=user, submission_id=job.resource_id
+        )
+        return RetryTarget(job_type=job.type, submission=guard.submission)
+
+    from app.modules.practice import service as practice_service
+
+    practice_target = await practice_service.lock_retryable_job(
+        session, user=user, job_id=job_id, now=now
+    )
+    return RetryTarget(job_type=job.type, practice=practice_target)
+
+
+async def retry_submission_grade_job(
+    session: AsyncSession, *, target: RetryTarget, now: datetime | None = None
+) -> Job:
+    """重试提交批改：与 ``POST /submissions/{id}/grade`` 共用同一服务逻辑（契约 9.6）。"""
+    from app.modules.grading import service as grading_service
+
+    if target.submission is None:  # pragma: no cover - 分派保证存在
+        raise ResourceNotFoundError()
+    return await grading_service.request_grade(
+        session, submission=target.submission, now=now  # type: ignore[arg-type]
     )

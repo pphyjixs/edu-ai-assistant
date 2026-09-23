@@ -17,16 +17,19 @@ from app.storage.errors import (
     StorageError,
     StorageObjectNotFoundError,
     StorageUnavailableError,
+    StorageVerificationError,
     as_service_unavailable,
 )
 from app.storage.keys import (
     InvalidExtensionError,
+    build_submission_object_key,
     build_upload_object_key,
     normalize_extension,
 )
 from app.storage.s3 import (
     S3Storage,
     S3StorageConfig,
+    PresignedDownload,
     PresignedUpload,
     StorageConfigError,
     StoredObject,
@@ -37,6 +40,7 @@ from app.storage.s3 import (
 
 __all__ = [
     "InvalidExtensionError",
+    "PresignedDownload",
     "PresignedUpload",
     "S3Storage",
     "S3StorageConfig",
@@ -44,8 +48,10 @@ __all__ = [
     "StorageError",
     "StorageObjectNotFoundError",
     "StorageUnavailableError",
+    "StorageVerificationError",
     "StoredObject",
     "as_service_unavailable",
+    "build_submission_object_key",
     "build_upload_object_key",
     "close_storages",
     "get_storage",

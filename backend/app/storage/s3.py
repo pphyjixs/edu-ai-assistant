@@ -150,6 +150,15 @@ class PresignedUpload:
 
 
 @dataclass(frozen=True)
+class PresignedDownload:
+    """预签名 GET 的响应数据（契约 §9.5 提交详情）。"""
+
+    url: str
+    method: str
+    expires_at: datetime
+
+
+@dataclass(frozen=True)
 class StoredObject:
     """HeadObject 读到的对象元数据（契约 §4.5 对象确认）。"""
 
@@ -399,6 +408,64 @@ class S3Storage:
             expires_at=expires_at,
             content_type=mime,
             checksum_sha256_base64=checksum_b64,
+        )
+
+    # --------------------------- 预签名下载 ---------------------------- #
+    def create_presigned_get(
+        self,
+        object_key: str,
+        *,
+        expires_in: int | None = None,
+        now: datetime | None = None,
+    ) -> PresignedDownload:
+        """签发 GET 预签名地址，供提交详情下发临时下载链接（契约 §9.5）。
+
+        纯本地计算，不发起网络请求；只签名 ``host``，因此下载地址可被浏览器
+        直接打开，不需要附加任何请求头。
+        """
+        self._require_configured()
+
+        ttl = expires_in or self._config.upload_url_ttl_seconds
+        issued_at = now or utc_now()
+        expires_at = issued_at + timedelta(seconds=ttl)
+        amz_date = issued_at.strftime("%Y%m%dT%H%M%SZ")
+        date_stamp = issued_at.strftime("%Y%m%d")
+        scope = f"{date_stamp}/{self._config.region}/{SERVICE}/aws4_request"
+
+        canonical_headers, signed_headers = _canonical_headers(
+            {"host": self._bucket_host()}
+        )
+        query = {
+            "X-Amz-Algorithm": ALGORITHM,
+            "X-Amz-Credential": f"{self._config.access_key}/{scope}",
+            "X-Amz-Date": amz_date,
+            "X-Amz-Expires": str(ttl),
+            "X-Amz-SignedHeaders": signed_headers,
+        }
+        canonical_query = _canonical_query(query)
+        canonical_request = "\n".join(
+            (
+                "GET",
+                _canonical_uri(self._object_path(object_key)),
+                canonical_query,
+                canonical_headers,
+                signed_headers,
+                UNSIGNED_PAYLOAD,
+            )
+        )
+        signature = _sign(
+            self._config.secret_key,
+            date_stamp,
+            self._config.region,
+            _string_to_sign(amz_date, scope, canonical_request),
+        )
+        return PresignedDownload(
+            url=(
+                f"{self._object_url(object_key)}"
+                f"?{canonical_query}&X-Amz-Signature={signature}"
+            ),
+            method="GET",
+            expires_at=expires_at,
         )
 
     # ------------------------------ 建桶 ------------------------------ #
