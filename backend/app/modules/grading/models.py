@@ -237,6 +237,22 @@ class Submission(Base):
         Index("ix_submissions_student_id", "student_id"),
         Index("ix_submissions_course_id", "course_id"),
         Index("ix_submissions_status", "status"),
+        # Dashboard（契约 11）：教师最近提交按课程聚合，只读正式提交
+        Index(
+            "ix_submissions_course_submitted_id",
+            "course_id",
+            "submitted_at",
+            "id",
+            postgresql_where=text("submitted_at IS NOT NULL"),
+        ),
+        # Dashboard（契约 11）：学生本人提交按状态定位，判断是否有正式提交
+        Index(
+            "ix_submissions_student_status_updated_id",
+            "student_id",
+            "status",
+            "updated_at",
+            "id",
+        ),
     )
 
     def __repr__(self) -> str:  # pragma: no cover - 仅用于调试
@@ -399,6 +415,14 @@ class GradeReview(Base):
         ),
         CheckConstraint(
             "final_total_score >= 0", name="ck_grade_reviews_final_total_score"
+        ),
+        # Dashboard（契约 11）：学生最近反馈只取已发布成绩，按发布时间倒序
+        Index(
+            "ix_grade_reviews_published_id_submission_id",
+            "published_at",
+            "id",
+            "submission_id",
+            postgresql_where=text("published_at IS NOT NULL"),
         ),
     )
 
@@ -593,15 +617,13 @@ class SubmissionGradeAttempt(Base):
 __all__ = [
     "COMMENT_MAX_LENGTH",
     "CONTENT_TYPE_MAX_LENGTH",
+    "ERROR_TYPE_MAX_LENGTH",
     "EVIDENCE_MAX_LENGTH",
     "EVIDENCE_SOURCE_DOCX_PARAGRAPH",
     "EVIDENCE_SOURCE_MAX_LENGTH",
     "EVIDENCE_SOURCE_PDF_PAGE",
     "EVIDENCE_SOURCE_TYPES",
-    "ERROR_TYPE_MAX_LENGTH",
     "FILENAME_MAX_LENGTH",
-    "GradeItem",
-    "GradeReview",
     "OBJECT_KEY_MAX_LENGTH",
     "RAW_OUTPUT_MAX_LENGTH",
     "SCORE_PRECISION",
@@ -611,6 +633,8 @@ __all__ = [
     "SUBMISSION_ERROR_MAX_LENGTH",
     "SUBMITTED_STATUSES",
     "SUMMARY_MAX_LENGTH",
+    "GradeItem",
+    "GradeReview",
     "Submission",
     "SubmissionGradeAttempt",
     "SubmissionGradeAttemptStatus",

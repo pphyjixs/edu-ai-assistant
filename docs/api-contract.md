@@ -589,6 +589,7 @@ Authorization: Bearer <access_token>
 | `resource_type` | `MATERIAL` / `PRACTICE_SET` / `SUBMISSION` | 关联资源类型 |
 | `resource_id` | UUID string | 关联资源 ID（资料 ID） |
 | `error` | string 或 `null` | 失败原因的安全描述；非 `FAILED` 时为 `null` |
+| `failure_stage` | string 或 `null` | 可省略的失败阶段码；非 `FAILED` 时为 `null` |
 | `created_at` | ISO 8601 UTC string | 创建时间 |
 | `started_at` | ISO 8601 UTC string 或 `null` | 开始时间 |
 | `finished_at` | ISO 8601 UTC string 或 `null` | 结束时间 |
@@ -2084,6 +2085,7 @@ Authorization: Bearer <access_token>
   "resource_type": "SUBMISSION",
   "resource_id": "uuid",
   "error": null,
+  "failure_stage": null,
   "created_at": "2026-09-18T08:30:00Z",
   "started_at": "2026-09-18T08:30:02Z",
   "finished_at": null
@@ -2099,6 +2101,7 @@ Authorization: Bearer <access_token>
 | `resource_type` | 枚举 | 与 `type` 一一对应（`MATERIAL` / `PRACTICE_SET` / `SUBMISSION`） |
 | `resource_id` | UUID | 关联资源 ID |
 | `error` | string / `null` | 失败原因安全摘要，**最长 500 字符**；不包含堆栈、提示词或报告原文；非 `FAILED` 时为 `null` |
+| `failure_stage` | string / `null`（可省略） | 失败阶段码，供前端区分文件读取与模型处理失败；非 `FAILED` 时为 `null`。API 当前会序列化该字段，OpenAPI 不要求调用方把它视为必填。 |
 | `created_at` | string | UTC ISO 8601（`format: date-time`） |
 | `started_at` | string / `null` | UTC ISO 8601；未开始为 `null` |
 | `finished_at` | string / `null` | UTC ISO 8601；未结束为 `null` |
@@ -2189,7 +2192,151 @@ Authorization: Bearer <access_token>
 | GET | `/dashboard/teacher` | 教师工作台摘要 | 教师 |
 | GET | `/dashboard/student` | 学生工作台摘要 | 学生 |
 
-Dashboard 只返回页面首屏需要的摘要和最近记录，不返回完整业务列表。
+Dashboard 是**跨模块只读聚合**：只做首屏需要的计数与最近记录，不复制课程、任务、提交、批改
+与资料的状态机。
+
+### 11.0 通用规则与只读边界
+
+- **无请求体、无查询参数、无分页**。每个列表固定返回**最近 5 项**；完整列表继续通过课程
+  （第 3 节）、任务（第 8 节）、提交（第 9 节）、资料（第 5 节）等领域接口读取。
+- **不加锁、不写库、不提交事务**。所有查询都是普通快照读，不 `FOR UPDATE`；相邻查询之间允许
+  看到刚写入数据造成的短暂差异，因此**不提供强一致快照**，也不为聚合读取加锁。
+- 两个接口在无数据时返回 `200`、计数为 `0`、数组为 `[]`。所有时间都是 UTC `date-time`（`...Z`），
+  分数是 JSON number（最多两位小数，与 `Numeric(10, 2)` 精度一致）。
+- 统计范围只包含**仍为 `ACTIVE` 的课程**；归档课程、其他用户的课程、已删除资料一律不进入任何字段。
+
+**错误响应**：无访问令牌 `401 AUTH_TOKEN_EXPIRED`；角色不符 `403 ROLE_FORBIDDEN`
+（教师访问学生接口、学生访问教师接口都是该错误）。两个接口没有其它业务错误。
+
+### 11.1 教师工作台（`GET /dashboard/teacher`）
+
+仅 `TEACHER` 可访问。统计范围只包含**该教师创建且仍为 `ACTIVE` 的课程**。
+
+```json
+{
+  "active_course_count": 2,
+  "pending_grading_count": 3,
+  "failed_material_count": 1,
+  "recent_submissions": [
+    {
+      "submission_id": "uuid",
+      "assignment_id": "uuid",
+      "course_id": "uuid",
+      "student_id": "uuid",
+      "student_name": "张三",
+      "status": "GRADING",
+      "is_late": false,
+      "submitted_at": "2026-09-23T10:20:00Z"
+    }
+  ],
+  "failed_materials": [
+    {
+      "material_id": "uuid",
+      "course_id": "uuid",
+      "filename": "课件.pdf",
+      "error_message": "解析失败",
+      "updated_at": "2026-09-23T09:00:00Z"
+    }
+  ]
+}
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `active_course_count` | integer | 活动课程数（`teacher_id` 为本人且 `status = ACTIVE`） |
+| `pending_grading_count` | integer | 正式提交中尚未发布成绩的数量 |
+| `failed_material_count` | integer | 未删除且 `status = FAILED` 的资料数 |
+| `recent_submissions` | array | 最近 5 份正式提交，按 `submitted_at DESC, id DESC` |
+| `failed_materials` | array | 最近 5 份失败资料，按 `updated_at DESC, id DESC` |
+
+口径说明：
+
+- **待批改**（`pending_grading_count`）只统计正式提交中尚未发布成绩的状态：
+  `SUBMITTED`、`GRADING`、`REVIEW_REQUIRED`、`FAILED`。`PUBLISHED`（已发布成绩）与
+  `UPLOADING`（未完成上传）都不计。
+- **最近提交**（`recent_submissions`）只含正式提交（`submitted_at IS NOT NULL`，即排除 `UPLOADING`），
+  返回提交/任务/课程标识、学生标识与显示名、状态、是否补交与提交时间。
+  其中 `status` 的 OpenAPI 枚举**固定为** `SUBMITTED` / `GRADING` / `REVIEW_REQUIRED` /
+  `PUBLISHED` / `FAILED` 五种（内联枚举，不引用完整的 `SubmissionStatus` 组件），
+  因此 `UPLOADING` 不可能出现在该字段里。
+- **失败资料**（`failed_materials`）只含未删除的 `FAILED` 资料，返回资料/课程标识、文件名、
+  安全错误摘要与更新时间；`error_message` 是最多 500 字符的安全摘要，非 `FAILED` 时为 `null`。
+- 归档课程、其他教师创建的课程、已删除资料全部排除。
+
+### 11.2 学生工作台（`GET /dashboard/student`）
+
+仅 `STUDENT` 可访问。统计范围只包含**本人加入且仍为 `ACTIVE` 的课程**。
+
+```json
+{
+  "active_course_count": 3,
+  "pending_assignment_count": 2,
+  "processing_material_count": 1,
+  "failed_material_count": 1,
+  "pending_assignments": [
+    {
+      "assignment_id": "uuid",
+      "course_id": "uuid",
+      "title": "实验一 需求分析",
+      "due_at": "2026-09-25T08:00:00Z",
+      "allow_late_submission": false,
+      "published_at": "2026-09-22T08:00:00Z"
+    }
+  ],
+  "recent_feedback": [
+    {
+      "review_id": "uuid",
+      "submission_id": "uuid",
+      "assignment_id": "uuid",
+      "course_id": "uuid",
+      "final_total_score": 88.5,
+      "total_score": 100.0,
+      "published_at": "2026-09-23T10:00:00Z"
+    }
+  ],
+  "material_statuses": [
+    {
+      "material_id": "uuid",
+      "course_id": "uuid",
+      "filename": "课件.pdf",
+      "status": "FAILED",
+      "error_message": "解析失败",
+      "updated_at": "2026-09-23T09:00:00Z"
+    }
+  ]
+}
+```
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `active_course_count` | integer | 本人加入且 `status = ACTIVE` 的课程数 |
+| `pending_assignment_count` | integer | 当前可提交且尚无正式提交的任务数 |
+| `processing_material_count` | integer | 可见资料中 `status = PROCESSING` 的数量 |
+| `failed_material_count` | integer | 可见资料中 `status = FAILED` 的数量 |
+| `pending_assignments` | array | 最近 5 个待完成任务，按 `due_at ASC NULLS LAST, published_at DESC, id DESC` |
+| `recent_feedback` | array | 最近 5 条已发布反馈，按 `published_at DESC, id DESC` |
+| `material_statuses` | array | 最近 5 份 `PROCESSING` 或 `FAILED` 资料，按 `updated_at DESC, id DESC` |
+
+口径说明：
+
+- **待完成任务**（`pending_assignments` 与 `pending_assignment_count`）固定定义为**同时满足**：
+  1. 任务 `status = PUBLISHED`；
+  2. 无截止时间，或 `due_at > now`，或允许补交（`now == due_at` 视为已截止）；
+  3. 不存在本人 `submitted_at IS NOT NULL` 的正式提交——**仅有 `UPLOADING` 记录仍算待完成**。
+  `DRAFT`、`CLOSED`、`ARCHIVED` 及归档课程中的任务均排除。
+- **最近反馈**（`recent_feedback`）只含**本人已发布**成绩（`published_at IS NOT NULL` 且提交学生为本人），
+  返回批改/提交/任务/课程标识、最终总分、提交固定评分版本的总分与发布时间。
+- **资料处理状态**（`processing_material_count` / `failed_material_count` / `material_statuses`）
+  只统计本人可见课程中**未删除**的资料；`material_statuses[].status` 的 OpenAPI 枚举
+  **固定为** `PROCESSING` / `FAILED` 两种（内联枚举，不引用完整的 `MaterialStatus` 组件），
+  因此 `UPLOADING` / `UPLOADED` / `READY` 不可能出现在该字段里。
+
+### 11.3 与前端 mock 的边界
+
+- 现有前端 `useDashboard` 仍使用**多请求聚合**（分别调用课程、任务、提交、资料等领域接口）；
+  **前端切换到单请求 `GET /dashboard/teacher` / `GET /dashboard/student` 不属于本轮后端交付范围**，
+  本节的接口为后续前端接入预留。
+- 复杂学情分析、趋势图、缓存与管理员统计均不在本节范围。
 
 ## 12. 稳定错误码
 

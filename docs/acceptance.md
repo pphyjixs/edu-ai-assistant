@@ -1155,3 +1155,40 @@ uvx --from ruff==0.16.8 ruff check @files
 
 完整套件的 10 条 pytest 告警为依赖弃用、既有事务清理与循环外键排序告警，
 与 Ruff 报告分开记录；不将 lint 零告警写成 pytest 零告警。本次未重复 M8/M9 变异验证。
+
+## 15. Dashboard 接口（第 11 节）移植与验收
+
+本轮以 `origin/main = adf69ca`（含 PR #15）为基线移植 Dashboard 后端，交付 `GET /dashboard/teacher` 与 `GET /dashboard/student`。旧基线 `ba6d300` 的 1049/1049 双环境结果仅作移植前记录，最终验收以最新基线的重跑结果为准。前端 Dashboard 页面和 `useDashboard` 尚未接入新接口。
+
+### 契约与实现
+
+- 教师只统计本人创建的活动课程，学生只统计本人加入的活动课程；归档课程、已删除资料及他人数据不进入响应。角色不符返回 `403 ROLE_FORBIDDEN`。
+- 教师响应执行五条固定只读 SQL，学生执行六条；无 `FOR UPDATE`、写库或逐课程查询。每个列表最多五项，排序及待办状态口径见第 11 节。
+- `TeacherRecentSubmission.status` 只允许 `SUBMITTED`、`GRADING`、`REVIEW_REQUIRED`、`PUBLISHED`、`FAILED`；`StudentMaterialStatus.status` 只允许 `PROCESSING`、`FAILED`。OpenAPI 使用受限内联枚举，生成的 TypeScript 类型同步收窄；保留旧基线中已验证能捕获完整枚举回退的永久测试。
+- 新增 `0015_dashboard_indexes`，接在 PR #15 的合并迁移 `01d9328a578b` 后。迁移只建立五个索引，其中三个为部分索引；保留附件表、Agent 改动及现有领域关系。
+
+### 基线移植与数据库切换
+
+- 原工作区 `.git` 损坏；旧 Dashboard 健康克隆仅作移植来源。新工作区 `AI_Coding_dashboard_main_20260923` 从 `adf69ca` 创建；路由、assignments/materials 模型和迁移测试在最新文件上人工合并。OpenAPI 与生成类型从新代码重新生成，没有覆盖 PR #15 的接口。
+- 原升级前快照 `edu_ai_dev_before_0014_dashboard_indexes_backup` 保持 `0013_jobs_contract`、无 Dashboard 索引。新增 `edu_ai_dev_before_0015_rebase_backup` 保存旧 `0014_dashboard_indexes` 与五个索引；创建前确认开发库无其它连接。
+- 使用旧迁移降至 `0013_jobs_contract`，验证五个索引全部删除；随后在新工作区升级，依次应用 Agent 加固、作业附件、合并迁移与 Dashboard 索引。开发库现在 `alembic current = heads = 0015_dashboard_indexes`，`alembic check` 无差异，附件表及五个索引存在。两份快照版本与索引数保持不变。
+- 迁移测试覆盖 `01d9328a578b → 0015 → 01d9328a578b → 0015`、索引列顺序和部分索引谓词、ORM 元数据一致性。
+
+### PR #15 的 Jobs 字段测试失配
+
+最新 main 已在公开 `JobStatus` 中加入 `failure_stage`，但 Jobs 单元、契约、集成测试仍断言旧字段集合。移植后的定向测试最初因此出现两项失败。本轮保留新字段和运行时行为，补齐三层测试及契约第 4.7、10.0 节说明；Jobs 专项 56/56 复绿。
+
+### 生成物与质量门禁
+
+- OpenAPI 从最新 main 重导出为 **53 条路径**，同时包含 PR #15 的附件接口与两条 Dashboard 接口；`openapi-typescript 7.13.0` 重新生成类型，`npm run build`（TypeScript 检查及 Vite）通过。
+- 相对 `adf69ca` 的全部 17 个新增或修改 Python 文件在 Ruff 0.16.8 下零错误；`git diff --check` 和 `git fsck --full` 通过。
+- 真实 PostgreSQL 与 MinIO 均已配置，存储 PUT、校验和、CORS 及清理用例实际执行；使用独立 `--basetemp`。
+
+| 环境 | 收集 | 通过 | 失败 | 错误 | 跳过 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 默认 | 1073 | 1073 | 0 | 0 | 0 |
+| `PYTHONIOENCODING=utf-8` | 1073 | 1073 | 0 | 0 | 0 |
+
+分层收集：unit 430、contract 130、integration 513。默认环境有 10 条依赖弃用、既有事务清理及循环外键排序告警；UTF-8 环境有 11 条，另含既有课程契约测试子进程读取线程的 GBK 解码告警。两轮均无 `INTERNALERROR` 或缓存目录权限错误，告警不计为测试失败。`scripts/verify_storage.py` 在同一 MinIO 上额外执行 8 项存储集成用例并通过。测试库与 `_migration_check` 库在第二轮结束后无残留。
+
+本轮只保留未提交工作区；提交、推送与 PR 在后续独立流程处理。

@@ -1053,6 +1053,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/dashboard/teacher": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 教师工作台摘要
+         * @description 仅教师可访问；学生访问返回 403 ROLE_FORBIDDEN。统计范围只包含该教师创建且仍为 ACTIVE 的课程，不包含归档课程、其他教师的课程与已删除资料。返回活动课程数、待批改正式提交数（SUBMITTED / GRADING / REVIEW_REQUIRED / FAILED）、失败资料数，以及最近 5 份正式提交（按 submitted_at DESC, id DESC）与最近 5 份失败资料（按 updated_at DESC, id DESC）。UPLOADING 提交不进入列表。
+         */
+        get: operations["get_teacher_dashboard_api_v1_dashboard_teacher_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dashboard/student": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 学生工作台摘要
+         * @description 仅学生可访问；教师访问返回 403 ROLE_FORBIDDEN。统计范围只包含本人加入且仍为 ACTIVE 的课程。返回活动课程数、待完成任务数、处理中与失败资料数，以及最近 5 个待完成任务（按 due_at ASC NULLS LAST, published_at DESC, id DESC）、最近 5 条已发布反馈（按 published_at DESC, id DESC）与最近 5 份处理中或失败资料（按 updated_at DESC, id DESC）。待完成任务指状态 PUBLISHED、无截止或未到截止或允许补交、且本人尚无正式提交的任务；仅有 UPLOADING 记录仍算待完成。
+         */
+        get: operations["get_student_dashboard_api_v1_dashboard_student_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2266,6 +2306,121 @@ export interface components {
             order: number;
         };
         /**
+         * StudentDashboard
+         * @description 学生工作台摘要（契约 11.2）。
+         */
+        StudentDashboard: {
+            /** Active Course Count */
+            active_course_count: number;
+            /** Pending Assignment Count */
+            pending_assignment_count: number;
+            /** Processing Material Count */
+            processing_material_count: number;
+            /** Failed Material Count */
+            failed_material_count: number;
+            /** Pending Assignments */
+            pending_assignments: components["schemas"]["StudentPendingAssignment"][];
+            /** Recent Feedback */
+            recent_feedback: components["schemas"]["StudentRecentFeedback"][];
+            /** Material Statuses */
+            material_statuses: components["schemas"]["StudentMaterialStatus"][];
+        };
+        /**
+         * StudentMaterialStatus
+         * @description 学生视角一份处理中或失败资料。
+         */
+        StudentMaterialStatus: {
+            /**
+             * Material Id
+             * Format: uuid
+             */
+            material_id: string;
+            /**
+             * Course Id
+             * Format: uuid
+             */
+            course_id: string;
+            /** Filename */
+            filename: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "PROCESSING" | "FAILED";
+            /** Error Message */
+            error_message: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * StudentPendingAssignment
+         * @description 学生视角一个待完成任务。
+         */
+        StudentPendingAssignment: {
+            /**
+             * Assignment Id
+             * Format: uuid
+             */
+            assignment_id: string;
+            /**
+             * Course Id
+             * Format: uuid
+             */
+            course_id: string;
+            /** Title */
+            title: string;
+            /** Due At */
+            due_at: string | null;
+            /** Allow Late Submission */
+            allow_late_submission: boolean;
+            /** Published At */
+            published_at: string | null;
+        };
+        /**
+         * StudentRecentFeedback
+         * @description 学生视角最近一条已发布反馈。
+         */
+        StudentRecentFeedback: {
+            /**
+             * Review Id
+             * Format: uuid
+             */
+            review_id: string;
+            /**
+             * Submission Id
+             * Format: uuid
+             */
+            submission_id: string;
+            /**
+             * Assignment Id
+             * Format: uuid
+             */
+            assignment_id: string;
+            /**
+             * Course Id
+             * Format: uuid
+             */
+            course_id: string;
+            /**
+             * Final Total Score
+             * @description 总分（最多两位小数，0.01 的整数倍）；只接受 JSON number
+             */
+            final_total_score: number;
+            /**
+             * Total Score
+             * @description 总分（最多两位小数，0.01 的整数倍）；只接受 JSON number
+             */
+            total_score: number;
+            /**
+             * Published At
+             * Format: date-time
+             */
+            published_at: string;
+        };
+        /**
          * SubmissionDetailSchema
          * @description 提交详情：摘要 + 内容摘要 + 临时下载地址。
          */
@@ -2390,6 +2545,87 @@ export interface components {
             expires_at: string;
             /** Confirm Deadline At */
             confirm_deadline_at: string;
+        };
+        /**
+         * TeacherDashboard
+         * @description 教师工作台摘要（契约 11.1）。
+         */
+        TeacherDashboard: {
+            /** Active Course Count */
+            active_course_count: number;
+            /** Pending Grading Count */
+            pending_grading_count: number;
+            /** Failed Material Count */
+            failed_material_count: number;
+            /** Recent Submissions */
+            recent_submissions: components["schemas"]["TeacherRecentSubmission"][];
+            /** Failed Materials */
+            failed_materials: components["schemas"]["TeacherFailedMaterial"][];
+        };
+        /**
+         * TeacherFailedMaterial
+         * @description 教师视角最近一份失败资料。
+         */
+        TeacherFailedMaterial: {
+            /**
+             * Material Id
+             * Format: uuid
+             */
+            material_id: string;
+            /**
+             * Course Id
+             * Format: uuid
+             */
+            course_id: string;
+            /** Filename */
+            filename: string;
+            /** Error Message */
+            error_message: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /**
+         * TeacherRecentSubmission
+         * @description 教师视角最近一份正式提交。
+         */
+        TeacherRecentSubmission: {
+            /**
+             * Submission Id
+             * Format: uuid
+             */
+            submission_id: string;
+            /**
+             * Assignment Id
+             * Format: uuid
+             */
+            assignment_id: string;
+            /**
+             * Course Id
+             * Format: uuid
+             */
+            course_id: string;
+            /**
+             * Student Id
+             * Format: uuid
+             */
+            student_id: string;
+            /** Student Name */
+            student_name: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "SUBMITTED" | "GRADING" | "REVIEW_REQUIRED" | "PUBLISHED" | "FAILED";
+            /** Is Late */
+            is_late: boolean;
+            /**
+             * Submitted At
+             * Format: date-time
+             */
+            submitted_at: string;
         };
         /**
          * UserProfile
@@ -6770,6 +7006,100 @@ export interface operations {
             };
             /** @description 请求体为显式 null、非法 JSON/UTF-8 或含未声明字段（VALIDATION_ERROR） */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 未预期的服务端错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_teacher_dashboard_api_v1_dashboard_teacher_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeacherDashboard"];
+                };
+            };
+            /** @description Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 学生访问返回 ROLE_FORBIDDEN */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 未预期的服务端错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_student_dashboard_api_v1_dashboard_student_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudentDashboard"];
+                };
+            };
+            /** @description Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 教师访问返回 ROLE_FORBIDDEN */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

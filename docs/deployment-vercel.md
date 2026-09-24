@@ -178,7 +178,7 @@ python scripts/grading_worker.py
 独立维护命令清理：`python scripts/cleanup_expired_submission_uploads.py`
 （幂等，可周期运行；删除对象后会再次 HeadObject 复查，发现晚到 PUT 则本轮不标记过期）。
 
-发布顺序：**先执行数据库迁移（`0010 → 0011_agent_runs → 0012_submissions_grading → 0013_jobs_contract`），再启动全部 Worker（解析、练习、批改与 Agent），最后开放前端入口**。
+发布顺序：**先执行 `alembic upgrade head`，确认唯一 head 为 `0015_dashboard_indexes`，再启动全部 Worker（解析、练习、批改与 Agent），最后开放前端入口**。迁移图在 `0011_agent_runs` 后包含 Agent 加固与提交批改两条分支，先于作业附件合并；Jobs 约束与附件分支在 `01d9328a578b` 合并，Dashboard 索引在该合并点之后。
 `0009_practice_sets`、`0010_assignments`、`0011_agent_runs` 与 `0012_submissions_grading` 都只新增表与原生枚举，
 不与前序迁移冲突，可在同一发布中按序执行。
 
@@ -203,6 +203,12 @@ python scripts/grading_worker.py
 `backend/tests/integration/test_migrations.py` 覆盖 `0012 → 0013 → 0012 → 0013` 往返，
 并断言进度越界（`-1` / `101`）与非法组合被数据库拒绝。该迁移不含数据回填，
 升级前建议按惯例做一次库级快照。
+
+**Dashboard 配套**：`0015_dashboard_indexes`（`down_revision = 01d9328a578b`）不新增表、枚举或约束，只在 Dashboard 热路径上
+建立 5 个复合索引（其中 3 个部分索引：`submissions` 正式提交、`materials` 未删除、`grade_reviews`
+已发布）。Dashboard 是只读聚合，不需要环境变量、对象存储或额外 Worker；降级只删除这些索引，
+不动表、枚举与历史数据。`backend/tests/integration/test_migrations.py` 覆盖
+`01d9328a578b → 0015 → 01d9328a578b → 0015` 往返并断言索引列顺序与部分索引谓词，ORM 元数据与迁移逐字一致。
 
 开发、Preview 和 Production 使用独立配置。任何密钥都不能使用 `VITE_` 前缀，也不能提交到仓库。
 

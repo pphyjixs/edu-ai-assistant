@@ -37,6 +37,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import JSONB
@@ -295,6 +296,15 @@ class Material(Base):
             "course_id",
             "created_at",
             "id",
+        ),
+        # Dashboard：仅统计未删除资料的处理状态
+        Index(
+            "ix_materials_course_status_updated_id",
+            "course_id",
+            "status",
+            "updated_at",
+            "id",
+            postgresql_where=text("deleted_at IS NULL"),
         ),
     )
 
