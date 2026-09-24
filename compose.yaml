@@ -1,0 +1,108 @@
+name: edu-ai-assistant
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-edu_ai}
+      POSTGRES_USER: ${POSTGRES_USER:-edu_ai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    command: ["postgres", "-c", "shared_buffers=128MB", "-c", "work_mem=4MB", "-c", "maintenance_work_mem=32MB", "-c", "max_connections=40", "-c", "effective_cache_size=512MB"]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    mem_limit: 512m
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks: [internal]
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-edu_ai}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-edu_ai}
+      APP_ENV: production
+      FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-http://localhost}
+      DB_POOL_SIZE: 2
+      DB_MAX_OVERFLOW: 1
+      MATERIAL_MAX_UPLOAD_BYTES: ${MATERIAL_MAX_UPLOAD_BYTES:-1048576}
+      SUBMISSION_MAX_UPLOAD_BYTES: ${SUBMISSION_MAX_UPLOAD_BYTES:-1048576}
+      ASSIGNMENT_ATTACHMENT_MAX_UPLOAD_BYTES: ${ASSIGNMENT_ATTACHMENT_MAX_UPLOAD_BYTES:-1048576}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      STORAGE_LOCAL_ROOT: ${STORAGE_LOCAL_ROOT:-/data/uploads}
+      STORAGE_PUBLIC_BASE_URL: ${STORAGE_PUBLIC_BASE_URL:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    mem_limit: 512m
+    cpus: 0.75
+    expose: ["8000"]
+    volumes:
+      - uploads_data:/data/uploads
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks: [internal]
+
+  workers:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["python", "scripts/all_workers.py"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-edu_ai}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-edu_ai}
+      APP_ENV: production
+      DB_POOL_SIZE: 2
+      DB_MAX_OVERFLOW: 1
+      MATERIAL_MAX_UPLOAD_BYTES: ${MATERIAL_MAX_UPLOAD_BYTES:-1048576}
+      SUBMISSION_MAX_UPLOAD_BYTES: ${SUBMISSION_MAX_UPLOAD_BYTES:-1048576}
+      ASSIGNMENT_ATTACHMENT_MAX_UPLOAD_BYTES: ${ASSIGNMENT_ATTACHMENT_MAX_UPLOAD_BYTES:-1048576}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      STORAGE_LOCAL_ROOT: ${STORAGE_LOCAL_ROOT:-/data/uploads}
+      STORAGE_PUBLIC_BASE_URL: ${STORAGE_PUBLIC_BASE_URL:-}
+    depends_on:
+      db:
+        condition: service_healthy
+    mem_limit: 512m
+    cpus: 0.5
+    volumes:
+      - uploads_data:/data/uploads
+    networks: [internal]
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_BASE_URL: "/api/v1"
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    mem_limit: 96m
+    cpus: 0.25
+    ports:
+      - "${HTTP_PORT:-80}:8080"
+    networks: [internal]
+
+volumes:
+  postgres_data:
+  uploads_data:
+
+networks:
+  internal:
+    driver: bridge

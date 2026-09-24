@@ -60,9 +60,12 @@ AGENT_SOURCE_TYPE = sa.Enum(
 
 
 def upgrade() -> None:
-    # 先给已有的任务枚举追加取值（不写数据，因此不受"同事务不可使用新值"限制）
-    op.execute("ALTER TYPE job_type ADD VALUE IF NOT EXISTS 'AGENT_RUN'")
-    op.execute("ALTER TYPE job_resource_type ADD VALUE IF NOT EXISTS 'AGENT_RUN'")
+    # PostgreSQL 要求新增枚举值先提交，后续事务才能在约束或数据中引用它。
+    # Alembic 默认会把一次 ``upgrade head`` 的多条迁移放进同一事务，因此这里
+    # 显式使用 autocommit block，保证全新数据库可以一路升级到最新版本。
+    with op.get_context().autocommit_block():
+        op.execute("ALTER TYPE job_type ADD VALUE IF NOT EXISTS 'AGENT_RUN'")
+        op.execute("ALTER TYPE job_resource_type ADD VALUE IF NOT EXISTS 'AGENT_RUN'")
 
     op.create_table(
         "agent_runs",

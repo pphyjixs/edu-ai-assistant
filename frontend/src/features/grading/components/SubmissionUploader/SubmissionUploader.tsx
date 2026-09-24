@@ -16,7 +16,7 @@ import { Icon } from "@/components/Icon/Icon";
 import { useUploadSubmission } from "@/features/grading/hooks/useSubmissions";
 import { UPLOAD_STEP_LABEL, type UploadStep } from "@/features/grading/model/upload";
 import { toAppError } from "@/services/http";
-import { SUBMISSION_EXTENSIONS } from "@/services/upload";
+import { DEFAULT_MAX_UPLOAD_BYTES, SUBMISSION_EXTENSIONS } from "@/services/upload";
 
 import styles from "./SubmissionUploader.module.css";
 
@@ -56,6 +56,7 @@ export function SubmissionUploader({
   }
 
   const extensions = SUBMISSION_EXTENSIONS.join(" / ").toUpperCase();
+  const maxMb = Math.floor(DEFAULT_MAX_UPLOAD_BYTES / 1024 / 1024);
 
   return (
     <div>
@@ -84,7 +85,7 @@ export function SubmissionUploader({
           <span>
             {step
               ? "请保持页面打开，上传完成后由教师发起批改。"
-              : `拖拽文件到这里或点击选择，支持 ${extensions}，单个不超过 50 MB`}
+              : `拖拽文件到这里或点击选择，支持 ${extensions}，单个不超过 ${maxMb} MB`}
           </span>
         </span>
 

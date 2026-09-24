@@ -301,8 +301,11 @@ async def delete_material(
     material_id: uuid.UUID,
     user: CurrentUserDep,
     session: SessionDep,
+    storage: StorageDep,
 ) -> Response:
-    await service.delete_material(session, user=user, material_id=material_id)
+    await service.delete_material(
+        session, user=user, material_id=material_id, storage=storage
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

@@ -1,11 +1,12 @@
-"""S3 兼容对象存储适配器（SigV4 预签名直传）。
+"""文件存储适配器（本地持久卷或 S3 兼容存储）。
 
 对应 ``docs/api-contract.md`` §4.3 / §4.4 / §4.5 与 plan 第 3 步。
 
 职责边界（重要）：
 
-- 本模块**只签名、只读元数据**，从不接收或保存文件内容。浏览器拿到预签名地址后
-  把字节流直接 PUT 给对象存储，后端进程全程不经手文件体。
+- S3 模式下，浏览器把字节流直接 PUT 给外部对象存储。
+- 本地模式下，浏览器使用同样的签名 PUT 协议上传到 API，文件与元数据
+  JSON 写入 Docker 持久卷。
 - 预签名 PUT 由 :meth:`S3Storage.create_presigned_put` 用 SigV4 在本地计算，
   不产生任何网络请求。
 - 对象确认由 :meth:`S3Storage.head_object` 执行 HeadObject，只返回大小、类型与
@@ -32,9 +33,13 @@ import base64
 import binascii
 import hashlib
 import hmac
+import json
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any
 from urllib.parse import quote, urlparse
 
 import httpx
@@ -44,6 +49,7 @@ from app.core.time import utc_now
 from app.storage.errors import (
     StorageObjectNotFoundError,
     StorageUnavailableError,
+    StorageVerificationError,
 )
 
 logger = logging.getLogger("app.storage")
@@ -97,6 +103,11 @@ class S3StorageConfig:
     connect_timeout_seconds: float = 3.0
     read_timeout_seconds: float = 10.0
     upload_url_ttl_seconds: int = 10 * 60
+    backend: str = "s3"
+    local_root: str = "/data/uploads"
+    public_base_url: str = ""
+    local_signing_secret: str = ""
+    local_max_upload_bytes: int = 50 * 1024 * 1024
 
     @classmethod
     def from_settings(cls, settings: Settings) -> S3StorageConfig:
@@ -111,10 +122,21 @@ class S3StorageConfig:
             connect_timeout_seconds=settings.storage_connect_timeout_seconds,
             read_timeout_seconds=settings.storage_read_timeout_seconds,
             upload_url_ttl_seconds=settings.storage_upload_url_ttl_seconds,
+            backend=settings.storage_backend.strip().lower() or "s3",
+            local_root=settings.storage_local_root.strip(),
+            public_base_url=settings.storage_public_base_url.strip().rstrip("/"),
+            local_signing_secret=settings.app_secret_key.strip(),
+            local_max_upload_bytes=max(
+                settings.material_max_upload_bytes,
+                settings.submission_max_upload_bytes,
+                settings.assignment_attachment_max_upload_bytes,
+            ),
         )
 
     @property
     def is_configured(self) -> bool:
+        if self.backend == "local":
+            return bool(self.local_root and self.local_signing_secret)
         return bool(self.endpoint and self.bucket and self.access_key and self.secret_key)
 
     def problem(self) -> str | None:
@@ -122,6 +144,21 @@ class S3StorageConfig:
 
         只报缺失的**变量名**，不回显任何取值。
         """
+        if self.backend not in {"local", "s3"}:
+            return "STORAGE_BACKEND 只能是 local 或 s3"
+        if self.backend == "local":
+            missing = [
+                name
+                for name, value in (
+                    ("STORAGE_LOCAL_ROOT", self.local_root),
+                    ("APP_SECRET_KEY", self.local_signing_secret),
+                )
+                if not value
+            ]
+            if missing:
+                return "本地文件存储未配置：" + "、".join(missing)
+            return None
+
         missing = [
             name
             for name, value in (
@@ -285,6 +322,10 @@ class S3Storage:
     def is_configured(self) -> bool:
         return self._config.is_configured
 
+    @property
+    def is_local(self) -> bool:
+        return self._config.backend == "local"
+
     def _require_configured(self) -> None:
         problem = self._config.problem()
         if problem:
@@ -302,6 +343,126 @@ class S3Storage:
                 follow_redirects=False,
             )
         return self._client
+
+    def _local_root(self) -> Path:
+        self._require_configured()
+        root = Path(self._config.local_root).resolve()
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _local_object_path(self, object_key: str) -> Path:
+        root = self._local_root()
+        path = (root / object_key).resolve()
+        try:
+            inside_root = os.path.commonpath((str(root), str(path))) == str(root)
+        except ValueError:
+            inside_root = False
+        if not inside_root or path == root:
+            raise StorageConfigError("非法的对象键")
+        return path
+
+    @staticmethod
+    def _local_metadata_path(path: Path) -> Path:
+        return path.with_name(path.name + ".metadata.json")
+
+    def _local_token(self, payload: dict[str, Any]) -> str:
+        raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+        encoded = base64.urlsafe_b64encode(raw).rstrip(b"=")
+        signature = hmac.new(
+            self._config.local_signing_secret.encode(), encoded, hashlib.sha256
+        ).digest()
+        return (
+            encoded.decode()
+            + "."
+            + base64.urlsafe_b64encode(signature).rstrip(b"=").decode()
+        )
+
+    def verify_local_token(self, token: str, *, method: str) -> dict[str, Any]:
+        """校验本地存储的短期签名地址，并返回签名载荷。"""
+        if not self.is_local:
+            raise StorageConfigError("当前未启用本地存储")
+        try:
+            encoded, encoded_signature = token.split(".", 1)
+            expected = hmac.new(
+                self._config.local_signing_secret.encode(),
+                encoded.encode(),
+                hashlib.sha256,
+            ).digest()
+            actual = base64.urlsafe_b64decode(
+                encoded_signature + "=" * (-len(encoded_signature) % 4)
+            )
+            if not hmac.compare_digest(expected, actual):
+                raise ValueError("signature mismatch")
+            raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+            payload = json.loads(raw)
+            if payload.get("method") != method.upper():
+                raise ValueError("method mismatch")
+            if int(payload.get("exp", 0)) < int(utc_now().timestamp()):
+                raise ValueError("expired")
+            self._local_object_path(str(payload["key"]))
+            return payload
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise StorageConfigError("本地存储签名无效或已过期") from exc
+
+    def put_local_object(
+        self,
+        object_key: str,
+        content: bytes,
+        *,
+        content_type: str,
+        checksum_sha256_base64: str,
+    ) -> None:
+        """将已校验请求的文件原子写入持久化目录。"""
+        if len(content) > self._config.local_max_upload_bytes:
+            raise StorageConfigError("文件超过上传大小限制")
+        digest = hashlib.sha256(content).digest()
+        try:
+            expected = base64.b64decode(checksum_sha256_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise StorageConfigError("SHA-256 校验值无效") from exc
+        if not hmac.compare_digest(digest, expected):
+            raise StorageConfigError("文件 SHA-256 校验失败")
+
+        path = self._local_object_path(object_key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        nonce = os.urandom(8).hex()
+        temp_path = path.with_name(f".{path.name}.{os.getpid()}.{nonce}.tmp")
+        metadata_path = self._local_metadata_path(path)
+        try:
+            temp_path.write_bytes(content)
+            os.link(temp_path, path)
+            metadata = {
+                "content_type": content_type,
+                "size": len(content),
+                "checksum_sha256_base64": checksum_sha256_base64,
+            }
+            metadata_tmp = metadata_path.with_name(
+                f".{metadata_path.name}.{os.getpid()}.{nonce}.tmp"
+            )
+            metadata_tmp.write_text(
+                json.dumps(metadata, ensure_ascii=False, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            os.replace(metadata_tmp, metadata_path)
+        except FileExistsError:
+            raise
+        except (OSError, ValueError, binascii.Error) as exc:
+            path.unlink(missing_ok=True)
+            metadata_path.unlink(missing_ok=True)
+            raise StorageUnavailableError(
+                "本地文件写入失败", reason="local_io_error"
+            ) from exc
+        finally:
+            temp_path.unlink(missing_ok=True)
+            if "metadata_tmp" in locals():
+                metadata_tmp.unlink(missing_ok=True)
+
+    def get_local_download(self, token: str) -> tuple[Path, str]:
+        payload = self.verify_local_token(token, method="GET")
+        path = self._local_object_path(str(payload["key"]))
+        if not path.is_file():
+            raise StorageObjectNotFoundError(str(payload["key"]))
+        return path, str(payload.get("content_type") or DEFAULT_CONTENT_TYPE)
 
     def close(self) -> None:
         """关闭内部 HTTP 客户端（生命周期结束时调用）。"""
@@ -359,16 +520,36 @@ class S3Storage:
         ttl = expires_in or self._config.upload_url_ttl_seconds
         issued_at = now or utc_now()
         expires_at = issued_at + timedelta(seconds=ttl)
-        amz_date = issued_at.strftime("%Y%m%dT%H%M%SZ")
-        date_stamp = issued_at.strftime("%Y%m%d")
-        scope = f"{date_stamp}/{self._config.region}/{SERVICE}/aws4_request"
-
-        # 客户端必须逐字带回的请求头；全部参与签名，任一缺失/被改都会导致签名不符
         request_headers = {
             CONTENT_TYPE_HEADER: mime,
             IF_NONE_MATCH_HEADER: IF_NONE_MATCH_ANY,
             CHECKSUM_SHA256_HEADER: checksum_b64,
         }
+        if self.is_local:
+            token = self._local_token(
+                {
+                    "method": "PUT",
+                    "key": object_key,
+                    "content_type": mime,
+                    "checksum": checksum_b64,
+                    "exp": int(expires_at.timestamp()),
+                }
+            )
+            base = self._config.public_base_url
+            return PresignedUpload(
+                url=f"{base}/api/v1/storage/objects/{token}",
+                method="PUT",
+                headers=request_headers,
+                expires_at=expires_at,
+                content_type=mime,
+                checksum_sha256_base64=checksum_b64,
+            )
+
+        amz_date = issued_at.strftime("%Y%m%dT%H%M%SZ")
+        date_stamp = issued_at.strftime("%Y%m%d")
+        scope = f"{date_stamp}/{self._config.region}/{SERVICE}/aws4_request"
+
+        # 客户端必须逐字带回的请求头；全部参与签名，任一缺失/被改都会导致签名不符
         signed_header_map = {"host": self._bucket_host(), **request_headers}
         canonical_headers, signed_headers = _canonical_headers(signed_header_map)
 
@@ -428,6 +609,23 @@ class S3Storage:
         ttl = expires_in or self._config.upload_url_ttl_seconds
         issued_at = now or utc_now()
         expires_at = issued_at + timedelta(seconds=ttl)
+        if self.is_local:
+            metadata = self.head_object(object_key)
+            token = self._local_token(
+                {
+                    "method": "GET",
+                    "key": object_key,
+                    "content_type": metadata.content_type,
+                    "exp": int(expires_at.timestamp()),
+                }
+            )
+            base = self._config.public_base_url
+            return PresignedDownload(
+                url=f"{base}/api/v1/storage/objects/{token}",
+                method="GET",
+                expires_at=expires_at,
+            )
+
         amz_date = issued_at.strftime("%Y%m%dT%H%M%SZ")
         date_stamp = issued_at.strftime("%Y%m%d")
         scope = f"{date_stamp}/{self._config.region}/{SERVICE}/aws4_request"
@@ -472,6 +670,8 @@ class S3Storage:
     def bucket_exists(self) -> bool:
         """探测桶是否存在（HEAD bucket）。"""
         self._require_configured()
+        if self.is_local:
+            return Path(self._config.local_root).is_dir()
         headers = self._signed_headers("HEAD", f"/{self._config.bucket}", {})
         url = f"{self._config.endpoint}/{_quote(self._config.bucket, safe=_UNRESERVED)}"
         try:
@@ -501,6 +701,16 @@ class S3Storage:
         不参与任何业务请求路径。
         """
         self._require_configured()
+        if self.is_local:
+            root = Path(self._config.local_root)
+            existed = root.is_dir()
+            try:
+                root.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise StorageUnavailableError(
+                    "无法创建本地存储目录", reason="local_io_error"
+                ) from exc
+            return not existed
         if self.bucket_exists():
             return False
 
@@ -533,6 +743,27 @@ class S3Storage:
         :raises StorageUnavailableError: 超时、连接失败、5xx、凭据被拒或未配置。
         """
         self._require_configured()
+        if self.is_local:
+            path = self._local_object_path(object_key)
+            metadata_path = self._local_metadata_path(path)
+            if not path.is_file():
+                raise StorageObjectNotFoundError(object_key)
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                size = path.stat().st_size
+            except FileNotFoundError as exc:
+                raise StorageObjectNotFoundError(object_key) from exc
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                raise StorageUnavailableError(
+                    "本地文件元数据读取失败", reason="local_io_error"
+                ) from exc
+            return StoredObject(
+                key=object_key,
+                size=size,
+                content_type=str(metadata.get("content_type") or DEFAULT_CONTENT_TYPE),
+                checksum_sha256_base64=metadata.get("checksum_sha256_base64"),
+                etag=None,
+            )
         headers = self._signed_headers(
             "HEAD", self._object_path(object_key), {"x-amz-checksum-mode": "ENABLED"}
         )
@@ -580,6 +811,26 @@ class S3Storage:
         供过期上传清理使用；同样不接收文件内容。
         """
         self._require_configured()
+        if self.is_local:
+            path = self._local_object_path(object_key)
+            metadata_path = self._local_metadata_path(path)
+            existed = path.exists() or metadata_path.exists()
+            try:
+                path.unlink(missing_ok=True)
+                metadata_path.unlink(missing_ok=True)
+                parent = path.parent
+                root = self._local_root()
+                while parent != root:
+                    try:
+                        parent.rmdir()
+                    except OSError:
+                        break
+                    parent = parent.parent
+            except OSError as exc:
+                raise StorageUnavailableError(
+                    "本地文件删除失败", reason="local_io_error"
+                ) from exc
+            return existed
         headers = self._signed_headers("DELETE", self._object_path(object_key), {})
         url = self._object_url(object_key)
 
@@ -620,6 +871,16 @@ class S3Storage:
         :raises StorageUnavailableError: 超时、连接失败、5xx、凭据被拒或未配置。
         """
         self._require_configured()
+        if self.is_local:
+            path = self._local_object_path(object_key)
+            try:
+                return path.read_bytes()
+            except FileNotFoundError as exc:
+                raise StorageObjectNotFoundError(object_key) from exc
+            except OSError as exc:
+                raise StorageUnavailableError(
+                    "本地文件读取失败", reason="local_io_error"
+                ) from exc
         headers = self._signed_headers("GET", self._object_path(object_key), {})
         url = self._object_url(object_key)
 
@@ -668,6 +929,20 @@ class S3Storage:
         :raises StorageUnavailableError: 超时、连接失败、5xx、凭据被拒或未配置。
         """
         self._require_configured()
+        if self.is_local:
+            content = self.get_object(object_key)
+            size_seen = len(content)
+            if size_seen != expected_size:
+                raise StorageVerificationError(
+                    f"对象实际大小（{size_seen}）与资料声明（{expected_size}）不一致",
+                    reason="size_mismatch",
+                )
+            if hashlib.sha256(content).hexdigest() != expected_sha256_hex.lower():
+                raise StorageVerificationError(
+                    "对象内容的 SHA-256 与资料声明不一致，已拒绝解析",
+                    reason="checksum_mismatch",
+                )
+            return content
         headers = self._signed_headers("GET", self._object_path(object_key), {})
         url = self._object_url(object_key)
 
@@ -792,6 +1067,11 @@ def _cache_key(config: S3StorageConfig) -> tuple[object, ...]:
         config.connect_timeout_seconds,
         config.read_timeout_seconds,
         config.upload_url_ttl_seconds,
+        config.backend,
+        config.local_root,
+        config.public_base_url,
+        config.local_signing_secret,
+        config.local_max_upload_bytes,
     )
 
 

@@ -18,8 +18,8 @@ export const CANONICAL_MIME_BY_EXTENSION: Record<string, string> = {
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 };
 
-/** 契约 4.2：默认上限 50 MiB；真实上限由后端 details.max_size_bytes 回显 */
-export const DEFAULT_MAX_UPLOAD_BYTES = 52_428_800;
+/** Docker 单机部署统一限制为 1 MiB；后端仍会独立校验 */
+export const DEFAULT_MAX_UPLOAD_BYTES = 1_048_576;
 
 export const ACCEPTED_EXTENSIONS = Object.keys(CANONICAL_MIME_BY_EXTENSION);
 
@@ -48,7 +48,7 @@ export type LocalFileProblem =
  * 上传前的本地校验。
  *
  * 这不是「前端代替后端校验」——后端仍会独立校验并返回 UPLOAD_INVALID；
- * 这里提前拦住只是为了避免把 50 MB 的文件白传一遍。
+ * 这里提前拦住明显超限的文件，避免无效上传。
  *
  * @param allowedExtensions 允许的扩展名（小写、不含点）；省略时用课件上传的清单
  */
