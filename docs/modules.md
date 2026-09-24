@@ -227,13 +227,47 @@ Access Token 有效期 1 小时，Refresh Token 自登录签发起有效 7 天�
 
 ## 9. Dashboard 模块
 
-职责：聚合教师和学生首页所需数据，不拥有核心业务数据。
+职责：聚合教师和学生首页所需数据，**不拥有任何业务数据**。
 
-教师首页：课程数、待批改数、最近提交和资料处理失败提示。
+教师首页：活动课程数、待批改数、最近提交和失败资料提示。
 
-学生首页：进行中课程、待完成任务、最近反馈和资料处理状态。
+学生首页：活动课程数、待完成任务、最近反馈和资料处理状态。
 
-第一版只做基础统计，不实现复杂学情预测。
+Dashboard 是**跨模块只读聚合**：直接以显式 SQL 投影读取课程、任务、提交、批改与资料等领域表，
+不复制任何状态机、不返回完整业务对象、不暴露内部任务字段。第一版只做基础统计，不实现复杂
+学情预测。
+
+实现说明（第 11 节两个接口，迁移 `0015_dashboard_indexes`）：
+
+- **只读边界**：每个列表固定返回最近 5 项，不提供分页或查询参数；所有查询都是普通快照读，
+  不加 `FOR UPDATE`、不写库、不提交事务；相邻查询允许看到刚写入数据的短暂差异（不提供强一致
+  快照，也不为聚合读取加锁）。无数据时返回 `200`、零计数与空数组。
+- **作用域**：教师只统计本人创建且 `ACTIVE` 的课程；学生只统计本人加入且 `ACTIVE` 的课程。
+  归档课程、其他用户的课程、已删除资料一律排除。
+- **权限**：两条路由分别用 `TeacherDep` / `StudentDep`，角色不符统一 `403 ROLE_FORBIDDEN`；
+  无访问令牌 `401 AUTH_TOKEN_EXPIRED`。没有其它业务错误。
+- **教师口径**：`pending_grading_count` 只统计 `SUBMITTED` / `GRADING` / `REVIEW_REQUIRED` /
+  `FAILED` 四种未发布成绩状态；`recent_submissions` 只含正式提交（`submitted_at` 非空，排除
+  `UPLOADING`），按 `submitted_at DESC, id DESC`；`failed_materials` 只含未删除 `FAILED` 资料，
+  按 `updated_at DESC, id DESC`。
+- **学生口径**：待完成任务 = `PUBLISHED` 且（无截止 / 未到截止 / 允许补交）且本人无正式提交；
+  `UPLOADING` 记录仍算待完成，`DRAFT`/`CLOSED`/`ARCHIVED` 与归档课程任务排除，按
+  `due_at ASC NULLS LAST, published_at DESC, id DESC`。`recent_feedback` 只含本人已发布成绩，
+  按 `published_at DESC, id DESC`；`material_statuses` 只含 `PROCESSING` / `FAILED` 未删除资料，
+  按 `updated_at DESC, id DESC`。
+- **响应契约收窄**：`recent_submissions[].status`（教师，五种）与 `material_statuses[].status`
+  （学生，两种）只使用基于领域枚举成员的受限内联枚举，不引用完整 `SubmissionStatus` /
+  `MaterialStatus`，被排除的状态（如 `UPLOADING`、`UPLOADED`、`READY`）不会出现在响应里。
+- **固定查询数量**：教师 5 条、学生 6 条 SQL，不随课程数增长（永久防止逐课程 N+1）；学生姓名等
+  显示名直接在同一条查询内 `JOIN users` 投影，不逐条回查。
+- **索引**（`0015_dashboard_indexes`，与 ORM 一致）：三个部分索引
+  `submissions(course_id, submitted_at, id) WHERE submitted_at IS NOT NULL`、
+  `materials(course_id, status, updated_at, id) WHERE deleted_at IS NULL`、
+  `grade_reviews(published_at, id, submission_id) WHERE published_at IS NOT NULL`，
+  以及 `submissions(student_id, status, updated_at, id)`、
+  `assignments(course_id, status, due_at, id)` 两个普通复合索引；降级只删索引，不动表、枚举与数据。
+- **前端边界**：现有前端 `useDashboard` 仍用多请求聚合，切换到单请求 Dashboard 接口属于后续
+  前端工作，不在本轮后端交付范围。
 
 ## 10. AI 基础层
 

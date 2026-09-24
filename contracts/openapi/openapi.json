@@ -5683,6 +5683,120 @@
           }
         }
       }
+    },
+    "/api/v1/dashboard/teacher": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "教师工作台摘要",
+        "description": "仅教师可访问；学生访问返回 403 ROLE_FORBIDDEN。统计范围只包含该教师创建且仍为 ACTIVE 的课程，不包含归档课程、其他教师的课程与已删除资料。返回活动课程数、待批改正式提交数（SUBMITTED / GRADING / REVIEW_REQUIRED / FAILED）、失败资料数，以及最近 5 份正式提交（按 submitted_at DESC, id DESC）与最近 5 份失败资料（按 updated_at DESC, id DESC）。UPLOADING 提交不进入列表。",
+        "operationId": "get_teacher_dashboard_api_v1_dashboard_teacher_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TeacherDashboard"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "学生访问返回 ROLE_FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/dashboard/student": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "学生工作台摘要",
+        "description": "仅学生可访问；教师访问返回 403 ROLE_FORBIDDEN。统计范围只包含本人加入且仍为 ACTIVE 的课程。返回活动课程数、待完成任务数、处理中与失败资料数，以及最近 5 个待完成任务（按 due_at ASC NULLS LAST, published_at DESC, id DESC）、最近 5 条已发布反馈（按 published_at DESC, id DESC）与最近 5 份处理中或失败资料（按 updated_at DESC, id DESC）。待完成任务指状态 PUBLISHED、无截止或未到截止或允许补交、且本人尚无正式提交的任务；仅有 UPLOADING 记录仍算待完成。",
+        "operationId": "get_student_dashboard_api_v1_dashboard_student_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudentDashboard"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "教师访问返回 ROLE_FORBIDDEN",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -8440,6 +8554,227 @@
         "title": "RubricItemSchema",
         "description": "评分项响应。"
       },
+      "StudentDashboard": {
+        "properties": {
+          "active_course_count": {
+            "type": "integer",
+            "title": "Active Course Count"
+          },
+          "pending_assignment_count": {
+            "type": "integer",
+            "title": "Pending Assignment Count"
+          },
+          "processing_material_count": {
+            "type": "integer",
+            "title": "Processing Material Count"
+          },
+          "failed_material_count": {
+            "type": "integer",
+            "title": "Failed Material Count"
+          },
+          "pending_assignments": {
+            "items": {
+              "$ref": "#/components/schemas/StudentPendingAssignment"
+            },
+            "type": "array",
+            "maxItems": 5,
+            "title": "Pending Assignments"
+          },
+          "recent_feedback": {
+            "items": {
+              "$ref": "#/components/schemas/StudentRecentFeedback"
+            },
+            "type": "array",
+            "maxItems": 5,
+            "title": "Recent Feedback"
+          },
+          "material_statuses": {
+            "items": {
+              "$ref": "#/components/schemas/StudentMaterialStatus"
+            },
+            "type": "array",
+            "maxItems": 5,
+            "title": "Material Statuses"
+          }
+        },
+        "type": "object",
+        "required": [
+          "active_course_count",
+          "pending_assignment_count",
+          "processing_material_count",
+          "failed_material_count",
+          "pending_assignments",
+          "recent_feedback",
+          "material_statuses"
+        ],
+        "title": "StudentDashboard",
+        "description": "学生工作台摘要（契约 11.2）。"
+      },
+      "StudentMaterialStatus": {
+        "properties": {
+          "material_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Material Id"
+          },
+          "course_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Course Id"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PROCESSING",
+              "FAILED"
+            ],
+            "title": "Status"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "material_id",
+          "course_id",
+          "filename",
+          "status",
+          "error_message",
+          "updated_at"
+        ],
+        "title": "StudentMaterialStatus",
+        "description": "学生视角一份处理中或失败资料。"
+      },
+      "StudentPendingAssignment": {
+        "properties": {
+          "assignment_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Assignment Id"
+          },
+          "course_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Course Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At"
+          },
+          "allow_late_submission": {
+            "type": "boolean",
+            "title": "Allow Late Submission"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "assignment_id",
+          "course_id",
+          "title",
+          "due_at",
+          "allow_late_submission",
+          "published_at"
+        ],
+        "title": "StudentPendingAssignment",
+        "description": "学生视角一个待完成任务。"
+      },
+      "StudentRecentFeedback": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Review Id"
+          },
+          "submission_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Submission Id"
+          },
+          "assignment_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Assignment Id"
+          },
+          "course_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Course Id"
+          },
+          "final_total_score": {
+            "type": "number",
+            "multipleOf": 0.01,
+            "minimum": 0.0,
+            "title": "Final Total Score",
+            "description": "总分（最多两位小数，0.01 的整数倍）；只接受 JSON number"
+          },
+          "total_score": {
+            "type": "number",
+            "multipleOf": 0.01,
+            "minimum": 0.0,
+            "title": "Total Score",
+            "description": "总分（最多两位小数，0.01 的整数倍）；只接受 JSON number"
+          },
+          "published_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Published At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "submission_id",
+          "assignment_id",
+          "course_id",
+          "final_total_score",
+          "total_score",
+          "published_at"
+        ],
+        "title": "StudentRecentFeedback",
+        "description": "学生视角最近一条已发布反馈。"
+      },
       "SubmissionDetailSchema": {
         "properties": {
           "id": {
@@ -8712,6 +9047,153 @@
         ],
         "title": "SubmissionUploadInitSchema",
         "description": "初始化上传响应（契约 9.2）。"
+      },
+      "TeacherDashboard": {
+        "properties": {
+          "active_course_count": {
+            "type": "integer",
+            "title": "Active Course Count"
+          },
+          "pending_grading_count": {
+            "type": "integer",
+            "title": "Pending Grading Count"
+          },
+          "failed_material_count": {
+            "type": "integer",
+            "title": "Failed Material Count"
+          },
+          "recent_submissions": {
+            "items": {
+              "$ref": "#/components/schemas/TeacherRecentSubmission"
+            },
+            "type": "array",
+            "maxItems": 5,
+            "title": "Recent Submissions"
+          },
+          "failed_materials": {
+            "items": {
+              "$ref": "#/components/schemas/TeacherFailedMaterial"
+            },
+            "type": "array",
+            "maxItems": 5,
+            "title": "Failed Materials"
+          }
+        },
+        "type": "object",
+        "required": [
+          "active_course_count",
+          "pending_grading_count",
+          "failed_material_count",
+          "recent_submissions",
+          "failed_materials"
+        ],
+        "title": "TeacherDashboard",
+        "description": "教师工作台摘要（契约 11.1）。"
+      },
+      "TeacherFailedMaterial": {
+        "properties": {
+          "material_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Material Id"
+          },
+          "course_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Course Id"
+          },
+          "filename": {
+            "type": "string",
+            "title": "Filename"
+          },
+          "error_message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Message"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "material_id",
+          "course_id",
+          "filename",
+          "error_message",
+          "updated_at"
+        ],
+        "title": "TeacherFailedMaterial",
+        "description": "教师视角最近一份失败资料。"
+      },
+      "TeacherRecentSubmission": {
+        "properties": {
+          "submission_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Submission Id"
+          },
+          "assignment_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Assignment Id"
+          },
+          "course_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Course Id"
+          },
+          "student_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Student Id"
+          },
+          "student_name": {
+            "type": "string",
+            "title": "Student Name"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "SUBMITTED",
+              "GRADING",
+              "REVIEW_REQUIRED",
+              "PUBLISHED",
+              "FAILED"
+            ],
+            "title": "Status"
+          },
+          "is_late": {
+            "type": "boolean",
+            "title": "Is Late"
+          },
+          "submitted_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Submitted At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "submission_id",
+          "assignment_id",
+          "course_id",
+          "student_id",
+          "student_name",
+          "status",
+          "is_late",
+          "submitted_at"
+        ],
+        "title": "TeacherRecentSubmission",
+        "description": "教师视角最近一份正式提交。"
       },
       "UserProfile": {
         "properties": {
