@@ -178,6 +178,14 @@ class Assignment(Base):
             "created_at",
             "id",
         ),
+        # Dashboard：学生待完成任务按课程、状态和截止时间定位
+        Index(
+            "ix_assignments_course_status_due_id",
+            "course_id",
+            "status",
+            "due_at",
+            "id",
+        ),
     )
 
     def __repr__(self) -> str:  # pragma: no cover - 仅用于调试
@@ -377,11 +385,6 @@ class AssignmentAttachment(Base):
 
 
 __all__ = [
-    "Assignment",
-    "AssignmentAttachment",
-    "AssignmentRubricItem",
-    "AssignmentRubricVersion",
-    "AssignmentStatus",
     "ATTACHMENT_EXTENSIONS",
     "ATTACHMENT_FILENAME_MAX_LENGTH",
     "ATTACHMENT_OBJECT_KEY_MAX_LENGTH",
@@ -395,4 +398,9 @@ __all__ = [
     "SCORE_TYPE",
     "STUDENT_VISIBLE_STATUSES",
     "TITLE_MAX_LENGTH",
+    "Assignment",
+    "AssignmentAttachment",
+    "AssignmentRubricItem",
+    "AssignmentRubricVersion",
+    "AssignmentStatus",
 ]
