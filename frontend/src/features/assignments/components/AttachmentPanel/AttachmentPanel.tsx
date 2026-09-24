@@ -23,7 +23,7 @@ import {
 } from "@/features/assignments/hooks/useAssignments";
 import { UPLOAD_STEP_LABEL } from "@/features/assignments/model/attachment";
 import { toAppError } from "@/services/http";
-import { ACCEPTED_EXTENSIONS } from "@/services/upload";
+import { ACCEPTED_EXTENSIONS, DEFAULT_MAX_UPLOAD_BYTES } from "@/services/upload";
 
 import styles from "./AttachmentPanel.module.css";
 
@@ -65,6 +65,7 @@ export function AttachmentPanel({
   }
 
   const items = attachments.data ?? [];
+  const maxMb = Math.floor(DEFAULT_MAX_UPLOAD_BYTES / 1024 / 1024);
 
   return (
     <Card>
@@ -99,7 +100,7 @@ export function AttachmentPanel({
             <strong>
               {upload.step ? UPLOAD_STEP_LABEL[upload.step] : "上传附件"}
             </strong>
-            <span>拖拽文件到这里或点击选择，单个不超过 50 MB</span>
+            <span>拖拽文件到这里或点击选择，单个不超过 {maxMb} MB</span>
           </span>
           <input
             ref={inputRef}

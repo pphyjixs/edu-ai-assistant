@@ -43,7 +43,7 @@ export async function uploadMaterial({
 }: UploadMaterialParams): Promise<MaterialUploadCompleteResponseDto> {
   onStep?.("checking");
 
-  // 本地先挡一次明显不合规的文件，避免把 50 MB 白传一遍；
+  // 本地先挡一次明显不合规的文件，避免无效上传；
   // 后端仍会独立校验并返回 UPLOAD_INVALID。
   const local = checkLocalFile(file);
   if (local.kind !== "ok") {

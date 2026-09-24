@@ -22,6 +22,8 @@ cp .env.docker.example .env
 
 编辑 `.env`：填写强随机 `POSTGRES_PASSWORD` 和 `APP_SECRET_KEY`、正式域名 `FRONTEND_ORIGINS`，以及外部 S3 存储参数。建议使用只含十六进制字符的数据库密码，避免连接串中的特殊字符需要 URL 编码。`APP_SECRET_KEY` 至少 32 字符。不要把 `.env` 提交到 Git。
 
+Docker 部署默认将课件、作业附件和学生报告的单文件上限统一设为 1 MiB（1048576 字节）。前端会在上传前提示并拦截，后端会再次校验；可通过 `MATERIAL_MAX_UPLOAD_BYTES`、`ASSIGNMENT_ATTACHMENT_MAX_UPLOAD_BYTES` 和 `SUBMISSION_MAX_UPLOAD_BYTES` 调整后端限制。
+
 对象存储 endpoint 必须是浏览器可访问的 HTTPS 地址，因为上传使用浏览器直传预签名 URL。生产环境需按 S3 服务要求配置 CORS，允许你的前端域名执行预签名 PUT。AI 配置可选；未配置时 AI 队列任务无法成功处理。
 
 启动数据库、API、Worker 和前端：
