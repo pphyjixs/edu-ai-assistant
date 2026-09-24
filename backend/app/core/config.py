@@ -106,7 +106,13 @@ class Settings(BaseSettings):
     db_ready_timeout_seconds: float = 3.0
     db_echo: bool = False
 
-    # --------------------- 对象存储（浏览器直传）---------------------
+    # --------------------- 文件存储（浏览器直传）---------------------
+    #: ``s3`` 使用兼容 S3 的外部存储；``local`` 使用服务器持久化目录
+    storage_backend: str = "s3"
+    #: 本地存储根目录（Docker 部署挂载持久卷到这里）
+    storage_local_root: str = "/data/uploads"
+    #: 可选的公网基础地址；留空时返回同源 /api/v1 相对地址
+    storage_public_base_url: str = ""
     #: S3 兼容服务地址，例如 ``http://127.0.0.1:9000``（MinIO）或云厂商 endpoint
     storage_endpoint: str = ""
     storage_bucket: str = ""

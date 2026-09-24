@@ -28,6 +28,7 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import NamedTuple
 
+from sqlalchemy import null
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -496,8 +497,9 @@ async def delete_material(
     *,
     user: User,
     material_id: uuid.UUID,
+    storage: S3Storage | None = None,
 ) -> bool:
-    """删除资料（契约 5.2，标记删除 + 对象删除待办）。
+    """删除资料（标记删除 + 立即清理文件 + 延迟复查）。
 
     返回 ``True`` 表示本次真正执行了标记删除；``False`` 表示幂等重放
     （同一创建教师对已删除资料的再次删除）。
@@ -505,11 +507,9 @@ async def delete_material(
     处理顺序：资料存在（404）→ 成员（404）→ 已删除幂等/不可见（204/404）
     → 角色（403）→ 归档（409）→ 事务内删除。
 
-    事务内容：标记删除（隐藏资料）→ 取消未完成解析（任务行锁内置
-    ``CANCELLED``）→ 清空章节与知识点 → **清空可检索片段（6.1：删除后的资料
-    不得再被检索）** → 写入对象删除待办。对象本身由
-    独立维护命令在 PUT 地址过期 + 缓冲期后删除（避免晚到 PUT 重建窗口）；
-    上传会话与资料行（最小删除记录）保留供审计。
+    事务内容：标记删除、取消未完成解析、删除章节/知识点/检索片段、
+    清空上传完成快照 JSON，并写入删除待办。提交后立即尝试删除实体文件；
+    待办保留到旧 PUT 地址过期后再复查，以清理可能的晚到上传。
     """
     material = await repo.get_material_by_id(session, material_id)
     if material is None:
@@ -546,6 +546,8 @@ async def delete_material(
     # 章节与知识点级联清空；检索片段必须一并删除，否则删除后的资料仍会被问答检索到
     await repo.delete_sections(session, material_id=locked.id)
     await repo.delete_chunks(session, material_id=locked.id)
+    # JSONB 对 Python None 默认会写成 JSON `null`；这里要真正清掉字段。
+    upload.completion_snapshot = null()
     repo.add_delete_todo(
         session,
         todo_id=uuid.uuid4(),
@@ -556,6 +558,15 @@ async def delete_material(
         now=now,
     )
     await session.commit()
+    if storage is not None:
+        try:
+            storage.delete_object(locked.storage_key)
+        except Exception:  # noqa: BLE001 - 待办会在到期后继续重试
+            logger.warning(
+                "资料记录已删除，但立即清理文件失败（key=%s）",
+                locked.storage_key,
+                exc_info=True,
+            )
     return True
 
 

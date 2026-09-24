@@ -40,6 +40,7 @@ from app.modules.grading.router import grading_router
 from app.modules.jobs.router import jobs_router
 from app.modules.materials.router import materials_router
 from app.modules.practice.router import practice_router
+from app.storage.router import storage_router
 
 #: v1 路由聚合器；业务模块实现后在此 include_router。
 api_router = APIRouter()
@@ -47,6 +48,9 @@ api_router = APIRouter()
 # ------------------------------- auth -------------------------------
 api_router.include_router(auth_router)
 api_router.include_router(me_router)
+
+# -------------------------- local storage ---------------------------
+api_router.include_router(storage_router)
 
 # ------------------------------ courses ------------------------------
 api_router.include_router(courses_router)

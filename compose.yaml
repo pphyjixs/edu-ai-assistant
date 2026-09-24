@@ -37,12 +37,17 @@ services:
       MATERIAL_MAX_UPLOAD_BYTES: ${MATERIAL_MAX_UPLOAD_BYTES:-1048576}
       SUBMISSION_MAX_UPLOAD_BYTES: ${SUBMISSION_MAX_UPLOAD_BYTES:-1048576}
       ASSIGNMENT_ATTACHMENT_MAX_UPLOAD_BYTES: ${ASSIGNMENT_ATTACHMENT_MAX_UPLOAD_BYTES:-1048576}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      STORAGE_LOCAL_ROOT: ${STORAGE_LOCAL_ROOT:-/data/uploads}
+      STORAGE_PUBLIC_BASE_URL: ${STORAGE_PUBLIC_BASE_URL:-}
     depends_on:
       db:
         condition: service_healthy
     mem_limit: 512m
     cpus: 0.75
     expose: ["8000"]
+    volumes:
+      - uploads_data:/data/uploads
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3)"]
       interval: 30s
@@ -66,11 +71,16 @@ services:
       MATERIAL_MAX_UPLOAD_BYTES: ${MATERIAL_MAX_UPLOAD_BYTES:-1048576}
       SUBMISSION_MAX_UPLOAD_BYTES: ${SUBMISSION_MAX_UPLOAD_BYTES:-1048576}
       ASSIGNMENT_ATTACHMENT_MAX_UPLOAD_BYTES: ${ASSIGNMENT_ATTACHMENT_MAX_UPLOAD_BYTES:-1048576}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-local}
+      STORAGE_LOCAL_ROOT: ${STORAGE_LOCAL_ROOT:-/data/uploads}
+      STORAGE_PUBLIC_BASE_URL: ${STORAGE_PUBLIC_BASE_URL:-}
     depends_on:
       db:
         condition: service_healthy
     mem_limit: 512m
     cpus: 0.5
+    volumes:
+      - uploads_data:/data/uploads
     networks: [internal]
 
   frontend:
@@ -91,6 +101,7 @@ services:
 
 volumes:
   postgres_data:
+  uploads_data:
 
 networks:
   internal:
