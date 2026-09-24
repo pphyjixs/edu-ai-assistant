@@ -33,6 +33,7 @@ EXPECTED_FIELDS = {
     "resource_type",
     "resource_id",
     "error",
+    "failure_stage",
     "created_at",
     "started_at",
     "finished_at",

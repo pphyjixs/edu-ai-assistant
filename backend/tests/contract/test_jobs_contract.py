@@ -37,6 +37,7 @@ EXPECTED_FIELDS = {
     "resource_type",
     "resource_id",
     "error",
+    "failure_stage",
     "created_at",
     "started_at",
     "finished_at",
@@ -78,7 +79,7 @@ def test_job_status_component_shape(schema: dict) -> None:
     properties = definition["properties"]
 
     assert set(properties) == EXPECTED_FIELDS
-    assert set(definition["required"]) == EXPECTED_FIELDS
+    assert set(definition["required"]) == EXPECTED_FIELDS - {"failure_stage"}
     assert not (INTERNAL_FIELDS & set(properties))
 
     assert properties["id"]["format"] == "uuid"
@@ -98,6 +99,12 @@ def test_progress_and_error_bounds_are_declared(schema: dict) -> None:
         branch for branch in properties["error"]["anyOf"] if branch.get("type") == "string"
     )
     assert string_branch["maxLength"] == 500
+
+    failure_stage = properties["failure_stage"]
+    assert {branch["type"] for branch in failure_stage["anyOf"]} == {
+        "string",
+        "null",
+    }
 
 
 def test_time_fields_declare_date_time_format(schema: dict) -> None:

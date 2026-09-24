@@ -108,7 +108,7 @@ EXPECTED_ENUMS: dict[str, list[str]] = {
 COMPARE_OPTIONS = {"compare_type": True, "compare_server_default": True}
 
 #: head 对应的最新迁移
-REVISION = "01d9328a578b"
+REVISION = "0015_dashboard_indexes"
 
 #: jobs 的两条契约约束（库侧实际名字带双重前缀，见命名约定）
 JOBS_PROGRESS_CONSTRAINT = "ck_jobs_ck_jobs_progress_range"
@@ -551,6 +551,109 @@ def test_jobs_check_constraints_are_enforced(migrated_engine: Engine) -> None:
             )
         ).scalar_one()
     assert stored == len(LEGAL_JOB_COMBINATIONS)
+
+
+def test_dashboard_indexes_exist(migrated_engine: Engine) -> None:
+    """0015 为 Dashboard 热路径建立 5 个索引（3 个部分索引），列顺序与谓词正确。"""
+    inspector = inspect(migrated_engine)
+
+    submission_indexes = {
+        index["name"]: index for index in inspector.get_indexes("submissions")
+    }
+    assert submission_indexes["ix_submissions_course_submitted_id"]["column_names"] == [
+        "course_id",
+        "submitted_at",
+        "id",
+    ]
+    assert submission_indexes["ix_submissions_student_status_updated_id"]["column_names"] == [
+        "student_id",
+        "status",
+        "updated_at",
+        "id",
+    ]
+
+    assignment_indexes = {
+        index["name"]: index for index in inspector.get_indexes("assignments")
+    }
+    assert assignment_indexes["ix_assignments_course_status_due_id"]["column_names"] == [
+        "course_id",
+        "status",
+        "due_at",
+        "id",
+    ]
+
+    material_indexes = {
+        index["name"]: index for index in inspector.get_indexes("materials")
+    }
+    assert material_indexes["ix_materials_course_status_updated_id"]["column_names"] == [
+        "course_id",
+        "status",
+        "updated_at",
+        "id",
+    ]
+
+    review_indexes = {
+        index["name"]: index for index in inspector.get_indexes("grade_reviews")
+    }
+    assert review_indexes["ix_grade_reviews_published_id_submission_id"]["column_names"] == [
+        "published_at",
+        "id",
+        "submission_id",
+    ]
+
+    with migrated_engine.connect() as connection:
+        def indexdef(name: str) -> str:
+            return connection.execute(
+                text("SELECT indexdef FROM pg_indexes WHERE indexname = :name"),
+                {"name": name},
+            ).scalar_one()
+
+        assert "submitted_at IS NOT NULL" in indexdef(
+            "ix_submissions_course_submitted_id"
+        )
+        assert "deleted_at IS NULL" in indexdef("ix_materials_course_status_updated_id")
+        assert "published_at IS NOT NULL" in indexdef(
+            "ix_grade_reviews_published_id_submission_id"
+        )
+
+
+def test_dashboard_indexes_round_trip(
+    alembic_config: Config, migration_database_url: str
+) -> None:
+    """``01d9328a578b → 0015 → 01d9328a578b → 0015`` 往返：只增删索引，不动表、枚举与历史数据。"""
+    engine = create_engine(pg_support.to_sync(migration_database_url))
+    try:
+        with pg_support.alembic_database_url(migration_database_url):
+            command.downgrade(alembic_config, "01d9328a578b")
+            remaining = {
+                index["name"] for index in inspect(engine).get_indexes("submissions")
+            }
+            assert "ix_submissions_course_submitted_id" not in remaining
+            assert "ix_submissions_student_status_updated_id" not in remaining
+            assert "ix_assignments_course_status_due_id" not in {
+                index["name"] for index in inspect(engine).get_indexes("assignments")
+            }
+            assert "ix_materials_course_status_updated_id" not in {
+                index["name"] for index in inspect(engine).get_indexes("materials")
+            }
+            assert "ix_grade_reviews_published_id_submission_id" not in {
+                index["name"] for index in inspect(engine).get_indexes("grade_reviews")
+            }
+
+            command.upgrade(alembic_config, "head")
+
+        assert "ix_submissions_course_submitted_id" in {
+            index["name"] for index in inspect(engine).get_indexes("submissions")
+        }
+        assert "ix_materials_course_status_updated_id" in {
+            index["name"] for index in inspect(engine).get_indexes("materials")
+        }
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == REVISION
+    finally:
+        engine.dispose()
 
 
 def test_rollback_to_base_removes_every_schema_object(
