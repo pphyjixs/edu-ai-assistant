@@ -8,6 +8,8 @@
  * 三段式的编排在 features/materials/api 里完成。
  */
 
+import { sha256 } from "@noble/hashes/sha256";
+
 /**
  * 契约 4.2：扩展名 → 规范 MIME，必须精确相等。
  * 不接受 application/octet-stream、近似类型或带参数的形式。
@@ -103,8 +105,23 @@ export function describeLocalProblem(problem: LocalFileProblem): string {
  */
 export async function sha256Hex(file: File): Promise<string> {
   const buffer = await file.arrayBuffer();
-  const digest = await crypto.subtle.digest("SHA-256", buffer);
-  return Array.from(new Uint8Array(digest))
+
+  // Web Crypto 只在 HTTPS、localhost 等安全上下文中可用。Docker 单机版在
+  // 备案和证书配置完成前可能通过公网 HTTP IP 访问，因此需要同步实现兜底。
+  // 文件上限为 1 MiB，兜底计算不会造成明显的主线程停顿。
+  let digest: Uint8Array;
+  const subtle = globalThis.crypto?.subtle;
+  if (subtle) {
+    try {
+      digest = new Uint8Array(await subtle.digest("SHA-256", buffer));
+    } catch {
+      digest = sha256(new Uint8Array(buffer));
+    }
+  } else {
+    digest = sha256(new Uint8Array(buffer));
+  }
+
+  return Array.from(digest)
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
 }
