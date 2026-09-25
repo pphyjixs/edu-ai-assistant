@@ -9,8 +9,8 @@
 1. 模型必须对**每一个**评分项**恰好返回一项**：缺失、重复或返回本次版本之外的
    评分项一律整次失败；
 2. 建议分必须在 ``0..max_score`` 之间、最多两位小数（``Decimal`` 判定）；
-3. 每条判断说明与证据摘录都不得为空；
-4. 每条结果必须给出 ``location_start`` / ``location_end``：严格整数、从 1 开始、
+3. 每条判断说明不得为空；正分必须有证据，零分且完全缺失可无证据；
+4. 有证据的结果必须给出 ``location_start`` / ``location_end``：严格整数、从 1 开始、
    不倒序，且**两个端点**都必须是报告实际提取到的单元（区间中间允许空页/空段落）；
 5. **证据摘录必须出现在模型声明的位置区间内**（空白规范化后子串匹配）——
    只在报告其他位置出现不算数，否则视为幻觉，整次失败；
@@ -32,22 +32,29 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, ValidationError
 
 from app.modules.grading.models import (
+    COMMENT_MAX_LENGTH,
     EVIDENCE_SOURCE_DOCX_PARAGRAPH,
     EVIDENCE_SOURCE_PDF_PAGE,
+    EVIDENCE_MAX_LENGTH,
+    ERROR_TYPE_MAX_LENGTH,
     SCORE_SCALE,
+    SUMMARY_MAX_LENGTH,
 )
 
 logger = logging.getLogger("app.grading.ai")
 
 #: 提示词版本：写入批改尝试记录
-PROMPT_VERSION = "submission-grade-v2"
+PROMPT_VERSION = "submission-grade-v3"
 
 SYSTEM_PROMPT = (
-    "你是实验报告批改助手。你只能依据用户提供的报告原文评分，"
-    "不得引入原文之外的信息，也不得编造证据或位置。"
+    "你是实验报告批改助手。作业说明、教师附件与评分项定义了评价要求；"
+    "学生报告是得分事实与证据的唯一来源。不得编造报告内容、证据或位置。"
 )
 
-_USER_PROMPT_TEMPLATE = """请依据下面的实验报告原文，按评分规则逐项打分。
+_USER_PROMPT_TEMPLATE = """请依据作业要求和评分规则，对下面的学生实验报告逐项打分。
+
+作业要求（教师说明与附件；只能用于理解评价标准，不能作为学生完成情况的证据）：
+{assignment_context}
 
 评分规则（必须对每一项恰好给出一条结果，rubric_item_id 必须逐字照抄）：
 {rubric}
@@ -56,13 +63,15 @@ _USER_PROMPT_TEMPLATE = """请依据下面的实验报告原文，按评分规�
 {report}
 
 要求：
-1. 只依据报告原文评分，不得引入原文之外的信息；
+1. 用作业说明和附件解释每项检查标准，只依据学生报告原文判断是否完成；
 2. 每条结果给出：score（建议分，0 到该项满分之间，最多两位小数）、
    comment（判断说明）、evidence_quote（逐字摘自报告原文的证据摘录，
    必须是原文中真实出现的连续片段）、location_start 与 location_end
    （证据所在的{source_label}号区间，必须与上面标注的位置一致）、
    error_type（错误类型，可为空字符串）、improvement_suggestion（改进建议）；
-3. 每条结果都要引用真实存在的原文片段与真实位置，不要改写、概括或猜测位置；
+3. 有正分时必须引用真实存在的报告片段与位置；报告完全没有对应内容而给 0 分时，
+   evidence_quote、location_start、location_end 都填 null，并在 comment 中说明缺失；
+   不要为了凑证据引用无关段落；
 4. 只输出 JSON 对象，不要输出其他文字或代码块围栏；
 JSON 格式：
 {{"summary": "整体评语", "items": [{{"rubric_item_id": "评分项 ID", "score": 35, "comment": "判断说明", "evidence_quote": "原文证据", "location_start": 1, "location_end": 1, "error_type": "需求遗漏", "improvement_suggestion": "改进建议"}}]}}"""
@@ -127,10 +136,10 @@ class ValidatedGradeItem:
     order: int
     score: Decimal
     comment: str
-    evidence_quote: str
-    evidence_source_type: str
-    evidence_location_start: int
-    evidence_location_end: int
+    evidence_quote: str | None
+    evidence_source_type: str | None
+    evidence_location_start: int | None
+    evidence_location_end: int | None
     error_type: str
     improvement_suggestion: str
 
@@ -155,10 +164,10 @@ class GeneratedGradeItem(BaseModel):
     rubric_item_id: StrictStr
     score: float
     comment: StrictStr
-    evidence_quote: StrictStr
+    evidence_quote: StrictStr | None = None
     #: 严格整数：布尔与字符串在这里就被拒绝；零/负数/倒序由服务端校验给出稳定原因
-    location_start: StrictInt
-    location_end: StrictInt
+    location_start: StrictInt | None = None
+    location_end: StrictInt | None = None
     error_type: StrictStr = ""
     improvement_suggestion: StrictStr = ""
 
@@ -201,6 +210,8 @@ def _validate_location(
     :raises GradeGenerationError: 零、负数、倒序或任一端点不存在。
     """
     start, end = item.location_start, item.location_end
+    if start is None or end is None:
+        raise GradeGenerationError("有报告证据时必须给出位置")
     if start < 1 or end < 1:
         raise GradeGenerationError("模型给出的证据位置必须从 1 开始")
     if end < start:
@@ -248,15 +259,17 @@ def validate_generated(
         if -score.as_tuple().exponent > SCORE_SCALE:
             raise GradeGenerationError("模型给出的建议分小数位超过两位")
 
-        start, end = _validate_location(raw, report=report)
-        quote = raw.evidence_quote.strip()
-        # 证据摘录必须出现在**声明的位置区间内**，不能只在报告其他位置出现
-        if not quote or _normalize_for_match(quote) not in _normalize_for_match(
-            report.text_within(start, end)
-        ):
-            raise GradeGenerationError(
-                f"模型给出的证据摘录无法在声明的位置（{start}–{end}）中找到"
-            )
+        quote = (raw.evidence_quote or "").strip()[:EVIDENCE_MAX_LENGTH]
+        if not quote and score == 0 and raw.location_start is None and raw.location_end is None:
+            start = end = None
+        else:
+            if not quote:
+                raise GradeGenerationError("正分或有定位的评分项必须提供报告证据")
+            start, end = _validate_location(raw, report=report)
+            if _normalize_for_match(quote) not in _normalize_for_match(report.text_within(start, end)):
+                raise GradeGenerationError(
+                    f"模型给出的证据摘录无法在声明的位置（{start}–{end}）中找到"
+                )
 
         comment = raw.comment.strip()
         if not comment:
@@ -267,22 +280,23 @@ def validate_generated(
                 rubric_item_id=item_id,
                 order=snapshot.order,
                 score=score,
-                comment=comment,
-                evidence_quote=quote,
+                comment=comment[:COMMENT_MAX_LENGTH],
+                evidence_quote=quote or None,
                 # 来源类型由服务端按报告 MIME 确定，模型不能自行决定
-                evidence_source_type=report.source_type,
+                evidence_source_type=report.source_type if quote else None,
                 evidence_location_start=start,
                 evidence_location_end=end,
-                error_type=raw.error_type.strip(),
+                error_type=raw.error_type.strip()[:ERROR_TYPE_MAX_LENGTH],
                 improvement_suggestion=raw.improvement_suggestion.strip(),
             )
         )
 
     validated.sort(key=lambda item: item.order)
-    return ValidatedGrade(summary=generated.summary.strip(), items=validated)
+    return ValidatedGrade(summary=generated.summary.strip()[:SUMMARY_MAX_LENGTH], items=validated)
 
 
-def build_prompt(*, rubric: list[RubricItemSnapshot], report: ReportSource) -> str:
+def build_prompt(*, rubric: list[RubricItemSnapshot], report: ReportSource,
+                 assignment_context: str = "未提供作业说明或附件") -> str:
     """构造用户提示：评分规则 + **按来源位置标注**的报告原文。"""
     lines = [
         f"- rubric_item_id={item.rubric_item_id}｜满分 {item.max_score}"
@@ -291,6 +305,7 @@ def build_prompt(*, rubric: list[RubricItemSnapshot], report: ReportSource) -> s
     ]
     blocks = [f"[{report.source_label} {location}] {text}" for location, text in report.units]
     return _USER_PROMPT_TEMPLATE.format(
+        assignment_context=assignment_context,
         rubric="\n".join(lines),
         report="\n".join(blocks),
         source_label=report.source_label,
@@ -318,6 +333,7 @@ def grade_submission(
     *,
     rubric: list[RubricItemSnapshot],
     report: ReportSource,
+    assignment_context: str = "未提供作业说明或附件",
     base_url: str,
     api_key: str,
     model: str,
@@ -343,7 +359,8 @@ def grade_submission(
         "model": model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_prompt(rubric=rubric, report=report)},
+            {"role": "user", "content": build_prompt(rubric=rubric, report=report,
+                                                      assignment_context=assignment_context)},
         ],
         "temperature": 0.2,
     }

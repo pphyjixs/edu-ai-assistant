@@ -26,6 +26,8 @@ export const iconNames = [
   "upload",
   "context",
   "chevron-left",
+  "chevron-down",
+  "arrow-up-right",
 ] as const;
 
 export type IconName = (typeof iconNames)[number];

@@ -7,6 +7,7 @@
 
 export const USER_ID = "33333333-3333-3333-3333-333333333333";
 export const COURSE_ID = "22222222-2222-2222-2222-222222222222";
+export const COURSE_ID_2 = "22222222-2222-2222-2222-222222222223";
 export const SESSION_ID = "11111111-1111-1111-1111-111111111111";
 export const USER_MESSAGE_ID = "44444444-4444-4444-4444-444444444444";
 
@@ -16,6 +17,13 @@ export const PROFILE = {
   display_name: "王老师",
   role: "TEACHER",
   created_at: "2026-01-01T00:00:00Z",
+};
+
+export const STUDENT_PROFILE = {
+  ...PROFILE,
+  email: "student@example.com",
+  display_name: "李同学",
+  role: "STUDENT",
 };
 
 export const COURSE_SUMMARY = {
@@ -33,6 +41,13 @@ export const COURSE_DETAIL = {
   ...COURSE_SUMMARY,
   invite_code: "ABCDEFGHIJKL",
   members: [],
+};
+
+export const COURSE_SUMMARY_2 = {
+  ...COURSE_SUMMARY,
+  id: COURSE_ID_2,
+  name: "操作系统",
+  description: "进程与内存管理",
 };
 
 export const CHAT_SESSION = {
@@ -108,3 +123,36 @@ export function page<T>(items: T[], pageSize = 20) {
 }
 
 export const EMPTY_PAGE = page([]);
+
+/** 作业摘要（契约 8.3 的列表项）。默认是一条"进行中、未过期"的任务。 */
+export type AssignmentFixture = {
+  id: string;
+  course_id: string;
+  title: string;
+  status: string;
+  due_at: string | null;
+  allow_late_submission: boolean;
+  total_score: number;
+  rubric_version: number;
+  published_at: string | null;
+  closed_at: string | null;
+  updated_at: string;
+};
+
+export function makeAssignment(overrides: Partial<AssignmentFixture> = {}): AssignmentFixture {
+  return {
+    id: "77777777-7777-7777-7777-777777777777",
+    course_id: COURSE_ID,
+    title: "实验二：浮点加法器设计实验",
+    status: "PUBLISHED",
+    // 与截图一致：UTC 15:59 在东八区显示为次日 23:59
+    due_at: "2026-10-09T15:59:00Z",
+    allow_late_submission: false,
+    total_score: 100,
+    rubric_version: 1,
+    published_at: "2026-09-20T00:00:00Z",
+    closed_at: null,
+    updated_at: "2026-09-20T00:00:00Z",
+    ...overrides,
+  };
+}

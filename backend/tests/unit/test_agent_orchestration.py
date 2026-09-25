@@ -34,6 +34,7 @@ from app.modules.agent.tool_types import (
     ToolResult,
     ToolSideEffect,
     ToolSpec,
+    has_write_intent,
 )
 from app.modules.agent.tools.skill_tools import build_specs
 from app.modules.auth.models import UserRole
@@ -794,6 +795,53 @@ async def test_load_skill_injects_body_once(
     # 工具结果本身不回传正文，避免上下文里出现两遍
     tool_body = json.loads(script.tool_messages()[0]["content"])
     assert "instructions" not in tool_body.get("data", {})
+
+    # 审计步骤同样**不落 Skill 正文**，只留名称与版本（开发方案 7.1）
+    step = step_store.steps["call_1"]
+    assert "instructions" not in step.response_json["data"]
+    assert step.response_json["data"]["instructions_loaded"] is True
+    assert step.response_json["data"]["version"] == "1"
+    assert step.response_json["loaded_skills"] == ["course-summary"]
+
+
+async def test_load_skill_replay_restores_instructions(
+    tmp_path: Path, step_store, make_settings
+) -> None:
+    """同一 Run 重试时，审计摘要重放仍须恢复 Skill 正文。"""
+    catalog = _write_fixture_skill(tmp_path)
+    run_id = uuid.uuid4()
+    for _attempt in range(2):
+        script = Script(
+            [
+                _completion(
+                    tool_calls=[_tool_call("call_1", "load_skill", {"name": "course-summary"})]
+                ),
+                _completion({"answer": "按工作流完成。", "citations": []}),
+            ]
+        )
+        await _run(
+            script=script,
+            registry=_registry(ToolState(), catalog),
+            make_settings=make_settings,
+            run_id=run_id,
+        )
+        assert _SKILL_BODY in script.system_messages()[1]
+        assert _SKILL_BODY not in str(script.tool_messages()[0]["content"])
+    assert step_store.order == 1
+
+
+def test_oversized_data_list_keeps_partial_rows() -> None:
+    payload = {"ok": True, "data": {"materials": [{"id": str(index)} for index in range(100)]}}
+    fitted, truncated = orchestration._fit_payload(payload, 160)
+    assert truncated is True
+    assert fitted["truncated"] is True
+    assert 0 < len(fitted["data"]["materials"]) < 100
+    assert len(json.dumps(fitted, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) <= 160
+
+
+def test_write_intent_does_not_treat_topic_nouns_as_creation() -> None:
+    assert has_write_intent("生成五道练习题") is True
+    assert has_write_intent("这份课件有哪些练习题目？") is False
 
 
 # --------------------------------------------------------------------------- #

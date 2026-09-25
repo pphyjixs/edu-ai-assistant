@@ -47,6 +47,18 @@ def _write_skill(
 # --------------------------------------------------------------------------- #
 # 目录扫描
 # --------------------------------------------------------------------------- #
+def test_default_skills_root_is_backend_app_agent_skills() -> None:
+    """生产目录必须是 ``backend/app/agent_skills``（开发方案第 6 节的文件布局）。
+
+    这是一条**路径回归**：``skills.py`` 位于 ``app/modules/agent/``，
+    向上级数写错一位就会静默指向 ``app/modules/agent_skills``——
+    结果是 Skill 放进约定目录却永远加载不到，而且没有任何报错。
+    """
+    backend_dir = Path(__file__).resolve().parents[2]
+    assert skills.default_skills_root() == backend_dir / "app" / "agent_skills"
+    assert skills.default_skills_root().name == "agent_skills"
+
+
 def test_missing_root_is_an_empty_catalog(tmp_path: Path) -> None:
     """生产目录可以为空：没有目录不是错误（开发方案第 6 节）。"""
     catalog = skills.load_skill_catalog(tmp_path / "does-not-exist")
@@ -89,7 +101,7 @@ def test_invalid_skill_is_disabled_with_reason(
 
 
 def test_oversized_body_is_rejected(tmp_path: Path) -> None:
-    """正文超过 8 KiB 的 Skill 不可加载（开发方案第 6 节）。"""
+    """正文超过配置字节上限的 Skill 不可加载。"""
     _write_skill(tmp_path, "huge-skill", body="x" * (skills.SKILL_BODY_MAX_BYTES + 1))
     catalog = skills.load_skill_catalog(tmp_path)
 
@@ -137,7 +149,7 @@ def test_empty_catalog_says_no_skill(tmp_path: Path) -> None:
 
 
 def test_catalog_render_stays_within_budget(tmp_path: Path) -> None:
-    """目录总长超过 4 KiB 时公平截断，且仍为合法文本（开发方案 10.1 第 12 条）。"""
+    """目录总长超过预算时公平截断，且仍为合法文本。"""
     for index in range(30):
         _write_skill(
             tmp_path,

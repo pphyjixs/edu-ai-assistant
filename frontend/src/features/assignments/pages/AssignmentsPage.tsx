@@ -14,6 +14,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { AssignmentForm } from "@/features/assignments/components/AssignmentForm/AssignmentForm";
 import { AssignmentList } from "@/features/assignments/components/AssignmentList/AssignmentList";
 import { useAssignments, useCreateAssignment } from "@/features/assignments/hooks/useAssignments";
+import { suggestRubricFromFile, uploadAttachment } from "@/features/assignments/model/attachment";
 import { useSetBuddyContext } from "@/features/buddy/hooks/useBuddy";
 import { useCourse } from "@/features/courses/hooks/useCourses";
 import { toAppError } from "@/services/http";
@@ -27,6 +28,7 @@ export function AssignmentsPage() {
   const assignmentsQuery = useAssignments(courseId);
   const createAssignment = useCreateAssignment(courseId ?? "");
   const [creating, setCreating] = useState(false);
+  const [uploadingAttachment, setUploadingAttachment] = useState(false);
 
   useSetBuddyContext({ courseId, entityType: "course", entityId: courseId, route: "" });
 
@@ -58,21 +60,41 @@ export function AssignmentsPage() {
           <h2 className={styles.formTitle}>新建实验任务</h2>
           <p className={styles.formHint}>
             创建后是草稿，确认无误再发布；学生看不到草稿。评分项分值合计必须等于总分。
-            附件（实验指导、数据集说明等）在创建后进入任务详情页上传 —— 附件挂在任务上，
-            需要先有任务才能上传。
+            可在创建时选择作业文件。系统先创建草稿，再将所选文件上传为附件；
+            创建后仍可在详情页添加或删除附件。
           </p>
           <AssignmentForm
-            isPending={createAssignment.isPending}
+            isPending={createAssignment.isPending || uploadingAttachment}
             error={createAssignment.error}
-            onSubmitCreate={(body) =>
-              createAssignment.mutate(body, {
-                // 创建成功后直接进入任务详情：那里才有「作业附件」入口
-                onSuccess: (created) => {
-                  setCreating(false);
-                  navigate(`/courses/${courseId}/assignments/${created.id}`);
-                },
-              })
+            onSuggestRubric={async (file, description, totalScore) =>
+              (await suggestRubricFromFile(courseId ?? "", file, description, totalScore)).rubric_items
+                .map((item) => ({ ...item, max_score: Number(item.max_score) }))
             }
+            onSubmitCreate={(body, file) => {
+              void (async () => {
+                let created;
+                try {
+                  created = await createAssignment.mutateAsync(body);
+                } catch {
+                  return;
+                }
+                let attachmentUploadError = "";
+                if (file) {
+                  setUploadingAttachment(true);
+                  try {
+                    await uploadAttachment({ assignmentId: created.id, file });
+                  } catch (cause) {
+                    attachmentUploadError = `任务已创建，但附件上传失败：${cause instanceof Error ? cause.message : toAppError(cause).message}。请在详情页重试。`;
+                  } finally {
+                    setUploadingAttachment(false);
+                  }
+                }
+                setCreating(false);
+                navigate(`/courses/${courseId}/assignments/${created.id}`, {
+                  state: attachmentUploadError ? { attachmentUploadError } : undefined,
+                });
+              })();
+            }}
             onCancel={() => setCreating(false)}
           />
         </Card>
@@ -97,9 +119,6 @@ export function AssignmentsPage() {
         />
       )}
 
-      <p className={styles.note}>
-        提交与批改（契约第 9 节）尚未实现，因此任务页不提供上传与成绩入口。
-      </p>
     </div>
   );
 }

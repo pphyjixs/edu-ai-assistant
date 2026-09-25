@@ -55,7 +55,8 @@ export type AssignmentFormProps = {
   assignment?: AssignmentVM;
   isPending: boolean;
   error: unknown;
-  onSubmitCreate: (body: AssignmentCreateRequestDto) => void;
+  onSubmitCreate: (body: AssignmentCreateRequestDto, attachmentFile?: File) => void;
+  onSuggestRubric?: (file: File, description: string, totalScore: number) => Promise<AssignmentCreateRequestDto["rubric_items"]>;
   /** 仅编辑场景需要 */
   onSubmitUpdate?: (body: AssignmentUpdateRequestDto) => void;
   onCancel?: () => void;
@@ -66,6 +67,7 @@ export function AssignmentForm({
   isPending,
   error,
   onSubmitCreate,
+  onSuggestRubric,
   onSubmitUpdate,
   onCancel,
 }: AssignmentFormProps) {
@@ -82,6 +84,11 @@ export function AssignmentForm({
       : [newDraft()],
   );
   const [problems, setProblems] = useState<string[]>([]);
+  const [automaticRubric, setAutomaticRubric] = useState(!assignment);
+  const [attachmentFile, setAttachmentFile] = useState<File | null>(null);
+  const [rubricReady, setRubricReady] = useState(false);
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestionError, setSuggestionError] = useState("");
 
   const sum = rubricDraftSum(rubric);
   const total = Number(totalScore);
@@ -106,6 +113,10 @@ export function AssignmentForm({
       found.push("总分应为正数，且最多两位小数。");
     }
 
+    if (automaticRubric && !rubricReady) {
+      if (!attachmentFile) found.push("自动解析评分项需要先选择作业文件。");
+      return found;
+    }
     if (rubric.length === 0) found.push("至少需要一个评分项。");
     if (rubric.length > MAX_RUBRIC_ITEMS) found.push(`评分项最多 ${MAX_RUBRIC_ITEMS} 个。`);
 
@@ -123,10 +134,29 @@ export function AssignmentForm({
     return found;
   }
 
-  function submit() {
+  async function submit() {
     const found = validate();
     setProblems(found);
     if (found.length > 0) return;
+
+    if (automaticRubric && !rubricReady && attachmentFile && onSuggestRubric) {
+      setSuggesting(true);
+      setSuggestionError("");
+      try {
+        const items = await onSuggestRubric(attachmentFile, description, Number(totalScore));
+        setRubric(items.map((item, index) => ({
+          key: `ai-${index}`, title: item.title, description: item.description ?? "",
+          maxScore: String(item.max_score),
+        })));
+        setRubricReady(true);
+        setProblems([]);
+      } catch (cause) {
+        setSuggestionError(cause instanceof Error ? cause.message : toAppError(cause).message);
+      } finally {
+        setSuggesting(false);
+      }
+      return;
+    }
 
     const common = {
       title: title.trim(),
@@ -141,7 +171,7 @@ export function AssignmentForm({
     if (assignment) {
       onSubmitUpdate?.(common);
     } else {
-      onSubmitCreate(common);
+      onSubmitCreate(common, attachmentFile ?? undefined);
     }
   }
 
@@ -172,7 +202,7 @@ export function AssignmentForm({
           maxLength={DESCRIPTION_MAX}
           value={description}
           placeholder="学生需要做什么、提交什么"
-          onChange={(event) => setDescription(event.target.value)}
+          onChange={(event) => { setDescription(event.target.value); setRubricReady(false); }}
         />
       </div>
 
@@ -186,7 +216,7 @@ export function AssignmentForm({
             className={styles.input}
             inputMode="decimal"
             value={totalScore}
-            onChange={(event) => setTotalScore(event.target.value)}
+            onChange={(event) => { setTotalScore(event.target.value); setRubricReady(false); }}
           />
         </div>
 
@@ -214,15 +244,37 @@ export function AssignmentForm({
         允许补交（手工关闭仍然优先于补交设置）
       </label>
 
+      {!assignment ? (
+        <div className={styles.field}>
+          <label className={styles.label} htmlFor="assignment-create-file">作业文件</label>
+          <input id="assignment-create-file" type="file" accept=".pdf,.pptx,.docx"
+            onChange={(event) => {
+              setAttachmentFile(event.target.files?.[0] ?? null);
+              setRubricReady(false);
+            }} />
+          <p className={styles.hint}>创建时上传为作业附件；自动解析评分项需要文件不超过 1 MB。</p>
+          {attachmentFile ? <p className={styles.hint}>已选择：{attachmentFile.name}</p> : null}
+        </div>
+      ) : null}
+
       <div className={styles.rubricBlock}>
         <div className={styles.rubricHead}>
           <span className={styles.label}>评分标准</span>
-          <span className={mismatch ? styles.sumBad : styles.sum}>
+          <span className={mismatch && (!automaticRubric || rubricReady) ? styles.sumBad : styles.sum}>
             合计 {sum} / 总分 {Number.isFinite(total) ? totalScore : "—"}
           </span>
         </div>
 
-        <ul className={styles.rubricList}>
+        {!assignment ? <label className={styles.checkbox}>
+          <input type="checkbox" checked={automaticRubric}
+            onChange={(event) => { setAutomaticRubric(event.target.checked); setProblems([]); }} />
+          AI 自动解析评分项
+        </label> : null}
+        {automaticRubric && !rubricReady ? (
+          <p className={styles.hint}>选择作业文件后点击“AI 解析评分项”；查看建议并可修改，再创建任务。</p>
+        ) : null}
+
+        {(!automaticRubric || rubricReady) && <ul className={styles.rubricList}>
           {rubric.map((item, index) => (
             <li className={styles.rubricItem} key={item.key}>
               <span className={styles.rubricOrder}>{index + 1}</span>
@@ -263,17 +315,19 @@ export function AssignmentForm({
               </Button>
             </li>
           ))}
-        </ul>
+        </ul>}
 
-        <Button
+        {(!automaticRubric || rubricReady) && <Button
           variant="secondary"
           size="sm"
           disabled={rubric.length >= MAX_RUBRIC_ITEMS}
           onClick={() => setRubric((items) => [...items, newDraft()])}
         >
           添加评分项
-        </Button>
+        </Button>}
       </div>
+
+      {suggestionError ? <p className={styles.error} role="alert">{suggestionError}</p> : null}
 
       {problems.length > 0 ? (
         <ul className={styles.problems} role="alert">
@@ -290,8 +344,8 @@ export function AssignmentForm({
       ) : null}
 
       <div className={styles.footer}>
-        <Button variant="primary" onClick={submit} disabled={isPending}>
-          {isPending ? "保存中…" : assignment ? "保存修改" : "创建任务"}
+        <Button variant="primary" onClick={submit} disabled={isPending || suggesting}>
+          {suggesting ? "AI 解析中…" : isPending ? "保存中…" : assignment ? "保存修改" : automaticRubric && !rubricReady ? "AI 解析评分项" : "创建任务"}
         </Button>
         {onCancel ? (
           <Button variant="ghost" onClick={onCancel}>

@@ -52,5 +52,7 @@ node_modules/
 *.log
 .DS_Store
 temp/
+test-files/
+lesson-example/
 edu-ai-assistant.tar.gz
 edu-ai-base-images.tar

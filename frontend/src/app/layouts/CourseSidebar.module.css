@@ -136,6 +136,7 @@
 
 /* ------------------------------ 用户 ------------------------------ */
 .footer {
+  position: relative;
   margin-top: auto;
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) auto;
@@ -155,7 +156,12 @@
   font-weight: 650;
 }
 
+.userMenu { position: absolute; bottom: 58px; left: 8px; right: 8px; z-index: 2; padding: 6px; border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-surface); box-shadow: var(--shadow-soft); }
+.userMenu button { width: 100%; padding: 9px 12px; text-align: left; border-radius: 8px; }
+.userMenu button:hover { background: var(--color-surface-hover); }
+
 .userMeta {
+  text-align: left;
   display: flex;
   flex-direction: column;
   min-width: 0;

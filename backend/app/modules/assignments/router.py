@@ -10,10 +10,12 @@
 from __future__ import annotations
 
 import uuid
+import asyncio
 
 from fastapi import APIRouter, Request, status
 
 from app.core.pagination import Page, PaginationDep
+from app.core.deps import SettingsDep
 from app.core.request_body import (
     EMPTY_OBJECT_REQUEST_BODY,
     parse_required_object_body,
@@ -22,6 +24,7 @@ from app.core.request_body import (
 from app.core.schemas import ErrorResponse
 from app.db.session import SessionDep
 from app.modules.assignments import service
+from app.modules.assignments import rubric_suggestions
 from app.modules.assignments.deps import (
     ClosableAssignmentDep,
     CreatorCourseDep,
@@ -156,6 +159,27 @@ async def _detail(
 # --------------------------------------------------------------------------- #
 # 8.2 创建任务
 # --------------------------------------------------------------------------- #
+@assignments_router.post(
+    "/courses/{course_id}/assignments/rubric-suggestions",
+    response_model=rubric_suggestions.RubricSuggestionResponse,
+    summary="根据创建页的作业附件生成评分项建议",
+)
+async def suggest_assignment_rubric(
+    course_id: uuid.UUID,
+    payload: rubric_suggestions.RubricSuggestionRequest,
+    course: CreatorCourseDep,
+    session: SessionDep,
+    settings: SettingsDep,
+) -> rubric_suggestions.RubricSuggestionResponse:
+    # 权限检查已完成；模型调用前释放课程行锁和数据库连接。
+    await session.commit()
+    source = await asyncio.to_thread(rubric_suggestions.extract_source, payload, settings)
+    return await asyncio.to_thread(
+        rubric_suggestions.suggest_rubric,
+        payload=payload, source_text=source, settings=settings,
+    )
+
+
 @assignments_router.post(
     "/courses/{course_id}/assignments",
     status_code=status.HTTP_201_CREATED,

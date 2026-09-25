@@ -9,7 +9,7 @@
  */
 
 import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
 
 import { Button } from "@/components/Button/Button";
 import { Card } from "@/components/Card/Card";
@@ -38,6 +38,8 @@ import styles from "./AssignmentDetailPage.module.css";
 
 export function AssignmentDetailPage() {
   const { courseId, assignmentId } = useParams<{ courseId: string; assignmentId: string }>();
+  const location = useLocation();
+  const attachmentUploadError = (location.state as { attachmentUploadError?: string } | null)?.attachmentUploadError;
 
   const assignmentQuery = useAssignment(assignmentId);
   const courseQuery = useCourse(courseId);
@@ -167,6 +169,8 @@ export function AssignmentDetailPage() {
       </div>
 
       <AssignmentHeader assignment={assignment} actions={teacherActions} />
+
+      {attachmentUploadError ? <p className={styles.error} role="alert">{attachmentUploadError}</p> : null}
 
       {actionError ? (
         <p className={styles.error} role="alert">

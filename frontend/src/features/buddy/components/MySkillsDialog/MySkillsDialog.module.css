@@ -1,0 +1,17 @@
+.backdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 20px; background: rgb(17 24 39 / 40%); }
+.dialog { width: min(620px, 100%); max-height: 85vh; overflow: auto; padding: 24px; border-radius: 18px; background: var(--color-surface); box-shadow: var(--shadow-soft); }
+.header { display: flex; justify-content: space-between; gap: 20px; }
+.header h2 { margin: 0 0 6px; font-size: 22px; }
+.header p, .hint { color: var(--color-text-secondary); font-size: 13px; line-height: 1.6; }
+.header button { align-self: start; font-size: 26px; }
+.upload { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 22px; }
+.upload label { display: grid; gap: 7px; font-size: 13px; }
+.upload select, .upload input { min-height: 36px; max-width: 280px; }
+.list { margin-top: 22px; }
+.list h3 { font-size: 16px; }
+.item { display: flex; justify-content: space-between; gap: 16px; padding: 13px 0; border-top: 1px solid var(--color-border); }
+.item strong, .item small { display: block; }
+.item small, .item p { color: var(--color-text-secondary); font-size: 12px; }
+.item p { margin: 6px 0 0; }
+.item button { align-self: center; color: var(--color-danger-ink); }
+.error { color: var(--color-danger-ink); }

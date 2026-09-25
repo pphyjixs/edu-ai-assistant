@@ -39,7 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.config import Settings
 from app.core.time import utc_now
 from app.modules.agent import context as context_module
-from app.modules.agent import generation_ai, orchestration, skills
+from app.modules.agent import generation_ai, orchestration, skills, user_skills
 from app.modules.agent import repository as repo
 from app.modules.agent.models import (
     EVIDENCE_LEVEL_MAX_LENGTH,
@@ -141,6 +141,8 @@ class ClaimedAgentRun:
     user_role: UserRole = UserRole.STUDENT
     #: ``options.output_language``，为空表示"与用户输入同语言"
     output_language: str | None = None
+    selected_skill_ids: list[str] | None = None
+    selected_skill_names: list[str] | None = None
     #: 第几次领取（1 起）
     attempt: int = 1
 
@@ -254,6 +256,8 @@ async def claim_next(
                 input_message_id=run.input_message_id,
                 user_role=user_role,
                 output_language=raw_language if isinstance(raw_language, str) else None,
+                selected_skill_ids=[str(item) for item in options.get("selected_skill_ids", [])],
+                selected_skill_names=[str(item) for item in options.get("selected_skill_names", [])],
                 attempt=job.attempts,
             )
             await session.commit()
@@ -601,7 +605,37 @@ async def run_job(
             settings=settings,
             question=claimed.question,
         )
-        registry, catalog = _tooling()
+        _, system_catalog = _tooling()
+        catalog, selected_names, default_names = user_skills.catalog_for_run(
+            settings, claimed.user_id, system_catalog, claimed.selected_skill_ids or [],
+            claimed.question,
+        )
+        explicitly_selected_system = [
+            meta for name in (claimed.selected_skill_names or [])
+            if (meta := system_catalog.get(name)) is not None and catalog.get(name) is None
+        ]
+        if explicitly_selected_system:
+            catalog = skills.SkillCatalog(
+                root=catalog.root,
+                skills=(*catalog.skills, *explicitly_selected_system),
+                rejected=catalog.rejected,
+            )
+        selected_names.extend(
+            name for name in (claimed.selected_skill_names or [])
+            if system_catalog.get(name) is not None and catalog.get(name) is not None
+        )
+        registry = build_default_registry(catalog)
+        catalog_text = skills.render_catalog(catalog)
+        if default_names:
+            catalog_text += "\n以下场景优先加载用户本人上传的 Skill：" + "；".join(
+                f"{user_skills.CATEGORIES[category]} → load_skill({{'name':'{name}'}})"
+                for category, name in default_names.items()
+            ) + "。"
+        if selected_names:
+            catalog_text += (
+                "\n用户本次明确选择的 Skill：" + "、".join(selected_names)
+                + "。请先调用 load_skill 加载这些 Skill，再完成用户请求。"
+            )
 
         try:
             if ai_client_factory is not None:
@@ -618,7 +652,7 @@ async def run_job(
                 question=claimed.question,
                 no_evidence_message=no_evidence_message,
                 output_language=claimed.output_language,
-                skills_catalog=skills.render_catalog(catalog),
+                skills_catalog=catalog_text,
                 client=ai_client,  # type: ignore[arg-type]
                 base_url=settings.ai_base_url,
                 api_key=settings.ai_api_key,

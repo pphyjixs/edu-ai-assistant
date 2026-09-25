@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import pytest
 from sqlalchemy import text
 
 from tests.integration.test_agent_tool_runs import (
@@ -43,8 +44,9 @@ def _reset_job_for_retry(pg_sync_engine, run_id: str) -> None:
         )
 
 
+@pytest.mark.parametrize("lost_audit_step", [False, True])
 def test_retry_after_write_does_not_duplicate_practice_set(
-    client, fake_storage, pg_session_factory, make_settings, pg_sync_engine
+    client, fake_storage, pg_session_factory, make_settings, pg_sync_engine, lost_audit_step
 ) -> None:
     """Worker 在写工具完成后重试：PracticeSet 数量仍为 1（开发方案 10.2 / 11.2）。"""
     course_id, teacher, material_id = teacher_with_ready_material(
@@ -76,6 +78,13 @@ def test_retry_after_write_does_not_duplicate_practice_set(
     assert _rows(pg_sync_engine, "SELECT count(*) AS t FROM practice_sets")[0]["t"] == 1
 
     # 第二次执行：模型重新发起**同一个**语义请求（call id 不同，参数相同）
+    if lost_audit_step:
+        # 模拟领域事务已提交，但 Worker 在记录步骤前中断。
+        with pg_sync_engine.begin() as connection:
+            connection.execute(
+                text("DELETE FROM agent_run_steps WHERE run_id = :run_id"),
+                {"run_id": run["id"]},
+            )
     _reset_job_for_retry(pg_sync_engine, run["id"])
 
     second_script = AgentScript(

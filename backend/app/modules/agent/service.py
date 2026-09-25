@@ -38,6 +38,7 @@ from app.core.errors import (
 from app.core.time import utc_now
 from app.modules.agent import context as context_module
 from app.modules.agent import repository as repo
+from app.modules.agent import skills, user_skills
 from app.modules.agent.deps import RunScope
 from app.modules.agent.models import AgentRun
 from app.modules.agent.schemas import (
@@ -131,6 +132,18 @@ async def create_run(
     # 反过来会让不可见的对象被组合校验提前暴露成 422 而不是 404。
     _require_allowed_combination(request)
 
+    if request.options and request.options.selected_skill_ids:
+        try:
+            user_skills.assert_owned_skill_ids(
+                settings, user.id, request.options.selected_skill_ids
+            )
+        except ValueError as exc:
+            raise ResourceNotFoundError(str(exc)) from exc
+    if request.options and request.options.selected_skill_names:
+        available = set(skills.load_skill_catalog().names())
+        if any(name not in available for name in request.options.selected_skill_names):
+            raise ResourceNotFoundError("所选系统 Skill 不存在")
+
     fingerprint = request_fingerprint(request)
 
     # 幂等：同一用户的同一 client_request_id 返回既有 Run（文档 6.3）
@@ -189,7 +202,7 @@ async def create_run(
         entity_id=entity_id,
         section_id=section_id,
         selected_text=selected_text,
-        options=request.options.model_dump(exclude_none=True) if request.options else {},
+        options=request.options.model_dump(mode="json", exclude_none=True) if request.options else {},
         now=created_at,
     )
 

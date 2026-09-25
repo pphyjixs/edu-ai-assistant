@@ -9,6 +9,11 @@
   padding: var(--space-4);
 }
 
+/* 行式列表容器：内边距由行自己提供 */
+.flush {
+  padding: 0;
+}
+
 .interactive {
   transition:
     transform var(--duration-fast) var(--ease-out),

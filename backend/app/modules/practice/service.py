@@ -163,6 +163,7 @@ async def create_practice_set(
     user: User,
     payload: PracticeGenerateRequest,
     now: datetime | None = None,
+    set_id: uuid.UUID | None = None,
 ) -> tuple[PracticeSet, object]:
     """生成的写入阶段（契约 7.2）：创建练习记录与任务。
 
@@ -190,7 +191,7 @@ async def create_practice_set(
         raise MaterialNotReadyError()
 
     created_at = now or utc_now()
-    set_id = uuid.uuid4()
+    set_id = set_id or uuid.uuid4()
     practice_set = repo.create_set(
         session,
         set_id=set_id,

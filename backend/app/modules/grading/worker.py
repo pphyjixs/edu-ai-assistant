@@ -88,6 +88,18 @@ class SubmissionSnapshot:
     content_type: str
     size: int
     sha256: str
+    assignment_title: str
+    assignment_description: str
+    attachments: list["AssignmentFileSnapshot"]
+
+
+@dataclass(slots=True)
+class AssignmentFileSnapshot:
+    filename: str
+    object_key: str
+    content_type: str
+    size: int
+    sha256: str
 
 
 def _safe_error(exc: BaseException) -> str:
@@ -198,6 +210,14 @@ async def load_snapshot(
         items = await assignments_repo.list_rubric_items(
             session, rubric_version_id=submission.rubric_version_id
         )
+        assignment = await assignments_repo.get_assignment_by_id(
+            session, submission.assignment_id
+        )
+        if assignment is None:
+            return None
+        attachments = await assignments_repo.list_completed_attachments(
+            session, assignment_id=submission.assignment_id
+        )
         snapshot = SubmissionSnapshot(
             submission_id=submission.id,
             course_id=submission.course_id,
@@ -206,6 +226,12 @@ async def load_snapshot(
             content_type=submission.content_type,
             size=submission.size,
             sha256=submission.sha256,
+            assignment_title=assignment.title,
+            assignment_description=assignment.description,
+            attachments=[AssignmentFileSnapshot(
+                filename=item.filename, object_key=item.object_key,
+                content_type=item.content_type, size=item.size, sha256=item.sha256,
+            ) for item in attachments],
         )
         rubric = [_rubric_snapshot(item) for item in items]
     return snapshot, rubric
@@ -603,6 +629,37 @@ async def run_job(
         if aborted["flag"]:
             return
 
+        # 附件与作业说明给出评价要求；报告本身仍是得分证据的唯一来源。
+        assignment_parts = [
+            f"任务：{snapshot.assignment_title}",
+            f"教师说明：{snapshot.assignment_description or '未填写'}",
+        ]
+        attachment_chars = 0
+        for attachment in snapshot.attachments:
+            try:
+                attachment_data = await asyncio.to_thread(
+                    storage.get_object_verified, attachment.object_key,
+                    expected_size=attachment.size,
+                    expected_sha256_hex=attachment.sha256,
+                )
+                units = await asyncio.to_thread(
+                    extraction.extract_units, attachment_data,
+                    content_type=attachment.content_type,
+                )
+            except (StorageObjectNotFoundError, StorageVerificationError,
+                    StorageUnavailableError, extraction.ExtractError) as exc:
+                await fail(f"作业附件 {attachment.filename} 无法读取或解析：{type(exc).__name__}")
+                return
+            text = "\n".join(f"[位置 {location}] {body}" for location, body in units)
+            attachment_chars += len(text)
+            if attachment_chars > 40_000:
+                await fail("作业附件文字总量超过批改上限（40000 字符）")
+                return
+            assignment_parts.append(f"附件 {attachment.filename}：\n{text}")
+
+        if aborted["flag"]:
+            return
+
         # ---- 3) 事务外调用模型 ----
         ai_client: object | None = None
         try:
@@ -612,6 +669,7 @@ async def run_job(
                 grading_ai.grade_submission,
                 rubric=rubric,
                 report=report,
+                assignment_context="\n\n".join(assignment_parts),
                 base_url=settings.ai_base_url,
                 api_key=settings.ai_api_key,
                 model=settings.ai_model,

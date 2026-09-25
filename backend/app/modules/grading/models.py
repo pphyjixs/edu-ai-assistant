@@ -478,19 +478,19 @@ class GradeItem(Base):
     #: AI 判断说明
     ai_comment: Mapped[str] = mapped_column(Text, nullable=False)
 
-    #: 证据定位：逐字摘自报告原文的摘录（服务端已核对存在于声明的位置区间内）
-    evidence_quote: Mapped[str] = mapped_column(String(EVIDENCE_MAX_LENGTH), nullable=False)
+    #: 正分必须有报告原文证据；零分且报告完全缺失该项时四个证据字段为空。
+    evidence_quote: Mapped[str | None] = mapped_column(String(EVIDENCE_MAX_LENGTH), nullable=True)
 
     #: 证据来源类型：由报告 MIME 在服务端确定（``PDF_PAGE`` / ``DOCX_PARAGRAPH``），
     #: 模型不能自行决定
-    evidence_source_type: Mapped[str] = mapped_column(
-        String(EVIDENCE_SOURCE_MAX_LENGTH), nullable=False
+    evidence_source_type: Mapped[str | None] = mapped_column(
+        String(EVIDENCE_SOURCE_MAX_LENGTH), nullable=True
     )
 
     #: 证据在来源中的位置区间（从 1 开始，结束不小于起点）
-    evidence_location_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    evidence_location_start: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    evidence_location_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    evidence_location_end: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     #: 错误类型（模型给出的分类，可为空字符串）
     error_type: Mapped[str] = mapped_column(

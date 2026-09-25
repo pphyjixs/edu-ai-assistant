@@ -4,9 +4,12 @@
  * 结构上对齐 DEVELOPMENT_SPEC 第 5 节：仪表盘与课程 Workspace 是两条
  * 并列的布局路由，课程内的所有页面共用同一个 CourseWorkspaceLayout。
  *
- * 已接真实后端的模块（课程、资料、问答、练习）用真实页面；
- * 后端尚未实现的模块（作业、成绩、AI 批改）落到统一的占位页，
- * 明确标出「属于哪个模块、下一阶段实现」，不留点进去就白屏的死链。
+ * 所有入口都指向真实页面：课程、资料、问答、练习、实验任务、提交与批改、
+ * 跨课程任务（``/tasks``）。仪表盘区域的「学习空间」已移除——它依赖的
+ * 跨课程答题记录聚合接口不存在，与其留一个点进去白屏的占位页，不如砍掉入口。
+ *
+ * ``pages/PlaceholderPage.tsx`` 仍保留给将来的新模块使用，
+ * 但**不要**为已有接口的模块放占位页。
  */
 
 import type { ReactNode } from "react";
@@ -17,7 +20,6 @@ import { RoleGuard } from "./guards/RoleGuard";
 import { CourseWorkspaceLayout } from "./layouts/CourseWorkspaceLayout";
 import { DashboardLayout } from "./layouts/DashboardLayout";
 import { NotFoundPage } from "./pages/NotFoundPage";
-import { PlaceholderPage } from "./pages/PlaceholderPage";
 import { AssignmentDetailPage } from "@/features/assignments/pages/AssignmentDetailPage";
 import { AssignmentsPage } from "@/features/assignments/pages/AssignmentsPage";
 import { LoginPage } from "@/features/auth/pages/LoginPage";
@@ -34,6 +36,7 @@ import { MaterialReaderPage } from "@/features/materials/pages/MaterialReaderPag
 import { MaterialsPage } from "@/features/materials/pages/MaterialsPage";
 import { LearnPage } from "@/features/practice/pages/LearnPage";
 import { PracticePage } from "@/features/practice/pages/PracticePage";
+import { TasksPage } from "@/features/tasks/pages/TasksPage";
 import { hasStoredTokens } from "@/features/auth/hooks/useCurrentUser";
 
 /** 登录页：已登录时直接回到目标页，避免出现「登录后又看到登录页」 */
@@ -79,24 +82,8 @@ export function AppRoutes() {
         {/* 首页中央会话：消息在中央显示，不弹出右侧抽屉（开发方案 4.1） */}
         <Route path="/chats/:sessionId" element={<HomeChatPage />} />
         <Route path="/courses" element={<CoursesPage />} />
-        <Route
-          path="/tasks"
-          element={
-            <PlaceholderPage
-              title="任务"
-              description="作业与提交相关的任务列表依赖 assignments 模块，后端尚未实现，下一阶段补齐。首页「今日待办」目前使用示例数据。"
-            />
-          }
-        />
-        <Route
-          path="/workspace"
-          element={
-            <PlaceholderPage
-              title="学习空间"
-              description="个人学习空间需要跨课程的答题记录聚合接口，当前契约没有提供，下一阶段与后端确认后再实现。"
-            />
-          }
-        />
+        {/* 任务：跨课程待办列表，与首页「今日待办」共用同一份数据源 */}
+        <Route path="/tasks" element={<TasksPage />} />
       </Route>
 
       {/* ------------------------ 课程 WorkSpace ------------------------ */}

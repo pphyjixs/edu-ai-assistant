@@ -5,7 +5,7 @@ URI 或资源名：输入模型的 ``pattern`` 约束 + 目录查找共同保证
 
 正文的注入策略由 orchestrator 负责：
 ``load_skill`` 只负责"取到正文并声明加载了哪个 Skill"，正文在**下一轮**作为
-受信任的 Skill 指令注入一次（``app.modules.agent.skills`` 的 8 KiB / 16 KiB 预算
+受信任的 Skill 指令注入一次（``app.modules.agent.skills`` 的 32 KiB / 64 KiB 预算
 也在那里统一执行）。
 """
 

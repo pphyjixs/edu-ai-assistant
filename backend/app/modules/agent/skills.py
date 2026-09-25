@@ -2,8 +2,8 @@
 
 范围刻意很小：
 
-- Skill 只来自仓库内**受信任目录** ``backend/app/agent_skills/``，
-  不支持用户上传、远程包和任意文件读取；
+- 本模块扫描给定的 Skill 根目录。系统 Skill 在
+  ``backend/app/agent_skills/``；个人 Skill 由 ``user_skills`` 在持久化目录管理；
 - 目录在 Worker 启动时扫描并冻结（本模块提供扫描函数，进程内缓存由调用方决定）；
 - 对模型只暴露 ``load_skill(name)``，不做分页 ``list``——
   可用 Skill 已在 system prompt 中列出且数量很少；
@@ -13,10 +13,10 @@
 安全校验（非法 Skill 在启动时记录错误并**禁用**，不影响其他 Skill）：
 
 - ``name`` 与目录名一致，且匹配 ``[a-z0-9-]{1,64}``；
-- 名称不能重复；``description <= 300`` 字符；正文 UTF-8 且不超过 8 KiB；
+- 名称不能重复；``description <= 300`` 字符；正文 UTF-8 且不超过 32 KiB；
 - frontmatter 未知字段直接拒绝；
 - 只按注册项解析后的绝对路径读取，且解析后必须仍在 Skill 根目录内；
-- 目录展示总长度不超过 4 KiB，超限公平截断 description 并记录遗漏数量。
+- 目录展示总长度不超过 16 KiB，超限公平截断 description 并记录遗漏数量。
 
 :mod:`frontmatter` 解析刻意手写（只支持 ``key: value``），
 避免为一个极小的子集引入 YAML 依赖。
@@ -38,13 +38,13 @@ SKILL_NAME_RE = re.compile(r"^[a-z0-9-]{1,64}$")
 DESCRIPTION_MAX_CHARS = 300
 
 #: 单个 Skill 正文的字节上限
-SKILL_BODY_MAX_BYTES = 8 * 1024
+SKILL_BODY_MAX_BYTES = 32 * 1024
 
 #: 一个 Run 内全部已加载 Skill 正文的字节上限
-LOADED_SKILLS_TOTAL_MAX_BYTES = 16 * 1024
+LOADED_SKILLS_TOTAL_MAX_BYTES = 64 * 1024
 
 #: system prompt 中 Skill 目录的总字节上限
-CATALOG_MAX_BYTES = 4 * 1024
+CATALOG_MAX_BYTES = 16 * 1024
 
 #: 允许出现在 frontmatter 里的字段；其余一律拒绝
 _ALLOWED_FRONTMATTER_KEYS = frozenset({"name", "description", "version", "enabled"})
@@ -53,8 +53,14 @@ _SKILL_FILENAME = "SKILL.md"
 
 
 def default_skills_root() -> Path:
-    """生产 Skill 根目录：``backend/app/agent_skills``。"""
-    return Path(__file__).resolve().parents[1] / "agent_skills"
+    """生产 Skill 根目录：``backend/app/agent_skills``。
+
+    本文件位于 ``app/modules/agent/skills.py``，因此要向上**三级**才是 ``app/``：
+    ``parents[0]``=agent、``parents[1]``=modules、``parents[2]``=app。
+    目录约定见 ``docs/home-chat-agent-tools-development-plan.md`` 第 6 节
+    （``backend/app/agent_skills/<skill-name>/SKILL.md``）。
+    """
+    return Path(__file__).resolve().parents[2] / "agent_skills"
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +71,7 @@ class SkillMeta:
     description: str
     version: str
     directory: Path
+    root: Path | None = None
 
     @property
     def path(self) -> Path:
@@ -167,6 +174,8 @@ def _load_one(directory: Path, *, root: Path) -> SkillMeta:
     version = version.strip()
     if not version:
         raise ValueError("version 不能为空")
+    if len(version) > 64:
+        raise ValueError("version 超过 64 字符")
 
     enabled = (fields.get("enabled") or "true").strip().lower()
     if enabled not in {"true", "false"}:
@@ -184,6 +193,7 @@ def _load_one(directory: Path, *, root: Path) -> SkillMeta:
         description=description,
         version=version,
         directory=resolved.parent,
+        root=root,
     )
 
 
@@ -207,7 +217,7 @@ def load_skill_catalog(root: Path | None = None) -> SkillCatalog:
             continue
         try:
             meta = _load_one(entry, root=base)
-        except ValueError as exc:
+        except (OSError, UnicodeError, ValueError) as exc:
             rejected.append((entry.name, str(exc)))
             logger.warning("Skill %s 无效，已禁用：%s", entry.name, exc)
             continue
@@ -230,12 +240,19 @@ def read_skill_instructions(meta: SkillMeta, *, catalog: SkillCatalog) -> str:
     :raises ValueError: 路径越界、文件消失或正文超限。
     """
     resolved = meta.path.resolve()
-    if not resolved.is_relative_to(catalog.root.resolve()):
+    if not resolved.is_relative_to((meta.root or catalog.root).resolve()):
         raise ValueError("Skill 路径越界")
     if not resolved.is_file():
         raise ValueError("Skill 文件不存在")
     raw = resolved.read_text(encoding="utf-8")
-    _, body = _parse_frontmatter(raw)
+    fields, body = _parse_frontmatter(raw)
+    if (
+        fields.get("name", "").strip() != meta.name
+        or fields.get("version", "").strip() != meta.version
+    ):
+        raise ValueError("Skill 元数据在目录扫描后已变化")
+    if (fields.get("enabled") or "true").strip().lower() != "true":
+        raise ValueError("Skill 已禁用")
     if len(body.encode("utf-8")) > SKILL_BODY_MAX_BYTES:
         raise ValueError("Skill 正文超限")
     return body.strip()
@@ -244,42 +261,58 @@ def read_skill_instructions(meta: SkillMeta, *, catalog: SkillCatalog) -> str:
 def render_catalog(catalog: SkillCatalog) -> str:
     """把 Skill 目录渲染成提示词片段（总长不超过 :data:`CATALOG_MAX_BYTES`，UTF-8）。
 
-    超限时**公平截断**每条 description（而不是直接丢掉后面的 Skill），
-    并在末尾说明省略了多少条。
+    超限时**公平截断**每条 description（而不是丢掉后面的 Skill），并记录被截断的
+    条数与**未出现在提示词里的 Skill 数量**（公平截断下恒为 0，日志仍然写明，
+    便于与"直接截断后面几条"的实现区分开）。
     """
     if len(catalog) == 0:
         return "当前没有已启用的 Skill。"
 
-    def render(desc_limit: int) -> str:
+    def render(desc_limit: int) -> tuple[str, int]:
         lines = []
+        shortened = 0
         for skill in catalog.skills:
             description = skill.description
             if desc_limit >= 0 and len(description) > desc_limit:
                 description = description[:desc_limit] + "…"
+                shortened += 1
             lines.append(f"- {skill.name}：{description}（version: {skill.version}）")
-        return "\n".join(lines)
+        return "\n".join(lines), shortened
 
     # 先按原样渲染；超限则逐步收紧 description 长度
-    text = render(-1)
+    text, shortened = render(-1)
     if len(text.encode("utf-8")) <= CATALOG_MAX_BYTES:
         return text
 
     for limit in (120, 80, 60, 40, 24, 12, 0):
-        text = render(limit)
+        text, shortened = render(limit)
         if len(text.encode("utf-8")) <= CATALOG_MAX_BYTES:
             logger.warning(
-                "Skill 目录超出 %s 字节，已截断 description 到 %s 字符",
+                "Skill 目录超出 %s 字节：已截断 %s/%s 条 description（截到 %s 字符），"
+                "未出现的 Skill 数=0",
                 CATALOG_MAX_BYTES,
+                shortened,
+                len(catalog),
                 limit,
             )
             return text
 
-    # 极端情况（Skill 名称本身就超预算）：只保留名称，并说明记录数
-    names = "、".join(skill.name for skill in catalog.skills)
+    # 极端情况：名称总量也可能超预算；逐个加入，保证返回值仍受字节限制。
+    prefix = "（Skill 目录过长，仅列出部分名称）"
+    names: list[str] = []
+    for skill in catalog.skills:
+        candidate = prefix + "、".join([*names, skill.name])
+        if len(candidate.encode("utf-8")) > CATALOG_MAX_BYTES:
+            break
+        names.append(skill.name)
+    omitted = len(catalog) - len(names)
     logger.warning(
-        "Skill 目录 %s 条超出 %s 字节，已退化为仅列名称", len(catalog), CATALOG_MAX_BYTES
+        "Skill 目录 %s 条超出 %s 字节，已退化为仅列名称（未出现的 Skill 数=%s）",
+        len(catalog),
+        CATALOG_MAX_BYTES,
+        omitted,
     )
-    return f"（Skill 目录过长，仅列出名称）{names}"
+    return prefix + "、".join(names)
 
 
 __all__ = [

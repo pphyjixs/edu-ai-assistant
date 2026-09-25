@@ -31,6 +31,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.modules.agent.router import agent_router
+from app.modules.agent.user_skills_router import router as user_skills_router
 from app.modules.assignments.attachments_router import attachments_router
 from app.modules.assignments.router import assignments_router
 from app.modules.auth.router import auth_router, me_router
@@ -72,6 +73,7 @@ api_router.include_router(attachments_router)
 
 # ------------------------------ agent ----------------------------------
 api_router.include_router(agent_router)
+api_router.include_router(user_skills_router)
 
 # ------------------------------- grading -------------------------------
 api_router.include_router(grading_router)

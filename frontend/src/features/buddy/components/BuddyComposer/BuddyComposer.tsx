@@ -14,6 +14,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/Button/Button";
 import { Icon } from "@/components/Icon/Icon";
+import { SkillPicker } from "@/features/buddy/components/SkillPicker/SkillPicker";
 import {
   useActiveBuddyRun,
   useIsBuddySending,
@@ -39,6 +40,7 @@ export function BuddyComposer({
   variant = "panel",
 }: BuddyComposerProps) {
   const [value, setValue] = useState("");
+  const [selectedSkillId, setSelectedSkillId] = useState("");
   const send = useSendBuddyRun();
   const isSending = useIsBuddySending();
   const { error, run } = useActiveBuddyRun();
@@ -57,7 +59,7 @@ export function BuddyComposer({
     if (!text || blocked) return;
     // 输入框里的自由提问是 ASK；带上下文的动作按钮另有 action（见 model/actions.ts）
     try {
-      await send.mutateAsync({ input: text, action: "ASK" });
+      await send.mutateAsync({ input: text, action: "ASK", selectedSkillId: selectedSkillId || undefined });
       setValue("");
     } catch {
       // 发送失败时**保留草稿**：错误由 useActiveBuddyRun 暴露在输入框上方，
@@ -101,6 +103,7 @@ export function BuddyComposer({
           <Icon name="context" size={13} />
           {blocked ? "正在生成回答…" : "当前页面"}
         </span>
+        <SkillPicker value={selectedSkillId} onChange={setSelectedSkillId} disabled={blocked} />
         <Button
           variant="primary"
           size="sm"

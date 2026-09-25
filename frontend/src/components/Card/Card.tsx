@@ -11,12 +11,20 @@ export type CardProps = HTMLAttributes<HTMLDivElement> & {
   interactive?: boolean;
   /** 紧凑内边距，用于列表行式卡片 */
   compact?: boolean;
+  /**
+   * 去掉内边距，给「行式列表容器」用。
+   *
+   * 行的左右内边距由行自己决定，容器只负责圆角与边框；否则行内 hover 背景
+   * 永远铺不满卡片两侧，会露出白边。
+   */
+  flush?: boolean;
   children?: ReactNode;
 };
 
 export function Card({
   interactive = false,
   compact = false,
+  flush = false,
   className,
   children,
   ...rest
@@ -24,7 +32,13 @@ export function Card({
   return (
     <div
       {...rest}
-      className={cn(styles.card, interactive && styles.interactive, compact && styles.compact, className)}
+      className={cn(
+        styles.card,
+        interactive && styles.interactive,
+        compact && styles.compact,
+        flush && styles.flush,
+        className,
+      )}
     >
       {children}
     </div>

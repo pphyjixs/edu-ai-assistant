@@ -11,7 +11,7 @@
 必须满足的边界（开发方案 5.6）：
 
 ================================  =====
-每 Run 模型轮次                    4
+每 Run 模型轮次                    6
 每 Run 工具总调用                  6
 每 Run 写工具成功次数              1
 单个工具给模型的 JSON              12 KiB
@@ -75,7 +75,7 @@ logger = logging.getLogger("app.agent.orchestration")
 ORCHESTRATOR_VERSION = "agent-tools-v1"
 
 #: 每 Run 最大模型轮次
-MAX_MODEL_ROUNDS = 4
+MAX_MODEL_ROUNDS = 6
 #: 每 Run 最大工具调用次数
 MAX_TOOL_CALLS = 6
 #: 每 Run 最多成功执行的写工具次数
@@ -231,6 +231,21 @@ def _fit_payload(payload: dict, max_bytes: int) -> tuple[dict, bool]:
             candidate = {**payload, "evidence": kept}
             if len(_dumps(candidate).encode("utf-8")) <= max_bytes:
                 return candidate, True
+        payload = {**payload, "evidence": []}
+
+    # 资料/作业列表存放在 data 中；过长时保留前面的可见条目，
+    # 不能把整个列表退化成一句「结果过大」，否则模型无法继续选资料。
+    data = payload.get("data")
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if not isinstance(value, list) or not value:
+                continue
+            kept = list(value)
+            while kept:
+                kept.pop()
+                candidate = {**payload, "data": {**data, key: kept}, "truncated": True}
+                if len(_dumps(candidate).encode("utf-8")) <= max_bytes:
+                    return candidate, True
 
     # 连去掉证据都放不下：只保留状态与错误，明确标注被截断
     fallback: dict[str, Any] = {
@@ -240,6 +255,12 @@ def _fit_payload(payload: dict, max_bytes: int) -> tuple[dict, bool]:
     }
     if payload.get("error") is not None:
         fallback["error"] = payload["error"]
+    if len(_dumps(fallback).encode("utf-8")) > max_bytes:
+        fallback = {
+            "ok": payload.get("ok", False),
+            "truncated": True,
+            "error": {"code": "RESULT_TRUNCATED", "message": "工具结果过大。"},
+        }
     return fallback, True
 
 
@@ -309,10 +330,18 @@ def _step_response_payload(result: ToolResult, blocks: list[ContextBlock]) -> di
 
     证据是**扁平结构**（``ref`` 与各字段同级），这样 :func:`_fit_payload`
     能按 ``text`` 精确裁剪，而不是整条丢弃。
+
+    ``load_skill`` 只保留名称与版本，**不落 Skill 正文**（开发方案 7.1）：
+    正文已经注入到提示词里，审计表不需要再存一份最多 32 KiB 的说明文本。
     """
+    data = dict(result.data)
+    if "instructions" in data:
+        data.pop("instructions")
+        data["instructions_loaded"] = True
+
     return {
         "ok": result.ok,
-        "data": dict(result.data),
+        "data": data,
         "artifacts": [item.model_dump(mode="json") for item in result.artifacts],
         "error": result.error.model_dump(mode="json") if result.error else None,
         "loaded_skills": list(result.loaded_skills),
@@ -449,6 +478,30 @@ def _loaded_skills_text(state: _LoopState) -> str:
 
 def _skills_bytes(loaded: dict[str, str]) -> int:
     return sum(len(body.encode("utf-8")) for body in loaded.values())
+
+
+def _accept_loaded_skill(result: ToolResult, state: _LoopState) -> ToolResult:
+    """按本 Run 的预算恢复 Skill 指令；审计与 tool message 都不携带正文。"""
+    if not result.ok or not result.loaded_skills:
+        return result
+    skill_name = result.loaded_skills[0]
+    body = str(result.data.get("instructions") or "")
+    if not body:
+        return ToolResult.failure(ToolErrorCode.SKILL_NOT_FOUND, "Skill 正文当前不可用。")
+    if skill_name in state.loaded_skills:
+        return result.model_copy(
+            update={"data": {**result.data, "already_loaded": True, "instructions": ""}}
+        )
+    if (
+        _skills_bytes(state.loaded_skills) + len(body.encode("utf-8"))
+        > LOADED_SKILLS_TOTAL_MAX_BYTES
+    ):
+        return ToolResult.failure(
+            ToolErrorCode.SKILL_BUDGET_EXCEEDED,
+            "已加载的工作流说明总量已达上限，无法再加载新的 Skill。",
+        )
+    state.loaded_skills[skill_name] = body
+    return result
 
 
 def _merge_artifacts(state: _LoopState, artifacts: list[AgentArtifact]) -> None:
@@ -661,7 +714,10 @@ def _append_tool_message(
 ) -> None:
     """按 ``tool_call_id`` 回传工具结果，并执行累计字节预算。"""
     remaining = max(0, TOOL_RESULTS_TOTAL_MAX_BYTES - state.result_bytes_used)
-    budget = min(TOOL_RESULT_MAX_BYTES, remaining) if remaining > 0 else 512
+    # 为本 Run 尚可能发生的调用各留 256 字节，避免预算耗尽后额外回传
+    # 512 字节，突破累计硬上限。
+    reserve = (MAX_TOOL_CALLS - state.tool_calls_used) * 256
+    budget = min(TOOL_RESULT_MAX_BYTES, max(256, remaining - reserve))
     fitted, truncated = _fit_payload(payload, budget)
     if truncated:
         fitted["truncated"] = True
@@ -747,6 +803,7 @@ async def _handle_tool_call(
         )
         return
 
+    state.invalid_arguments = 0
     request_json = {"arguments": args.model_dump(mode="json")}
 
     # ------------------------- 权限与调用策略 ------------------------- #
@@ -777,6 +834,20 @@ async def _handle_tool_call(
         )
     if existing is not None and existing.status == StepStatus.SUCCEEDED.value:
         replayed, pairs = _replay_from_step(existing)
+        if spec.name == "load_skill":
+            # 审计步骤刻意不保存正文；重放时必须从受信任目录重新读取，
+            # 否则下一轮 system prompt 会静默丢失已经加载的 Skill。
+            if replayed.loaded_skills != [args.name]:
+                fresh = ToolResult.failure(ToolErrorCode.SKILL_NOT_FOUND, "Skill 调用参数与已记录的结果不一致。")
+            else:
+                try:
+                    fresh = await spec.handler(ctx, args)
+                except Exception:  # noqa: BLE001 - 与正常工具执行相同的安全错误边界
+                    logger.exception("Skill 重放读取失败（run=%s）", ctx.run_id)
+                    fresh = ToolResult.failure(ToolErrorCode.INTERNAL, "Skill 当前不可用。")
+            if fresh.ok and fresh.data.get("version") != replayed.data.get("version"):
+                fresh = ToolResult.failure(ToolErrorCode.SKILL_NOT_FOUND, "Skill 版本已变化，请重新发起对话。")
+            replayed = _accept_loaded_skill(fresh, state)
         blocks = [ledger.register(ref, item) for ref, item in pairs if ref]
         if spec.side_effect is ToolSideEffect.WRITE:
             state.write_calls_used += 1
@@ -791,11 +862,13 @@ async def _handle_tool_call(
         state.steps.append(
             AgentStepRecord(
                 order=existing.step_order,
-                kind=StepKind.TOOL_CALL.value,
+                kind=(
+                    StepKind.SKILL_LOAD if spec.name == "load_skill" else StepKind.TOOL_CALL
+                ).value,
                 call_id=step_key,
                 name=spec.name,
-                status=StepStatus.SUCCEEDED.value,
-                error_code=None,
+                status=(StepStatus.SUCCEEDED if replayed.ok else StepStatus.FAILED).value,
+                error_code=replayed.error.code if replayed.error else None,
             )
         )
         _append_tool_message(messages, call, payload, state)
@@ -830,24 +903,9 @@ async def _handle_tool_call(
 
     # ---------------------- Skill 预算与一次性注入 ---------------------- #
     if spec.name == "load_skill" and result.ok and result.loaded_skills:
-        skill_name = result.loaded_skills[0]
-        body = str(result.data.get("instructions") or "")
-        if skill_name in state.loaded_skills:
-            result = result.model_copy(
-                update={
-                    "data": {**result.data, "already_loaded": True, "instructions": ""}
-                }
-            )
-        elif _skills_bytes(state.loaded_skills) + len(body.encode("utf-8")) > (
-            LOADED_SKILLS_TOTAL_MAX_BYTES
-        ):
-            result = ToolResult.failure(
-                ToolErrorCode.SKILL_BUDGET_EXCEEDED,
-                "已加载的工作流说明总量已达上限，无法再加载新的 Skill。",
-            )
+        result = _accept_loaded_skill(result, state)
+        if not result.ok:
             blocks = []
-        else:
-            state.loaded_skills[skill_name] = body
 
     payload = _model_payload(
         result,
@@ -922,7 +980,7 @@ async def _finish_call(
     finished_at = utc_now()
     record = await _persist_step(
         ctx,
-        kind=StepKind.TOOL_CALL,
+        kind=StepKind.SKILL_LOAD if name == "load_skill" else StepKind.TOOL_CALL,
         call_id=step_key,
         name=name,
         status=status,

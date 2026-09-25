@@ -19,6 +19,7 @@ import { Icon } from "@/components/Icon/Icon";
 import { Skeleton } from "@/components/Skeleton/Skeleton";
 import type { CourseVM } from "@/features/courses/model/types";
 import { dashboardQuickActions, resolveActionRoute } from "@/features/buddy/model/actions";
+import { SkillPicker } from "@/features/buddy/components/SkillPicker/SkillPicker";
 
 import styles from "./BuddyOmnibox.module.css";
 
@@ -28,7 +29,7 @@ export type BuddyOmniboxProps = {
   selectedCourseId: string | undefined;
   onSelectCourse: (courseId: string) => void;
   /** 发送首页第一条消息；失败时抛错，输入内容会被保留 */
-  onAsk: (prompt: string) => Promise<unknown>;
+  onAsk: (prompt: string, selectedSkillId?: string) => Promise<unknown>;
   /** 发送失败的可读文案（显示在输入框下方） */
   errorMessage?: string;
 };
@@ -43,6 +44,7 @@ export function BuddyOmnibox({
 }: BuddyOmniboxProps) {
   const [value, setValue] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [selectedSkillId, setSelectedSkillId] = useState("");
   const navigate = useNavigate();
 
   const canSubmit = value.trim().length > 0 && !isSubmitting;
@@ -57,7 +59,7 @@ export function BuddyOmnibox({
     if (isSubmitting) return false;
     setIsSubmitting(true);
     try {
-      await onAsk(text);
+      await onAsk(text, selectedSkillId || undefined);
       return true;
     } catch {
       // 错误经由页面的 errorMessage 展示，这里只报告失败
@@ -132,6 +134,7 @@ export function BuddyOmnibox({
         </div>
 
         <div className={styles.right}>
+          <SkillPicker value={selectedSkillId} onChange={setSelectedSkillId} disabled={isSubmitting} />
           <label className="srOnly" htmlFor="omnibox-course">
             选择课程
           </label>
