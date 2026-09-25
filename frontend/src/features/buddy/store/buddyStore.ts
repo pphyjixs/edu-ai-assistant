@@ -17,11 +17,20 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
-import { emptyBuddyContext, type BuddyContext } from "../model/types";
+import { emptyBuddyContext, type BuddyContext, type BuddySurface } from "../model/types";
 
 type BuddyState = {
   /** Buddy 面板是否展开；折叠后保留会话，仅隐藏面板 */
   buddyOpen: boolean;
+  /**
+   * 当前 Buddy 的承载面（surface）。
+   *
+   * 首页中央会话是 ``HOME``，课程工作区的停靠面板是 ``COURSE_PANEL``。
+   * 「进行中的 Run 自动打开面板」只在 ``COURSE_PANEL`` 生效——否则首页
+   * 会在发送消息或刷新恢复 Run 时弹出右侧抽屉，与中央会话并存（本轮要修的
+   * 用户可见问题之一）。
+   */
+  activeSurface: BuddySurface;
   /** 当前页面声明的上下文，由页面写入、由 BuddyContextBar 展示 */
   buddyContext: BuddyContext;
   /** 当前会话 id */
@@ -34,9 +43,14 @@ type BuddyState = {
   openBuddy: () => void;
   closeBuddy: () => void;
   toggleBuddy: () => void;
+  setActiveSurface: (surface: BuddySurface) => void;
   setBuddyContext: (context: BuddyContext) => void;
   /** 打开一个已存在的会话（如从侧栏最近对话进入） */
   openChatSession: (sessionId: string, courseId: string) => void;
+  /**
+   * 新建对话：只清掉当前会话 id，**保留** ``activeChatCourseId``
+   * （它是「最近选择的课程」，首页据此预选课程）。
+   */
   clearChatSession: () => void;
   setCourseSidebarCollapsed: (collapsed: boolean) => void;
   toggleCourseSidebar: () => void;
@@ -53,6 +67,7 @@ export const useBuddyStore = create<BuddyState>()(
   persist(
     (set) => ({
       buddyOpen: false,
+      activeSurface: "HOME",
       buddyContext: emptyBuddyContext,
       activeChatSessionId: undefined,
       activeChatCourseId: undefined,
@@ -62,11 +77,11 @@ export const useBuddyStore = create<BuddyState>()(
       openBuddy: () => set({ buddyOpen: true }),
       closeBuddy: () => set({ buddyOpen: false }),
       toggleBuddy: () => set((state) => ({ buddyOpen: !state.buddyOpen })),
+      setActiveSurface: (surface) => set({ activeSurface: surface }),
       setBuddyContext: (context) => set({ buddyContext: context }),
       openChatSession: (sessionId, courseId) =>
         set({ activeChatSessionId: sessionId, activeChatCourseId: courseId }),
-      clearChatSession: () =>
-        set({ activeChatSessionId: undefined, activeChatCourseId: undefined }),
+      clearChatSession: () => set({ activeChatSessionId: undefined }),
       setCourseSidebarCollapsed: (collapsed) => set({ courseSidebarCollapsed: collapsed }),
       toggleCourseSidebar: () =>
         set((state) => ({ courseSidebarCollapsed: !state.courseSidebarCollapsed })),

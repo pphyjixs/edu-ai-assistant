@@ -1,19 +1,20 @@
-"""Agent 的模型适配层（``docs/local-development-agent-backend.md`` 第 6.7 节 +
-``docs/agent-backend-implementation-review.md`` 第一节）。
+"""Agent 的最终答案解析与引用校验（开发方案 5.1 / 5.5）。
 
-复用现有的 Chat Completions 兼容端点配置（``AI_BASE_URL`` / ``AI_MODEL`` /
-``AI_API_KEY``），但使用 **Agent 自己的超时**（``AGENT_MODEL_TIMEOUT_SECONDS``），
-因为一次上下文总结可能耗时数分钟，而同步问答的 60 秒显然不够。
+本轮把「只调用一次模型」的传输层下沉到 :mod:`app.modules.agent.model_protocol`，
+本模块只保留**服务端校验**这一半，因此它同时服务两条路径：
 
-受约束的生成（与 chat 的回答校验同源，但**依据策略不同**）：
+- 有界循环（:mod:`app.modules.agent.orchestration`）拿到普通 ``assistant.content``
+  后调用 :func:`parse_generated_answer` + :func:`validate_answer`；
+- 工具产生的证据已经并进同一个 Evidence Ledger，因此**引用校验口径完全不变**。
 
-1. 提示词只包含本次解析出的来源块与业务对象摘要；
-2. 模型输出必须是合法 JSON 且通过 :class:`GeneratedAgentAnswer` 校验；
-3. 服务端校验引用的 **ref 必须是本次注入的编号**，``quote`` 必须能在该块文本中
+受约束的生成规则：
+
+1. 模型输出必须是合法 JSON 且通过 :class:`GeneratedAgentAnswer` 校验；
+2. 服务端校验引用的 **ref 必须是本次注入的编号**，``quote`` 必须能在该块文本中
    找到（空白规范化后子串匹配）；越界或对不上即**只丢弃这一条引用**；
-4. ``groundable`` 的来源（资料、作业说明、评分标准）都能支撑"有依据"的回答；
+3. ``groundable`` 的来源（资料、作业说明、评分标准）都能支撑"有依据"的回答；
    只有 ``display_kind`` 非空的来源才成为用户可见引用；
-5. **不再"没有引用就整段作废"**（评审文档「一、#1.4 / #1.5」）：
+4. **不"没有引用就整段作废"**（评审文档「一、#1.4 / #1.5」）：
    - 有有效引用 → 保留正文，依据等级由模型自评 + 引用被拒情况决定；
    - 无有效引用但模型确实回答了、且本次注入了可信依据 → 保留正文，
      附加一句"引用未核对上"的说明并置 ``grounded=false``（不谎称有依据）；
@@ -25,15 +26,17 @@ from __future__ import annotations
 import json
 import logging
 import re
-import time
 from dataclasses import dataclass
 
-import httpx
 from pydantic import ValidationError
 
 from app.modules.agent.context import ContextBlock, ResolvedContext
-from app.modules.agent.models import AgentEvidenceLevel, AgentRunAction
-from app.modules.agent.prompts import build_system_prompt, build_user_prompt
+from app.modules.agent.model_protocol import (
+    AgentGenerationError,
+    AgentModelNotConfiguredError,
+    ModelToolCallUnsupportedError,
+)
+from app.modules.agent.models import AgentEvidenceLevel
 from app.modules.agent.schemas import GeneratedAgentAnswer
 
 logger = logging.getLogger("app.agent.ai")
@@ -41,23 +44,9 @@ logger = logging.getLogger("app.agent.ai")
 #: 单条摘录入库的长度上限
 QUOTE_MAX_LENGTH = 300
 
-#: 连接建立失败的重试次数与退避（秒）。
-#: 只重试**连接建立**阶段的失败——此时请求还没有送达模型，重试不会产生
-#: 重复计费，也不会有"半次生成"的歧义；读超时（模型可能已开始生成）不重试。
-CONNECT_RETRY_ATTEMPTS = 3
-CONNECT_RETRY_BACKOFF_SECONDS = (0.5, 1.5)
-
 #: 引用的摘录没核对上时保留正文所用的说明。
 #: 这句话必须诚实：说明"内容可能不完整、引用没核对上"，不能暗示已有依据。
 UNCORROBORATED_NOTE = "（说明：这次回答里引用的原文没能与课程资料核对上，内容仅供参考，请自行确认。）"
-
-
-class AgentModelNotConfiguredError(Exception):
-    """模型端点或模型名称未配置（Worker 按失败处理，写安全摘要）。"""
-
-
-class AgentGenerationError(Exception):
-    """模型请求失败、超时或输出无效。消息可安全展示。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,17 +95,34 @@ def _extract_json(content: str) -> dict:
     return parsed
 
 
+def parse_generated_answer(content: str) -> GeneratedAgentAnswer:
+    """解析模型的最终回答。
+
+    :raises AgentGenerationError: 不是合法 JSON 或未通过结构校验。
+    """
+    try:
+        return GeneratedAgentAnswer.model_validate(_extract_json(content))
+    except ValidationError as exc:
+        raise AgentGenerationError("模型输出未通过结构校验") from exc
+
+
 def validate_answer(
     answer: GeneratedAgentAnswer,
     context: ResolvedContext,
     *,
     no_evidence_message: str,
+    keep_answer_without_evidence: bool = False,
 ) -> ValidatedAgentAnswer:
     """按本次注入的来源校验引用，并执行 grounding policy（文档 6.7 + 评审文档 #1/#2）。
 
     关键点：**只丢弃核对不上的那一条引用**，不再因为它而抹掉整段回答。
-    正文是否保留由 :func:`_decide_content` 按"本次是否注入了可信依据"和
-    模型自评的依据等级决定。
+
+    :param keep_answer_without_evidence: 本次 Run 是否**执行过工具调用**。
+        工具结果（成功的检索、权限拒绝、错误码）本身就是模型回答的合法依据来源，
+        因此这时即使一条引用都没通过校验，也必须保留模型的正文——
+        否则「这个功能仅限课程教师」「我没有这个工具」这类回答会被替换成
+        "没有找到依据"，用户看到的是一句与问题无关的话（开发方案第 8 节：
+        工具权限不足应作为正常助手回答解释）。
     """
     by_ref = context.block_by_ref()
     validated: list[ValidatedAgentCitation] = []
@@ -160,6 +166,7 @@ def validate_answer(
         rejected=rejected,
         declared=declared,
         no_evidence_message=no_evidence_message,
+        keep_answer_without_evidence=keep_answer_without_evidence,
     )
     if rejected:
         # 评审文档「一、#1.7」：记录被拒原因，但不记录原文与密钥
@@ -185,6 +192,7 @@ def _decide_content(
     rejected: int,
     declared: str | None,
     no_evidence_message: str,
+    keep_answer_without_evidence: bool = False,
 ) -> tuple[str, bool, str]:
     """grounding policy：决定保留正文、标记依据等级，还是替换为无依据说明。"""
     text = answer.answer.strip()
@@ -199,10 +207,15 @@ def _decide_content(
             level = AgentEvidenceLevel.FULL.value
         return text, True, level
 
-    # 没有一条引用通过校验。两种截然不同的情况要分开处理：
+    # 没有一条引用通过校验。三种情况要分开处理：
+    # 0) 本次执行过工具：正文是在解释工具结果（成功检索、权限拒绝、错误码），
+    #    必须保留——替换成"没有找到依据"会答非所问；
     # 1) 模型确实给出了回答、本次也注入了可信依据、且它没自评"无依据"
     #    → 保留正文（部分命中时不要把已确认的部分抹掉），但如实标注未核对上；
     # 2) 其余情况 → 用具体的无依据说明替换。
+    if text and keep_answer_without_evidence:
+        return text, False, AgentEvidenceLevel.NONE.value
+
     if (
         text
         and declared != AgentEvidenceLevel.NONE.value
@@ -213,120 +226,14 @@ def _decide_content(
     return no_evidence_message, False, AgentEvidenceLevel.NONE.value
 
 
-def _post_with_connect_retry(
-    client: httpx.Client, url: str, payload: dict, headers: dict
-) -> httpx.Response | None:
-    """POST 请求；只对**连接建立失败**做有界重试。
-
-    - 连接建立失败（``ConnectError`` / ``ConnectTimeout``）说明请求没送达模型，
-      重试安全且大概率能成功；
-    - 读超时说明模型可能已经开始生成，重试会重复消耗额度，因此直接上抛；
-    - 其他 HTTP 错误原样上抛。
-    """
-    last_error: Exception | None = None
-    for attempt in range(CONNECT_RETRY_ATTEMPTS):
-        try:
-            return client.post(url, json=payload, headers=headers)
-        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-            last_error = exc
-            logger.warning(
-                "模型服务连接失败（第 %s/%s 次尝试）：%s",
-                attempt + 1,
-                CONNECT_RETRY_ATTEMPTS,
-                type(exc).__name__,
-            )
-            if attempt < len(CONNECT_RETRY_BACKOFF_SECONDS):
-                time.sleep(CONNECT_RETRY_BACKOFF_SECONDS[attempt])
-        except httpx.TimeoutException as exc:
-            raise AgentGenerationError("模型服务请求超时，请稍后重试") from exc
-        except httpx.HTTPError as exc:
-            raise AgentGenerationError(
-                f"模型服务连接失败（{type(exc).__name__}），请稍后重试"
-            ) from exc
-
-    raise AgentGenerationError(
-        f"模型服务连接失败（{type(last_error).__name__ if last_error else 'ConnectError'}），"
-        f"已重试 {CONNECT_RETRY_ATTEMPTS} 次，请稍后重试"
-    )
-
-
-def generate_answer(
-    context: ResolvedContext,
-    *,
-    action: AgentRunAction,
-    question: str,
-    base_url: str,
-    api_key: str,
-    model: str,
-    timeout_seconds: float,
-    no_evidence_message: str,
-    output_language: str | None = None,
-    client: httpx.Client | None = None,
-) -> ValidatedAgentAnswer:
-    """调用模型生成回答并完成服务端校验（同步，Worker 在线程池中执行）。
-
-    :param no_evidence_message: 确实无依据时的替换文案。由调用方按"检索了哪些
-        资料"拼出来，因此比一句固定文案更有信息量（评审文档「一、#1」）。
-    :param output_language: 用户在 ``options.output_language`` 指定的输出语言；
-        为空时沿用"与用户输入同语言"（评审文档「一、#12」）。
-    :raises AgentModelNotConfiguredError: 未配置模型端点或模型名称。
-    :raises AgentGenerationError: 请求失败、超时或输出无效。
-    """
-    if not context.blocks:
-        # 没有任何可注入内容：不调用模型，也不要求模型配置（与 chat 一致）
-        return ValidatedAgentAnswer(
-            content=no_evidence_message,
-            grounded=False,
-            citations=[],
-            evidence_level=AgentEvidenceLevel.NONE.value,
-        )
-    if not base_url.strip():
-        raise AgentModelNotConfiguredError("Agent 未配置模型端点（AI_BASE_URL）")
-    if not model.strip():
-        raise AgentModelNotConfiguredError("Agent 未配置模型名称（AI_MODEL）")
-
-    url = base_url.rstrip("/") + "/chat/completions"
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": build_system_prompt(action)},
-            {
-                "role": "user",
-                "content": build_user_prompt(
-                    context, question=question, output_language=output_language
-                ),
-            },
-        ],
-        "temperature": 0.2,
-    }
-    headers = {"Content-Type": "application/json"}
-    if api_key.strip():
-        headers["Authorization"] = f"Bearer {api_key.strip()}"
-
-    owned = client is None
-    if client is None:
-        client = httpx.Client(timeout=httpx.Timeout(timeout_seconds))
-
-    try:
-        response = _post_with_connect_retry(client, url, payload, headers)
-
-        if response.status_code in (401, 403):
-            raise AgentGenerationError("模型服务拒绝了访问凭据")
-        if response.status_code != 200:
-            raise AgentGenerationError(f"模型服务返回非预期状态 {response.status_code}")
-
-        try:
-            body = response.json()
-            content = body["choices"][0]["message"]["content"]
-        except (ValueError, KeyError, IndexError, TypeError) as exc:
-            raise AgentGenerationError("模型服务响应格式无效") from exc
-
-        try:
-            answer = GeneratedAgentAnswer.model_validate(_extract_json(content))
-        except ValidationError as exc:
-            raise AgentGenerationError("模型输出未通过结构校验") from exc
-
-        return validate_answer(answer, context, no_evidence_message=no_evidence_message)
-    finally:
-        if owned:
-            client.close()
+__all__ = [
+    "QUOTE_MAX_LENGTH",
+    "UNCORROBORATED_NOTE",
+    "AgentGenerationError",
+    "AgentModelNotConfiguredError",
+    "ModelToolCallUnsupportedError",
+    "ValidatedAgentAnswer",
+    "ValidatedAgentCitation",
+    "parse_generated_answer",
+    "validate_answer",
+]

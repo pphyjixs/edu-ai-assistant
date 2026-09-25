@@ -9,6 +9,7 @@
 | [collaboration.md](collaboration.md) | 分支、提交、联调、代码所有权和交付流程 |
 | [deployment-docker.md](deployment-docker.md) | Docker Compose 单机部署、资源限制、升级和备份 |
 | [deployment-vercel.md](deployment-vercel.md) | Vercel 部署拓扑、环境变量和服务约束 |
+| [home-chat-agent-tools-development-plan.md](home-chat-agent-tools-development-plan.md) | 首页中央对话、Agent 工具调用与 Skill 渐进加载的实施方案和验收指标 |
 
 ## 文档优先级
 

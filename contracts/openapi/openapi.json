@@ -2169,6 +2169,85 @@
         }
       }
     },
+    "/api/v1/chat-sessions/{session_id}": {
+      "get": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "会话详情",
+        "description": "仅会话所有者可读；不是所有者与会话不存在统一 404。首页中央会话页刷新时只有 sessionId，用响应的 course_id 恢复课程上下文，不依赖 URL 或本地存储里的课程 ID。归档课程的本人会话仍可读。",
+        "operationId": "get_chat_session_api_v1_chat_sessions__session_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatSessionSchema"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "未预期的服务端错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "会话不存在，或当前用户不是会话所有者（RESOURCE_NOT_FOUND）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/chat-sessions/{session_id}/messages": {
       "get": {
         "tags": [
@@ -5829,6 +5908,48 @@
         "title": "AgentRunAction",
         "description": "Run 的动作（契约 6.3 的 ``action``）。"
       },
+      "AgentRunArtifactSchema": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "href": {
+            "type": "string",
+            "title": "Href"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "id",
+          "status",
+          "href"
+        ],
+        "title": "AgentRunArtifactSchema",
+        "description": "Run 产出的业务结果（开发方案 7.2）。"
+      },
       "AgentRunSchema": {
         "properties": {
           "id": {
@@ -5933,6 +6054,20 @@
             },
             "type": "array",
             "title": "Sources"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/AgentRunStepSchema"
+            },
+            "type": "array",
+            "title": "Steps"
+          },
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/AgentRunArtifactSchema"
+            },
+            "type": "array",
+            "title": "Artifacts"
           }
         },
         "type": "object",
@@ -5950,7 +6085,7 @@
           "finished_at"
         ],
         "title": "AgentRunSchema",
-        "description": "Run 的响应（契约 6.4）。\n\n``status`` / ``progress`` / ``error`` 来自关联的 Job，而不是 ``agent_runs``。"
+        "description": "Run 的响应（契约 6.4）。\n\n``status`` / ``progress`` / ``error`` 来自关联的 Job，而不是 ``agent_runs``。\n\n``steps`` 与 ``artifacts``（开发方案 7.2）是**带默认值的新字段**，因此旧前端\n继续解析时不会因为缺少字段而报错；它们只暴露名称、状态与稳定错误码，\n**不返回**工具原始参数、课件摘录、Skill 正文或内部错误详情。"
       },
       "AgentRunSourceSchema": {
         "properties": {
@@ -6031,6 +6166,46 @@
         ],
         "title": "AgentRunSourceSchema",
         "description": "来源快照的展示视图（不含 ``snapshot`` 原文）。"
+      },
+      "AgentRunStepSchema": {
+        "properties": {
+          "order": {
+            "type": "integer",
+            "title": "Order"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          }
+        },
+        "type": "object",
+        "required": [
+          "order",
+          "kind",
+          "name",
+          "status"
+        ],
+        "title": "AgentRunStepSchema",
+        "description": "执行步骤的展示视图（开发方案 7.2）。\n\n只暴露「第几步、哪一类、工具/Skill 名、是否成功、稳定错误码」，\n不暴露参数与结果明细。"
       },
       "AssignmentAttachmentSchema": {
         "properties": {

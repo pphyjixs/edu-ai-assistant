@@ -5,6 +5,11 @@
   padding: var(--space-4) var(--space-4) var(--space-3);
 }
 
+/* 中央形态：水平内边距交给 BuddyThreadView 统一控制，只留很小的上下留白 */
+.listCenter {
+  padding: var(--space-2) 0 var(--space-3);
+}
+
 .loadingBubble {
   max-width: 86%;
 }
@@ -70,4 +75,41 @@
   display: block;
   margin-top: 2px;
   color: var(--color-text-secondary);
+}
+
+/* --------------------- 业务结果卡片（例如创建好的练习） --------------------- */
+
+.artifacts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3) 34px;
+}
+
+.artifact {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  transition: background-color var(--duration-fast) var(--ease-out);
+}
+
+.artifact:hover {
+  background: var(--color-surface-hover);
+}
+
+.artifactText {
+  display: flex;
+  flex-direction: column;
+  font-size: var(--text-secondary);
+}
+
+.artifactHint {
+  margin-top: 1px;
+  font-size: var(--text-caption);
+  color: var(--color-text-tertiary);
 }

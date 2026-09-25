@@ -1,0 +1,59 @@
+/* 中央会话与右侧概览共同占满视口，消息列表在内部滚动，输入框粘底。 */
+.page {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 350px);
+  height: 100vh;
+  min-height: 420px;
+  overflow: hidden;
+  background: var(--color-bg);
+}
+
+.chatColumn {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-6);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.course {
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.section {
+  font-weight: 650;
+}
+
+.errorWrap {
+  padding: var(--space-8) var(--space-6);
+}
+
+@media (max-width: 1120px) {
+  .page {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 820px) {
+  .bar {
+    padding: var(--space-3) var(--space-4);
+  }
+}

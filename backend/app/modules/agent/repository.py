@@ -14,7 +14,7 @@ from datetime import datetime
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.agent.models import AgentRun, AgentRunSource
+from app.modules.agent.models import AgentRun, AgentRunSource, AgentRunStep
 from app.modules.chat.models import ChatSession
 from app.modules.jobs import repository as jobs_repo
 from app.modules.jobs.models import Job, JobStatusValue, JobType
@@ -217,6 +217,101 @@ async def lock_owned_session(
     return result.scalar_one_or_none()
 
 
+# --------------------------------------------------------------------------- #
+# 执行步骤审计（``agent_run_steps``，开发方案 7.1）
+# --------------------------------------------------------------------------- #
+def add_step(
+    session: AsyncSession,
+    *,
+    step_id: uuid.UUID,
+    run_id: uuid.UUID,
+    step_order: int,
+    kind: str,
+    call_id: str,
+    name: str,
+    status: str,
+    request_json: dict,
+    response_json: dict | None,
+    error_code: str | None,
+    started_at: datetime | None,
+    finished_at: datetime | None,
+    now: datetime,
+) -> AgentRunStep:
+    """写一条执行步骤记录（未提交）。
+
+    调用方负责在**短事务**里提交：工具执行很快，但等待模型期间绝不能持有事务
+    （开发方案 5.2 的要求），因此步骤写入与模型调用在时间上完全分开。
+    """
+    step = AgentRunStep(
+        id=step_id,
+        run_id=run_id,
+        step_order=step_order,
+        kind=kind,
+        call_id=call_id,
+        name=name,
+        status=status,
+        request_json=request_json,
+        response_json=response_json,
+        error_code=error_code,
+        started_at=started_at,
+        finished_at=finished_at,
+        created_at=now,
+    )
+    session.add(step)
+    return step
+
+
+async def next_step_order(session: AsyncSession, *, run_id: uuid.UUID) -> int:
+    """下一个步骤序号（Run 内从 1 连续递增）。
+
+    同一 Run 由单个 Worker 独占（租约 + ``run_token``），因此 ``max + 1``
+    在真实并发下也只会被一个执行者计算。
+    """
+    value = await session.scalar(
+        select(func.max(AgentRunStep.step_order)).where(AgentRunStep.run_id == run_id)
+    )
+    return int(value or 0) + 1
+
+
+async def get_step_by_call_id(
+    session: AsyncSession, *, run_id: uuid.UUID, call_id: str
+) -> AgentRunStep | None:
+    """按 ``(run_id, call_id)`` 读步骤，用于幂等重放。"""
+    result = await session.execute(
+        select(AgentRunStep).where(
+            AgentRunStep.run_id == run_id, AgentRunStep.call_id == call_id
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def list_steps(session: AsyncSession, run_id: uuid.UUID) -> list[AgentRunStep]:
+    """按序号升序取一个 Run 的全部步骤。"""
+    result = await session.execute(
+        select(AgentRunStep)
+        .where(AgentRunStep.run_id == run_id)
+        .order_by(AgentRunStep.step_order.asc())
+    )
+    return list(result.scalars().all())
+
+
+async def list_steps_for_runs(
+    session: AsyncSession, *, run_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, list[AgentRunStep]]:
+    """批量取多个 Run 的步骤，按 ``run_id`` 聚合（避免列表接口 N+1 查询）。"""
+    if not run_ids:
+        return {}
+    result = await session.execute(
+        select(AgentRunStep)
+        .where(AgentRunStep.run_id.in_(run_ids))
+        .order_by(AgentRunStep.run_id, AgentRunStep.step_order.asc())
+    )
+    grouped: dict[uuid.UUID, list[AgentRunStep]] = {}
+    for step in result.scalars().all():
+        grouped.setdefault(step.run_id, []).append(step)
+    return grouped
+
+
 async def count_active_runs(session: AsyncSession, *, session_id: uuid.UUID) -> int:
     """该会话未结束的 Run 数量（仅用于测试与断言）。"""
     row = (
@@ -240,6 +335,7 @@ __all__ = [
     "JobStatusValue",
     "add_run",
     "add_source",
+    "add_step",
     "count_active_runs",
     "count_runs",
     "find_active_run_id",
@@ -248,7 +344,11 @@ __all__ = [
     "get_run_by_client_request_id",
     "get_run_for_update",
     "get_run_with_job",
+    "get_step_by_call_id",
     "list_runs_with_jobs",
     "list_sources",
+    "list_steps",
+    "list_steps_for_runs",
     "lock_owned_session",
+    "next_step_order",
 ]

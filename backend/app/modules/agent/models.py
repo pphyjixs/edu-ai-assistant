@@ -14,6 +14,7 @@ from datetime import datetime
 
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy import (
+    CheckConstraint,
     ForeignKey,
     Index,
     Integer,
@@ -40,6 +41,14 @@ REQUEST_FINGERPRINT_MAX_LENGTH = 64
 PROMPT_VERSION_MAX_LENGTH = 64
 MODEL_NAME_MAX_LENGTH = 120
 EVIDENCE_LEVEL_MAX_LENGTH = 8
+#: 编排器版本（``agent-tools-v1`` 这类），成功与失败都记录
+ORCHESTRATOR_VERSION_MAX_LENGTH = 64
+#: 执行步骤的字段长度（开发方案 7.1）
+STEP_KIND_MAX_LENGTH = 16
+STEP_STATUS_MAX_LENGTH = 16
+STEP_CALL_ID_MAX_LENGTH = 128
+STEP_NAME_MAX_LENGTH = 64
+STEP_ERROR_CODE_MAX_LENGTH = 64
 
 
 class AgentEvidenceLevel(str, enum.Enum):
@@ -173,6 +182,12 @@ class AgentRun(Base):
     )
     model: Mapped[str | None] = mapped_column(String(MODEL_NAME_MAX_LENGTH), nullable=True)
 
+    #: 本次使用的编排器版本（例如 ``agent-tools-v1``）；成功与失败都记录
+    #: （开发方案 7.1）。老数据为 NULL，表示"工具循环之前"的执行方式。
+    orchestrator_version: Mapped[str | None] = mapped_column(
+        String(ORCHESTRATOR_VERSION_MAX_LENGTH), nullable=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         UtcDateTime, nullable=False, default=utc_now, server_default=func.now()
     )
@@ -246,3 +261,83 @@ class AgentRunSource(Base):
     __table_args__ = (
         Index("ix_agent_run_sources_run_order", "run_id", "order"),
     )
+
+
+class AgentRunStep(Base):
+    """Run 的执行步骤审计（开发方案 7.1）。
+
+    每次工具调用与每次 Skill 加载都留一条**终态**记录（``SUCCEEDED`` / ``FAILED``），
+    因此审计上「每次调用都有 step 终态」。
+
+    两条唯一约束各司其职：
+
+    - ``UNIQUE(run_id, step_order)``：步骤在 Run 内从 1 连续递增；
+    - ``UNIQUE(run_id, call_id)``：Worker 重试时的**幂等防线**——
+      同一个模型 ``tool_call_id`` 只执行一次，重放直接返回已有结果。
+
+    ``request_json`` / ``response_json`` 都只存**已校验、已脱敏、有界**的内容：
+    不存课件全文、不存 Skill 正文、不存数据库细节或堆栈。
+    """
+
+    __tablename__ = "agent_run_steps"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "agent_runs.id", ondelete="CASCADE", name="fk_agent_run_steps_run_id_agent_runs"
+        ),
+        nullable=False,
+    )
+
+    #: Run 内从 1 连续递增
+    step_order: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    #: ``TOOL_CALL`` / ``SKILL_LOAD``
+    kind: Mapped[str] = mapped_column(String(STEP_KIND_MAX_LENGTH), nullable=False)
+
+    #: 模型的 tool call id；Skill 加载使用固定的 ``skill:<name>``
+    call_id: Mapped[str] = mapped_column(
+        String(STEP_CALL_ID_MAX_LENGTH), nullable=False
+    )
+
+    #: 工具名或 Skill 名
+    name: Mapped[str] = mapped_column(String(STEP_NAME_MAX_LENGTH), nullable=False)
+
+    #: ``RUNNING`` / ``SUCCEEDED`` / ``FAILED``
+    status: Mapped[str] = mapped_column(String(STEP_STATUS_MAX_LENGTH), nullable=False)
+
+    #: 已校验和脱敏后的参数
+    request_json: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+    #: 有界摘要、artifact 与错误码；不存课件全文或 Skill 正文
+    response_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    #: 稳定错误码；成功时为 NULL
+    error_code: Mapped[str | None] = mapped_column(
+        String(STEP_ERROR_CODE_MAX_LENGTH), nullable=True
+    )
+
+    started_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+
+    finished_at: Mapped[datetime | None] = mapped_column(UtcDateTime, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        UtcDateTime, nullable=False, default=utc_now, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "step_order", name="uq_agent_run_steps_run_order"),
+        UniqueConstraint("run_id", "call_id", name="uq_agent_run_steps_run_call"),
+        CheckConstraint(
+            "jsonb_typeof(request_json) = 'object'",
+            name="ck_agent_run_steps_request_object",
+        ),
+        Index("ix_agent_run_steps_run_order", "run_id", "step_order"),
+    )
+
+    def __repr__(self) -> str:  # pragma: no cover - 仅用于调试
+        return f"<AgentRunStep run={self.run_id} order={self.step_order} name={self.name}>"

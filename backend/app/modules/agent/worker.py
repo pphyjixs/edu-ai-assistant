@@ -32,23 +32,29 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+import httpx
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
 from app.core.time import utc_now
 from app.modules.agent import context as context_module
-from app.modules.agent import generation_ai
+from app.modules.agent import generation_ai, orchestration, skills
 from app.modules.agent import repository as repo
 from app.modules.agent.models import (
     EVIDENCE_LEVEL_MAX_LENGTH,
     MODEL_NAME_MAX_LENGTH,
+    ORCHESTRATOR_VERSION_MAX_LENGTH,
     PROMPT_VERSION_MAX_LENGTH,
     AgentEntityType,
     AgentRunAction,
     AgentSourceType,
 )
 from app.modules.agent.prompts import prompt_version_for
+from app.modules.agent.tool_registry import ToolRegistry
+from app.modules.agent.tool_types import AgentArtifact, ToolContext
+from app.modules.agent.tools import build_default_registry
+from app.modules.auth.models import User, UserRole
 from app.modules.chat import repository as chat_repo
 from app.modules.chat.models import (
     NON_MATERIAL_SOURCE_TYPE,
@@ -75,8 +81,38 @@ DEFAULT_BATCH_SIZE = 1
 #: 失败摘要的落库长度上限（与 Job.error 列一致）
 ERROR_MAX_LENGTH = 500
 
+#: 心跳/续租的最大间隔（秒）。
+#:
+#: 心跳不只是续租，也是**取消检测**：租约只有 ``RUNNING`` 且令牌匹配时才会续期，
+#: 因此一旦 Run 被取消或令牌被轮换，下一次心跳就会失败并中止执行。
+#: 把它限制在几秒内，取消请求才能在合理时间内阻止后续模型轮次
+#: （开发方案 10.2：Run 执行中被取消 → 后续模型轮次不再开始）。
+HEARTBEAT_MAX_INTERVAL_SECONDS = 5.0
+
 #: 模型客户端工厂：返回带 MockTransport 的 httpx.Client（测试注入）
 AiClientFactory = Callable[[], object]
+
+#: 进程内冻结的工具注册表与 Skill 目录（部署新 Skill 后重启 Worker 生效）
+_tooling_cache: tuple[ToolRegistry, skills.SkillCatalog] | None = None
+
+
+def _tooling() -> tuple[ToolRegistry, skills.SkillCatalog]:
+    """返回本进程冻结的工具注册表与 Skill 目录。
+
+    Skill 目录在第一次使用时扫描并缓存：部署新 Skill 后重启 Worker 即生效
+    （开发方案第 6 节：目录在 Worker 启动时扫描并冻结）。
+    """
+    global _tooling_cache
+    if _tooling_cache is None:
+        catalog = skills.load_skill_catalog()
+        registry = build_default_registry(catalog)
+        _tooling_cache = (registry, catalog)
+        logger.info(
+            "Agent 工具注册表就绪（tools=%s skills=%s）",
+            len(registry),
+            len(catalog),
+        )
+    return _tooling_cache
 
 
 @dataclass(slots=True)
@@ -101,6 +137,8 @@ class ClaimedAgentRun:
     run_token: str
     #: 本次提问的消息 ID：历史查询要排除它，避免同一句话进提示词两次
     input_message_id: uuid.UUID
+    #: 发起者的平台角色；工具的角色校验需要它，且必须来自服务端而不是模型
+    user_role: UserRole = UserRole.STUDENT
     #: ``options.output_language``，为空表示"与用户输入同语言"
     output_language: str | None = None
     #: 第几次领取（1 起）
@@ -185,6 +223,10 @@ async def claim_next(
             # 本次 input 就是创建 Run 时保存的用户消息
             source_message = await session.get(ChatMessage, run.input_message_id)
 
+            # 平台角色来自数据库，模型无法通过任何参数影响它
+            run_user = await session.get(User, run.user_id)
+            user_role = run_user.role if run_user is not None else UserRole.STUDENT
+
             run_token = secrets.token_hex(16)
             job.status = JobStatusValue.RUNNING
             job.started_at = job.started_at or now
@@ -210,12 +252,33 @@ async def claim_next(
                 question=source_message.content if source_message is not None else "",
                 run_token=run_token,
                 input_message_id=run.input_message_id,
+                user_role=user_role,
                 output_language=raw_language if isinstance(raw_language, str) else None,
                 attempt=job.attempts,
             )
             await session.commit()
             return claimed
     return None
+
+
+async def run_still_active(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    job_id: uuid.UUID,
+    run_token: str,
+) -> bool:
+    """Run 是否仍由**本执行者**持有（未被取消、也未被新一轮接管）。
+
+    编排循环每轮开始前调用一次：只靠心跳续租来发现取消太慢——租约是分钟级，
+    而取消应当尽快生效（开发方案 10.2）。
+    """
+    async with session_factory() as session:
+        row = (
+            await session.execute(select(Job.status, Job.run_token).where(Job.id == job_id))
+        ).first()
+    if row is None:
+        return False
+    return row[0] is JobStatusValue.RUNNING and row[1] == run_token
 
 
 async def renew_lease(
@@ -248,11 +311,15 @@ async def _write_failure(
     message: str,
     now: datetime,
     stage: JobFailureStage = JobFailureStage.UNKNOWN,
+    orchestrator_version: str | None = None,
 ) -> None:
     """把任务置为 FAILED（仍要复查令牌与租约，避免覆盖新一轮执行）。
 
-    ``stage`` 是失败阶段码，前端据此区分"模型侧失败"与"服务不可用"
-    （评审文档「一、#9」要求所有冲突路径都落到可解释终态）。
+    ``stage`` 是失败阶段码，前端据此区分「模型侧失败」「工具调用失败」与
+    「服务不可用」（评审文档「一、#9」要求所有冲突路径都落到可解释终态）。
+
+    ``orchestrator_version`` 即使失败也要记录：否则无法判断一次异常失败发生在
+    哪一版编排逻辑下（开发方案 7.1）。
     """
     async with session_factory() as session:
         job = await jobs_service.lock_agent_run_job(session, run_id=claimed.run_id)
@@ -270,6 +337,10 @@ async def _write_failure(
         run = await repo.get_run_for_update(session, claimed.run_id)
         if run is not None:
             run.updated_at = now
+            if orchestrator_version:
+                run.orchestrator_version = orchestrator_version[
+                    :ORCHESTRATOR_VERSION_MAX_LENGTH
+                ]
         await session.commit()
 
 
@@ -282,8 +353,14 @@ async def _write_success(
     settings: Settings,
     model: str,
     now: datetime,
+    orchestrator_version: str | None = None,
 ) -> bool:
-    """短事务回写：锁序 课程 → 会话 → Run → 任务，然后写消息、引用与来源。"""
+    """短事务回写：锁序 课程 → 会话 → Run → 任务，然后写消息、引用与来源。
+
+    ``orchestrator_version`` 记录本次使用的编排器版本；步骤与 artifact 不需要
+    在这里再写一遍——它们已经由编排循环落进 ``agent_run_steps``，
+    接口读取时再据此聚合（开发方案 7.2）。
+    """
     async with session_factory() as session:
         course = (
             await session.execute(
@@ -429,6 +506,8 @@ async def _write_success(
         run.output_message_id = assistant_message.id
         run.prompt_version = prompt_version_for(claimed.action)[:PROMPT_VERSION_MAX_LENGTH]
         run.model = (model or "")[:MODEL_NAME_MAX_LENGTH] or None
+        if orchestrator_version:
+            run.orchestrator_version = orchestrator_version[:ORCHESTRATOR_VERSION_MAX_LENGTH]
         # 依据充分度落在 Run 上：前端与审计都能看到"这次是完整依据还是部分依据"
         run.evidence_level = validated.evidence_level[:EVIDENCE_LEVEL_MAX_LENGTH]
         run.updated_at = written_at
@@ -455,7 +534,10 @@ async def run_job(
     started = time.monotonic()
 
     async def heartbeat_loop() -> None:
-        interval = max(lease_seconds / 3, 0.05)
+        # 续租的节奏同时决定"多久发现 Run 已被取消"，因此设上限（见常量说明）
+        interval = min(
+            max(lease_seconds / 3, 0.05), HEARTBEAT_MAX_INTERVAL_SECONDS
+        )
         while not stop_event.is_set():
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=interval)
@@ -475,6 +557,7 @@ async def run_job(
                 return
 
     heartbeat = asyncio.create_task(heartbeat_loop())
+    ai_client: object | None = None
     try:
         async with session_factory() as session:
             course_row = (
@@ -497,7 +580,7 @@ async def run_job(
                 is_staff=is_staff,
                 settings=settings,
             )
-        # 读事务到此结束：下面调用模型时没有打开任何事务
+        # 读事务到此结束：下面调用模型与执行工具时没有打开任何事务
 
         if aborted["flag"]:
             return
@@ -506,22 +589,46 @@ async def run_job(
             resolved, claimed.question
         )
 
-        ai_client: object | None = None
+        # 工具上下文**只由服务端构造**：模型无法通过任何参数影响其中的字段
+        tool_ctx = ToolContext(
+            run_id=claimed.run_id,
+            session_id=claimed.session_id,
+            course_id=claimed.course_id,
+            user_id=claimed.user_id,
+            user_role=claimed.user_role,
+            is_course_teacher=is_staff,
+            session_factory=session_factory,
+            settings=settings,
+            question=claimed.question,
+        )
+        registry, catalog = _tooling()
+
         try:
             if ai_client_factory is not None:
                 ai_client = ai_client_factory()
-            validated = await asyncio.to_thread(
-                generation_ai.generate_answer,
-                resolved,
+            else:
+                ai_client = httpx.Client(
+                    timeout=httpx.Timeout(settings.agent_model_timeout_seconds)
+                )
+            outcome = await orchestration.run_agent_loop(
+                ctx=tool_ctx,
+                registry=registry,
+                initial_context=resolved,
                 action=claimed.action,
                 question=claimed.question,
+                no_evidence_message=no_evidence_message,
+                output_language=claimed.output_language,
+                skills_catalog=skills.render_catalog(catalog),
+                client=ai_client,  # type: ignore[arg-type]
                 base_url=settings.ai_base_url,
                 api_key=settings.ai_api_key,
                 model=settings.ai_model,
-                timeout_seconds=settings.agent_model_timeout_seconds,
-                no_evidence_message=no_evidence_message,
-                output_language=claimed.output_language,
-                client=ai_client,
+                should_stop=lambda: aborted["flag"],
+                is_still_active=lambda: run_still_active(
+                    session_factory,
+                    job_id=claimed.job_id,
+                    run_token=claimed.run_token,
+                ),
             )
         finally:
             close = getattr(ai_client, "close", None)
@@ -535,10 +642,35 @@ async def run_job(
             session_factory,
             claimed=claimed,
             context=resolved,
-            validated=validated,
+            validated=outcome.validated,
             settings=settings,
-            model=settings.ai_model,
+            model=outcome.model or settings.ai_model,
             now=utc_now(),
+            orchestrator_version=outcome.orchestrator_version,
+        )
+    except orchestration.AgentRunAbortedError:
+        # 已取消或租约失效：状态已由取消方/新执行者决定，这里不再写终态
+        logger.info("运行已被取消，停止后续模型轮次（run=%s）", claimed.run_id)
+        return
+    except generation_ai.ModelToolCallUnsupportedError as exc:
+        logger.warning("模型服务不支持工具协议（run=%s）：%s", claimed.run_id, exc)
+        await _write_failure(
+            session_factory,
+            claimed=claimed,
+            message=_safe_error(exc),
+            now=utc_now(),
+            stage=JobFailureStage.MODEL_TOOL_CALL_UNSUPPORTED,
+            orchestrator_version=orchestration.ORCHESTRATOR_VERSION,
+        )
+    except (orchestration.AgentLoopLimitError, orchestration.AgentToolArgumentsError) as exc:
+        logger.warning("工具调用阶段失败（run=%s）：%s", claimed.run_id, exc)
+        await _write_failure(
+            session_factory,
+            claimed=claimed,
+            message=_safe_error(exc),
+            now=utc_now(),
+            stage=JobFailureStage.TOOL_CALL,
+            orchestrator_version=orchestration.ORCHESTRATOR_VERSION,
         )
     except generation_ai.AgentModelNotConfiguredError:
         logger.warning("Agent 未配置模型（run=%s）", claimed.run_id)

@@ -145,6 +145,32 @@ async def list_chat_sessions(
 
 
 @chat_router.get(
+    "/chat-sessions/{session_id}",
+    status_code=status.HTTP_200_OK,
+    response_model=ChatSessionSchema,
+    summary="会话详情",
+    description=(
+        "仅会话所有者可读；不是所有者与会话不存在统一 404。"
+        "首页中央会话页刷新时只有 sessionId，用响应的 course_id 恢复课程上下文，"
+        "不依赖 URL 或本地存储里的课程 ID。归档课程的本人会话仍可读。"
+    ),
+    responses={
+        404: _NOT_FOUND_SESSION,
+        **_AUTH_ERRORS,
+    },
+)
+async def get_chat_session(
+    session_id: uuid.UUID,
+    user: CurrentUserDep,
+    session: SessionDep,
+) -> ChatSessionSchema:
+    chat_session = await service.get_session(
+        session, user=user, session_id=session_id
+    )
+    return ChatSessionSchema.model_validate(chat_session)
+
+
+@chat_router.get(
     "/chat-sessions/{session_id}/messages",
     status_code=status.HTTP_200_OK,
     response_model=Page[ChatMessageSchema],

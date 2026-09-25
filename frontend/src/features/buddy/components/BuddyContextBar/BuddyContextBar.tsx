@@ -50,7 +50,16 @@ function labelForRoute(route: string): string {
   return matched ? matched[1] : "当前页面";
 }
 
-export function BuddyContextBar() {
+export type BuddyContextBarProps = {
+  /**
+   * ``panel``（默认）：停靠面板里的上下文条，独占一行、有分隔线；
+   * ``center``：首页中央会话的上下文条 —— 收成**一行**并去掉分隔线，
+   * 否则消息区上方会多出一段明显空白（开发方案 4.2 的中央形态）。
+   */
+  variant?: "panel" | "center";
+};
+
+export function BuddyContextBar({ variant = "panel" }: BuddyContextBarProps) {
   const context = useBuddyContext();
 
   const courseQuery = useCourse(context.courseId);
@@ -77,8 +86,10 @@ export function BuddyContextBar() {
 
   if (chips.length === 0) chips.push(labelForRoute(context.route));
 
+  const isCenter = variant === "center";
+
   return (
-    <div className={styles.bar}>
+    <div className={isCenter ? styles.barInline : styles.bar}>
       <span className={styles.label}>
         <Icon name="context" size={13} />
         当前上下文

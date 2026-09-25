@@ -3,6 +3,22 @@
   border-bottom: 1px solid var(--color-border);
 }
 
+/*
+ * 中央会话形态：收成一行，去掉分隔线与上下留白。
+ * 之前沿用了面板的上下文条（约 80px 高），消息区上方因此出现一大段空白。
+ */
+.barInline {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: 0 0 var(--space-2);
+}
+
+.barInline .label {
+  margin-bottom: 0;
+}
+
 .label {
   display: inline-flex;
   align-items: center;

@@ -437,6 +437,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/chat-sessions/{session_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 会话详情
+         * @description 仅会话所有者可读；不是所有者与会话不存在统一 404。首页中央会话页刷新时只有 sessionId，用响应的 course_id 恢复课程上下文，不依赖 URL 或本地存储里的课程 ID。归档课程的本人会话仍可读。
+         */
+        get: operations["get_chat_session_api_v1_chat_sessions__session_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/chat-sessions/{session_id}/messages": {
         parameters: {
             query?: never;
@@ -1115,10 +1135,33 @@ export interface components {
          */
         AgentRunAction: "ASK" | "SUMMARIZE_CONTEXT" | "BREAK_DOWN_ASSIGNMENT" | "CHECK_SUBMISSION";
         /**
+         * AgentRunArtifactSchema
+         * @description Run 产出的业务结果（开发方案 7.2）。
+         */
+        AgentRunArtifactSchema: {
+            /** Kind */
+            kind: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Job Id */
+            job_id?: string | null;
+            /** Status */
+            status: string;
+            /** Href */
+            href: string;
+        };
+        /**
          * AgentRunSchema
          * @description Run 的响应（契约 6.4）。
          *
          *     ``status`` / ``progress`` / ``error`` 来自关联的 Job，而不是 ``agent_runs``。
+         *
+         *     ``steps`` 与 ``artifacts``（开发方案 7.2）是**带默认值的新字段**，因此旧前端
+         *     继续解析时不会因为缺少字段而报错；它们只暴露名称、状态与稳定错误码，
+         *     **不返回**工具原始参数、课件摘录、Skill 正文或内部错误详情。
          */
         AgentRunSchema: {
             /**
@@ -1156,6 +1199,10 @@ export interface components {
             finished_at: string | null;
             /** Sources */
             sources?: components["schemas"]["AgentRunSourceSchema"][];
+            /** Steps */
+            steps?: components["schemas"]["AgentRunStepSchema"][];
+            /** Artifacts */
+            artifacts?: components["schemas"]["AgentRunArtifactSchema"][];
         };
         /**
          * AgentRunSourceSchema
@@ -1181,6 +1228,25 @@ export interface components {
             location_end: number | null;
             /** Label */
             label: string;
+        };
+        /**
+         * AgentRunStepSchema
+         * @description 执行步骤的展示视图（开发方案 7.2）。
+         *
+         *     只暴露「第几步、哪一类、工具/Skill 名、是否成功、稳定错误码」，
+         *     不暴露参数与结果明细。
+         */
+        AgentRunStepSchema: {
+            /** Order */
+            order: number;
+            /** Kind */
+            kind: string;
+            /** Name */
+            name: string;
+            /** Status */
+            status: string;
+            /** Error Code */
+            error_code?: string | null;
         };
         /**
          * AssignmentAttachmentSchema
@@ -4508,6 +4574,64 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 未预期的服务端错误 */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_chat_session_api_v1_chat_sessions__session_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatSessionSchema"];
+                };
+            };
+            /** @description Access Token 缺失、无效或已过期（AUTH_TOKEN_EXPIRED） */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description 会话不存在，或当前用户不是会话所有者（RESOURCE_NOT_FOUND） */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
             /** @description 未预期的服务端错误 */

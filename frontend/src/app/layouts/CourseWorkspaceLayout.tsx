@@ -13,7 +13,7 @@ import { Button } from "@/components/Button/Button";
 import { ErrorState } from "@/components/ErrorState/ErrorState";
 import { BuddyFab } from "@/features/buddy/components/BuddyFab/BuddyFab";
 import { BuddyPanel } from "@/features/buddy/components/BuddyPanel/BuddyPanel";
-import { useBuddyPanelControls, useBuddyOpen } from "@/features/buddy/hooks/useBuddy";
+import { useBuddyPanelControls, useBuddyOpen, useSetBuddySurface } from "@/features/buddy/hooks/useBuddy";
 import { useBuddyStore } from "@/features/buddy/store/buddyStore";
 import { useCourse } from "@/features/courses/hooks/useCourses";
 import { toAppError } from "@/services/http";
@@ -58,6 +58,8 @@ export function CourseWorkspaceLayout() {
   const courseQuery = useCourse(courseId);
   const buddyOpen = useBuddyOpen();
   const { toggleBuddy } = useBuddyPanelControls();
+  // 课程工作区是 COURSE_PANEL：只有这里会因「进行中的 Run」自动打开停靠面板
+  useSetBuddySurface("COURSE_PANEL");
   const sidebarCollapsed = useBuddyStore((state) => state.courseSidebarCollapsed);
   const toggleCourseSidebar = useBuddyStore((state) => state.toggleCourseSidebar);
   // 用户拖过宽度就用那个值，否则用设计默认值（tokens 里的 --buddy-panel-width）
