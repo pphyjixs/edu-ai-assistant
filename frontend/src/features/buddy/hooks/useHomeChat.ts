@@ -55,7 +55,7 @@ export function useHomeChatSession(sessionId: string | undefined) {
 
 export type StartHomeChatResult = {
   /** 发送首页第一条消息；失败时抛出，调用方保留草稿 */
-  start: (prompt: string) => Promise<string | undefined>;
+  start: (prompt: string, selectedSkillId?: string) => Promise<string | undefined>;
   /** 最近一次发送失败的可读错误（展示在 Omnibox 下方） */
   error: AppError | null;
   clearError: () => void;
@@ -77,10 +77,10 @@ export function useStartHomeChat(): StartHomeChatResult {
   const [error, setError] = useState<AppError | null>(null);
 
   const start = useCallback(
-    async (prompt: string): Promise<string | undefined> => {
+    async (prompt: string, selectedSkillId?: string): Promise<string | undefined> => {
       setError(null);
       try {
-        const result = await send.mutateAsync({ input: prompt, action: "ASK" });
+        const result = await send.mutateAsync({ input: prompt, action: "ASK", selectedSkillId });
         // Run 创建成功后用户消息已落库，立刻带过去让中央会话显示
         void queryClient.invalidateQueries({
           queryKey: queryKeys.messages(result.sessionId),

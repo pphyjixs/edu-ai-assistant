@@ -20,6 +20,9 @@
 
 from __future__ import annotations
 
+import json
+import uuid
+
 from app.core.errors import (
     CourseArchivedError,
     CourseForbiddenError,
@@ -39,7 +42,9 @@ from app.modules.agent.tool_types import (
 )
 from app.modules.auth.models import User, UserRole
 from app.modules.practice import service as practice_service
+from app.modules.practice import repository as practice_repo
 from app.modules.practice.schemas import PracticeGenerateRequest
+from app.modules.jobs import service as jobs_service
 
 #: 写工具的可见角色：**两种角色都可见**。
 #:
@@ -54,6 +59,10 @@ async def _generate_practice(
     ctx: ToolContext, args: PracticeGenerateRequest
 ) -> ToolResult:
     """创建练习与生成任务，返回可点击的 artifact。"""
+    canonical = json.dumps(
+        args.model_dump(mode="json"), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    set_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{ctx.run_id}|generate_practice|{canonical}")
     async with ctx.session_factory() as session:
         user = await session.get(User, ctx.user_id)
         if user is None:  # pragma: no cover - 用户被删除后 Run 已不可达
@@ -63,9 +72,19 @@ async def _generate_practice(
             course = await practice_service.lock_teacher_course(
                 session, user=user, course_id=ctx.course_id
             )
-            practice_set, job = await practice_service.create_practice_set(
-                session, course=course, user=user, payload=args
-            )
+            practice_set = await practice_repo.get_set_by_id(session, set_id)
+            if practice_set is None:
+                practice_set, job = await practice_service.create_practice_set(
+                    session, course=course, user=user, payload=args, set_id=set_id
+                )
+            else:
+                if practice_set.course_id != ctx.course_id or practice_set.teacher_id != ctx.user_id:
+                    return ToolResult.failure(ToolErrorCode.FORBIDDEN, "练习记录不可用。")
+                job = await jobs_service.get_practice_generate_job(
+                    session, practice_set_id=set_id
+                )
+                if job is None:
+                    return ToolResult.failure(ToolErrorCode.INTERNAL, "练习生成任务不可用。")
         except (RoleForbiddenError, CourseForbiddenError):
             return ToolResult.failure(
                 ToolErrorCode.FORBIDDEN,

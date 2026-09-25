@@ -21,6 +21,25 @@ import { formatBytes } from "@/utils/format";
 
 import { assignmentsApi, type AssignmentAttachmentDto } from "../api";
 
+export async function suggestRubricFromFile(
+  courseId: string, file: File, description: string, totalScore: number,
+) {
+  const local = checkLocalFile(file);
+  if (local.kind !== "ok") throw new AttachmentUploadProblem(describeLocalProblem(local));
+  if (file.size > 1024 * 1024) {
+    throw new AttachmentUploadProblem("自动解析的作业文件不能超过 1 MB。");
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 8192) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 8192));
+  }
+  return assignmentsApi.suggestRubric(courseId, {
+    description, total_score: totalScore, filename: file.name.trim(),
+    content_type: local.contentType, content_base64: btoa(binary),
+  });
+}
+
 export type AttachmentVM = {
   id: string;
   filename: string;

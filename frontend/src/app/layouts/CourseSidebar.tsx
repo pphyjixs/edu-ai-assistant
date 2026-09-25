@@ -6,6 +6,7 @@
  * 真正的权限边界仍由后端校验。
  */
 
+import { useState } from "react";
 import { Link, NavLink } from "react-router-dom";
 
 import { Button } from "@/components/Button/Button";
@@ -13,6 +14,7 @@ import { Icon, type IconName } from "@/components/Icon/Icon";
 import { Skeleton } from "@/components/Skeleton/Skeleton";
 import { useLogout } from "@/features/auth/hooks/useAuthActions";
 import { useCurrentUser } from "@/features/auth/hooks/useCurrentUser";
+import { MySkillsDialog } from "@/features/buddy/components/MySkillsDialog/MySkillsDialog";
 import type { CourseVM } from "@/features/courses/model/types";
 
 import styles from "./CourseSidebar.module.css";
@@ -44,6 +46,8 @@ export type CourseSidebarProps = {
 };
 
 export function CourseSidebar({ courseId, course, isLoading }: CourseSidebarProps) {
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const userQuery = useCurrentUser();
   const logout = useLogout();
   const navItems = userQuery.data?.role === "teacher" ? TEACHER_NAV : STUDENT_NAV;
@@ -113,13 +117,16 @@ export function CourseSidebar({ courseId, course, isLoading }: CourseSidebarProp
       </section>
 
       <div className={styles.footer}>
-        <span className={styles.avatar} aria-hidden="true">
+        {userMenuOpen && <div className={styles.userMenu}>
+          <button type="button" onClick={() => { setSkillsOpen(true); setUserMenuOpen(false); }}>我的 Skill</button>
+        </div>}
+        <button type="button" className={styles.avatar} onClick={() => setUserMenuOpen(!userMenuOpen)} aria-label="用户菜单">
           {userQuery.data?.initial ?? "·"}
-        </span>
-        <div className={styles.userMeta}>
+        </button>
+        <button type="button" className={styles.userMeta} onClick={() => setUserMenuOpen(!userMenuOpen)}>
           <strong>{userQuery.data?.displayName ?? "加载中"}</strong>
           <span>{userQuery.data?.roleLabel ?? ""}</span>
-        </div>
+        </button>
         <Button
           variant="ghost"
           size="sm"
@@ -131,6 +138,7 @@ export function CourseSidebar({ courseId, course, isLoading }: CourseSidebarProp
           退出
         </Button>
       </div>
+      {skillsOpen && <MySkillsDialog onClose={() => setSkillsOpen(false)} />}
     </aside>
   );
 }

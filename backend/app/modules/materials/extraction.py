@@ -7,7 +7,7 @@
   扫描版（图片型）页面抽取不到文本——整份文件无文本时按解析失败处理，
   **不提供图片 OCR**（pypdf 不支持，契约明确排除）。
 - **PPTX**（``python-pptx``）：每张幻灯片一个文本单元，位置为幻灯片号。
-- **DOCX**（``python-docx``）：逐段落抽取文本，位置为段落序号（从 1 开始）。
+- **DOCX**（``python-docx``）：按文档顺序抽取段落与表格行，位置为文本单元序号（从 1 开始）。
 
 全文按来源顺序拼接后切分为**文本块**：每块不超过
 ``chunk_chars``（默认 8,000）字符，块内保留各来源位置区间；全文超过
@@ -124,8 +124,9 @@ def _extract_pptx(data: bytes) -> list[tuple[int, str]]:
 
 
 def _extract_docx(data: bytes) -> list[tuple[int, str]]:
-    """逐段落抽取文本，位置为段落序号（含空段落计数，保证定位稳定）。"""
+    """按文档顺序抽取段落与表格行；表格中的实验要求也能进入分析。"""
     import docx
+    from docx.table import Table
 
     try:
         document = docx.Document(io.BytesIO(data))
@@ -133,10 +134,19 @@ def _extract_docx(data: bytes) -> list[tuple[int, str]]:
         raise ExtractError("文档文件损坏，无法解析") from exc
 
     paragraphs: list[tuple[int, str]] = []
-    for index, paragraph in enumerate(document.paragraphs, start=1):
-        text = paragraph.text.strip()
-        if text:
-            paragraphs.append((index, text[:_UNIT_CHAR_LIMIT]))
+    index = 0
+    for block in document.iter_inner_content():
+        if isinstance(block, Table):
+            for row in block.rows:
+                index += 1
+                text = " | ".join(cell.text.strip() for cell in row.cells).strip(" |")
+                if text:
+                    paragraphs.append((index, text[:_UNIT_CHAR_LIMIT]))
+        else:
+            index += 1
+            text = block.text.strip()
+            if text:
+                paragraphs.append((index, text[:_UNIT_CHAR_LIMIT]))
 
     if not paragraphs:
         raise ExtractError("未能从文档中抽取到文本内容")

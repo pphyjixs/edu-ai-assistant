@@ -22,8 +22,26 @@ export type AssignmentUpdateRequestDto = Schemas["AssignmentUpdateRequest"];
 export type AssignmentAttachmentDto = Schemas["AssignmentAttachmentSchema"];
 export type AttachmentUploadInitRequestDto = Schemas["AttachmentUploadInitRequest"];
 export type AttachmentUploadInitResponseDto = Schemas["AttachmentUploadInitResponse"];
+export type RubricSuggestionDto = {
+  rubric_items: (Omit<RubricItemRequestDto, "max_score"> & { max_score: number | string })[];
+  source_filename: string;
+};
 
 export const assignmentsApi = {
+  suggestRubric(
+    courseId: string,
+    body: {
+      description: string;
+      total_score: number;
+      filename: string;
+      content_type: string;
+      content_base64: string;
+    },
+  ): Promise<RubricSuggestionDto> {
+    return http.post<RubricSuggestionDto>(
+      `/courses/${courseId}/assignments/rubric-suggestions`, body,
+    );
+  },
   /**
    * 契约 8.3：GET /courses/{course_id}/assignments
    * 教师看到全部状态；学生的草稿在 SQL 层就被排除。

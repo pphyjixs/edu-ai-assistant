@@ -2,7 +2,7 @@
  * 来源定位的格式化。
  *
  * 契约里位置有三种来源（``MaterialSectionSourceType``）：PDF 页码、
- * PPTX 幻灯片号、DOCX 段落序号，都从 1 开始。资料大纲（5.4）与
+ * PPTX 幻灯片号、DOCX 文档位置（段落或表格行），都从 1 开始。资料大纲（5.4）与
  * 问答引用（6.6）都要展示它，因此集中一处，避免两套写法。
  *
  * 页面与引用共用这个模块；没有可用定位时返回空字符串，由调用方决定不显示，
@@ -12,13 +12,13 @@
 const LOCATION_UNIT: Record<string, string> = {
   PDF_PAGE: "P",
   PPTX_SLIDE: "幻灯片",
-  DOCX_PARAGRAPH: "段落",
+  DOCX_PARAGRAPH: "文档位置",
 };
 
 export const SOURCE_TYPE_LABEL: Record<string, string> = {
   PDF_PAGE: "PDF 页码",
   PPTX_SLIDE: "幻灯片",
-  DOCX_PARAGRAPH: "段落",
+  DOCX_PARAGRAPH: "文档位置",
 };
 
 /**

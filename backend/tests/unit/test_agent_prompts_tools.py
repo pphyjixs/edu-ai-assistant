@@ -148,4 +148,4 @@ def test_user_prompt_marks_sources_as_data() -> None:
 def test_prompt_version_is_tool_aware() -> None:
     """提示词版本要随工具协议升级，便于回溯是哪个版本产生的回答。"""
     for action in AgentRunAction:
-        assert prompt_version_for(action).endswith("-v3")
+        assert prompt_version_for(action).endswith("-v4")

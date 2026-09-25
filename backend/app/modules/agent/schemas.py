@@ -55,13 +55,15 @@ class _StrictRequest(BaseModel):
 
 
 class AgentRunOptions(BaseModel):
-    """可选的调用选项。第一版只认 ``output_language``，其余字段一律拒绝。"""
+    """可选的调用选项，包括本次手动选择的个人 Skill。"""
 
     model_config = ConfigDict(extra="forbid")
 
     output_language: StrictStr | None = Field(
         default=None, max_length=OUTPUT_LANGUAGE_MAX_LENGTH
     )
+    selected_skill_ids: list[uuid.UUID] = Field(default_factory=list, max_length=3)
+    selected_skill_names: list[StrictStr] = Field(default_factory=list, max_length=3)
 
 
 class AgentRunRequestContext(BaseModel):
@@ -312,7 +314,7 @@ def request_fingerprint(request: AgentRunCreateRequest) -> str:
         "entity_id": str(context.entity_id) if context and context.entity_id else None,
         "section_id": str(context.section_id) if context and context.section_id else None,
         "selected_text": context.selected_text if context else None,
-        "options": request.options.model_dump(exclude_none=True) if request.options else {},
+        "options": request.options.model_dump(mode="json", exclude_none=True) if request.options else {},
     }
     payload = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()

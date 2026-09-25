@@ -97,6 +97,7 @@ const FAST_WINDOW_MS = 30_000;
 export type SendRunInput = {
   input: string;
   action: AgentRunActionDto;
+  selectedSkillId?: string;
 };
 
 export type SendRunResult = {
@@ -147,6 +148,7 @@ export function useSendBuddyRun() {
           input: payload.input,
           action: payload.action,
           selectedText: buddyContext.selectedText,
+          selectedSkillId: payload.selectedSkillId,
         }),
       );
       return { sessionId, runId: run.id };

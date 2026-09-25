@@ -44,6 +44,7 @@ export type RunInput = {
   action: AgentRunActionDto;
   /** 用户选中文本，最多 4000 字符；只是附加材料，不是系统指令 */
   selectedText?: string;
+  selectedSkillId?: string;
 };
 
 /** 生成幂等键：同一用户下唯一，网络重试会返回同一个 Run */
@@ -82,6 +83,14 @@ export function buildRunRequest(
     options: null,
     client_request_id: newClientRequestId(),
   };
+  if (runInput.selectedSkillId) {
+    const isSystem = runInput.selectedSkillId.startsWith("system:");
+    body.options = {
+      output_language: null,
+      selected_skill_ids: isSystem ? [] : [runInput.selectedSkillId.replace(/^user:/, "")],
+      selected_skill_names: isSystem ? [runInput.selectedSkillId.slice(7)] : [],
+    } as AgentRunCreateRequestDto["options"];
+  }
 
   // COURSE 与"没有上下文"等价：整门课程的 ASK，不需要显式传 COURSE
   if (entityType === "COURSE") return body;

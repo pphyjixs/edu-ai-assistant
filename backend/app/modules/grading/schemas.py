@@ -246,14 +246,13 @@ class GradeItemDetailSchema(BaseModel):
     #: AI 判断说明；学生已发布视角为 null
     ai_comment: str | None
     #: 证据定位：摘录 + 来源类型（PDF_PAGE / DOCX_PARAGRAPH）+ 位置区间（从 1 开始）。
-    #: 服务端已核对摘录确实出现在该区间内；教师视角始终返回，
-    #: 学生仅在成绩发布后可见。
-    evidence_quote: str
+    #: 服务端已核对非空摘录确实出现在该区间内；零分且完全缺失时可为空。
+    evidence_quote: str | None
     #: 证据来源类型：PDF 页码或 DOCX 段落（服务端校验时确定）
-    evidence_source_type: Literal["PDF_PAGE", "DOCX_PARAGRAPH"]
+    evidence_source_type: Literal["PDF_PAGE", "DOCX_PARAGRAPH"] | None
     #: 证据位置区间（从 1 开始；两个端点都是实际提取单元）
-    evidence_location_start: Annotated[int, Field(ge=1)]
-    evidence_location_end: Annotated[int, Field(ge=1)]
+    evidence_location_start: Annotated[int, Field(ge=1)] | None
+    evidence_location_end: Annotated[int, Field(ge=1)] | None
     error_type: str
     improvement_suggestion: str
     teacher_comment: str

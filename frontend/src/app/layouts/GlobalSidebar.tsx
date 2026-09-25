@@ -5,6 +5,7 @@
  * 「最近对话」只合并契约 6 已有的按课程会话列表，没有新增聚合接口。
  */
 
+import { useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/Button/Button";
@@ -14,18 +15,25 @@ import { useLogout } from "@/features/auth/hooks/useAuthActions";
 import { useCurrentUser } from "@/features/auth/hooks/useCurrentUser";
 import { useBuddyStore } from "@/features/buddy/store/buddyStore";
 import { useRecentChatSessions } from "@/features/buddy/hooks/useBuddyThread";
+import { MySkillsDialog } from "@/features/buddy/components/MySkillsDialog/MySkillsDialog";
 import { useCourses } from "@/features/courses/hooks/useCourses";
 
 import styles from "./GlobalSidebar.module.css";
 
+/**
+ * 主导航。只保留有真实页面的入口：
+ * 「学习空间」曾经是占位页，跨课程答题记录聚合接口不存在，已整体移除
+ * （不留点进去就白屏的死链）。
+ */
 const NAV_ITEMS: Array<{ to: string; label: string; icon: IconName; end?: boolean }> = [
   { to: "/", label: "首页", icon: "home", end: true },
   { to: "/courses", label: "我的课程", icon: "courses" },
   { to: "/tasks", label: "任务", icon: "tasks" },
-  { to: "/workspace", label: "学习空间", icon: "workspace" },
 ];
 
 export function GlobalSidebar() {
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [skillsOpen, setSkillsOpen] = useState(false);
   const navigate = useNavigate();
   const userQuery = useCurrentUser();
   const coursesQuery = useCourses();
@@ -145,13 +153,18 @@ export function GlobalSidebar() {
       </section>
 
       <div className={styles.footer}>
-        <span className={styles.avatar} aria-hidden="true">
+        {userMenuOpen && (
+          <div className={styles.userMenu}>
+            <button type="button" onClick={() => { setSkillsOpen(true); setUserMenuOpen(false); }}>我的 Skill</button>
+          </div>
+        )}
+        <button type="button" className={styles.avatar} onClick={() => setUserMenuOpen(!userMenuOpen)} aria-label="用户菜单">
           {userQuery.data?.initial ?? "·"}
-        </span>
-        <div className={styles.userMeta}>
+        </button>
+        <button type="button" className={styles.userMeta} onClick={() => setUserMenuOpen(!userMenuOpen)}>
           <strong>{userQuery.data?.displayName ?? "加载中"}</strong>
           <span>{userQuery.data?.roleLabel ?? ""}</span>
-        </div>
+        </button>
         <Button
           variant="ghost"
           size="sm"
@@ -163,6 +176,7 @@ export function GlobalSidebar() {
           {logout.isPending ? "退出中…" : "退出"}
         </Button>
       </div>
+      {skillsOpen && <MySkillsDialog onClose={() => setSkillsOpen(false)} />}
     </aside>
   );
 }

@@ -43,6 +43,24 @@ export function formatDeadline(iso: string | null | undefined): string {
   return `${read("month")} 月 ${read("day")} 日 ${read("hour")}:${read("minute")}`;
 }
 
+/**
+ * 「2026.10.09 23:59」，用于任务列表的「截止时间：」。
+ *
+ * 跨课程的待办列表里只有日期看不出是哪一年，因此这里带上年份；
+ * 秒以下是截断显示的（截止时间粒度本来就是分钟）。
+ */
+export function formatFullDateTime(iso: string | null | undefined): string {
+  const date = toDate(iso);
+  if (!date) return "未设置";
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    ...MONTH_DAY_TIME,
+  }).formatToParts(date);
+  const read = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value ?? "";
+  return `${read("year")}.${read("month")}.${read("day")} ${read("hour")}:${read("minute")}`;
+}
+
 export type Remaining = {
   text: string;
   /** 用于「临近截止」的橙色标签，不使用大面积红色告警 */

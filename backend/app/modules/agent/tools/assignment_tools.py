@@ -5,8 +5,9 @@
 - :func:`get_assignment` 复用 ``assignments/service.get_assignment_detail``
   的详情与评分标准读取逻辑。
 
-两者都**不复制 SQL**，也**不提前判权限**：越权与跨课程统一在 service 里变成
-``RESOURCE_NOT_FOUND``，工具再把它转成稳定错误码返回给模型。
+两者都**不复制 SQL**，也**不提前判权限**：service 校验用户对作业所属课程的
+访问权限，详情工具再核对作业是否属于本次对话的课程；失败统一返回
+``RESOURCE_NOT_FOUND``。
 """
 
 from __future__ import annotations
@@ -130,6 +131,11 @@ async def _get_assignment(ctx: ToolContext, args: GetAssignmentInput) -> ToolRes
             )
 
         assignment = detail.assignment
+        if assignment.course_id != ctx.course_id:
+            return ToolResult.failure(
+                ToolErrorCode.RESOURCE_NOT_FOUND,
+                "该作业不在本课程中或对当前用户不可见。",
+            )
         lines = [f"作业：{assignment.title}", f"状态：{assignment.status.value}"]
         if detail.total_score:
             lines.append(f"总分：{detail.total_score}")
