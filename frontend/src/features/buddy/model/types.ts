@@ -26,6 +26,16 @@ export type BuddyContext = {
 
 export const emptyBuddyContext: BuddyContext = { route: "/" };
 
+/**
+ * Buddy 的承载面。
+ *
+ * ``HOME``：首页与中央会话页（`/`、`/chats/:sessionId`）——消息显示在中央，
+ * 不弹出右侧抽屉；``COURSE_PANEL``：课程工作区的停靠面板。
+ *
+ * 「进行中的 Run 自动打开面板」只在 ``COURSE_PANEL`` 生效（开发方案 4.3）。
+ */
+export type BuddySurface = "HOME" | "COURSE_PANEL";
+
 /** 上下文里可以携带的数据是否足够发起一次有意义的提问 */
 export function hasUsableContext(context: BuddyContext): boolean {
   return Boolean(context.courseId || context.entityType || context.selectedText);

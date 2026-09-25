@@ -34,6 +34,8 @@ export const queryKeys = {
 
   /* ------------------------------ 会话 ------------------------------ */
   chatSessions: (courseId: string) => ["chat-sessions", courseId] as const,
+  /** 会话详情：中央会话页刷新时据此恢复所属课程，不信 URL / sessionStorage */
+  chatSession: (sessionId: string) => ["chat-session", sessionId] as const,
   messages: (sessionId: string) => ["messages", sessionId] as const,
 
   /* ------------------------------ 作业 ------------------------------ */

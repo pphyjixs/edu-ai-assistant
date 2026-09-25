@@ -2,7 +2,15 @@
  * Buddy 的读取与写上下文 Hook。
  *
  * 页面用 ``useSetBuddyContext`` 声明「当前对象是谁」，
- * 用 ``useAskBuddy`` 触发一次预设提问——两者都不涉及请求组装。
+ * 用 ``useAskBuddy`` / ``useSendBuddy`` 触发一次提问——两者都不涉及请求组装。
+ *
+ * **「发送」与「打开面板」是两件事**（开发方案 4.3）：
+ *
+ * - ``useAskBuddy``：发送 + 打开面板，保留给课程工作区的动作按钮；
+ * - ``useSendBuddy``：只发送，不触碰任何展示状态——首页中央会话、
+ *   中央会话页的快捷提示都走它，首页因此不会再弹出右侧抽屉。
+ *
+ * ``useBuddyAskAction`` 按当前承载面自动二选一，避免调用点各自判断。
  */
 
 import { useCallback, useEffect } from "react";
@@ -44,6 +52,19 @@ export function useSetBuddyContext(context: BuddyContext): void {
 }
 
 /**
+ * 声明当前承载面（首页 / 中央会话 vs 课程工作区）。
+ *
+ * 面板的「进行中 Run 自动打开」只在 ``COURSE_PANEL`` 生效，因此每个布局都要
+ * 显式声明一次，避免从课程页回到首页后残留上一个面。
+ */
+export function useSetBuddySurface(surface: "HOME" | "COURSE_PANEL"): void {
+  const setActiveSurface = useBuddyStore((state) => state.setActiveSurface);
+  useEffect(() => {
+    setActiveSurface(surface);
+  }, [setActiveSurface, surface]);
+}
+
+/**
  * AI Action 的统一入口：打开面板并创建一次 Agent Run。
  *
  * 顺序很重要——先写入上下文补丁，再发送，这样请求里带的是最新的上下文
@@ -70,4 +91,39 @@ export function useAskBuddy() {
     },
     [openBuddy, send],
   );
+}
+
+/**
+ * 只发送、不打开任何展示容器。
+ *
+ * 首页中央输入框、中央会话页、首页快捷提示都用它：消息应当出现在中央，
+ * 而不是再弹出一个右侧抽屉（开发方案 1 / 4.3）。
+ */
+export function useSendBuddy() {
+  const send = useSendBuddyRun();
+
+  return useCallback(
+    (
+      prompt: string,
+      contextPatch?: Partial<BuddyContext>,
+      action: AgentRunActionDto = "ASK",
+    ) => {
+      if (contextPatch) {
+        const current = useBuddyStore.getState().buddyContext;
+        useBuddyStore.getState().setBuddyContext({ ...current, ...contextPatch });
+      }
+      send.mutate({ input: prompt, action });
+    },
+    [send],
+  );
+}
+
+/**
+ * 按承载面选择「发送方式」：课程工作区打开停靠面板，首页/中央会话只发送。
+ */
+export function useBuddyAskAction() {
+  const activeSurface = useBuddyStore((state) => state.activeSurface);
+  const askBuddy = useAskBuddy();
+  const sendBuddy = useSendBuddy();
+  return activeSurface === "COURSE_PANEL" ? askBuddy : sendBuddy;
 }

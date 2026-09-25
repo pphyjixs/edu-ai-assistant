@@ -25,6 +25,7 @@ import { CourseManagePage } from "@/features/courses/pages/CourseManagePage";
 import { CourseOverviewPage } from "@/features/courses/pages/CourseOverviewPage";
 import { CoursesPage } from "@/features/courses/pages/CoursesPage";
 import { DashboardPage } from "@/features/dashboard/pages/DashboardPage";
+import { HomeChatPage } from "@/features/buddy/pages/HomeChatPage";
 import { GradesPage } from "@/features/grading/pages/GradesPage";
 import { GradingWorkbenchPage } from "@/features/grading/pages/GradingWorkbenchPage";
 import { SubmissionDetailPage } from "@/features/grading/pages/SubmissionDetailPage";
@@ -75,6 +76,8 @@ export function AppRoutes() {
         }
       >
         <Route path="/" element={<DashboardPage />} />
+        {/* 首页中央会话：消息在中央显示，不弹出右侧抽屉（开发方案 4.1） */}
+        <Route path="/chats/:sessionId" element={<HomeChatPage />} />
         <Route path="/courses" element={<CoursesPage />} />
         <Route
           path="/tasks"

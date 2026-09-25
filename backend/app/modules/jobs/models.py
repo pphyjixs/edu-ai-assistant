@@ -54,6 +54,10 @@ class JobFailureStage(str, enum.Enum):
     OUTLINE_GENERATION = "OUTLINE_GENERATION"
     #: 模型客户端构造或配置缺失
     MODEL_CALL = "MODEL_CALL"
+    #: 模型服务不支持工具协议（function calling）——配置问题，重试无用
+    MODEL_TOOL_CALL_UNSUPPORTED = "MODEL_TOOL_CALL_UNSUPPORTED"
+    #: 工具调用阶段失败（参数非法、超限、工具侧错误）
+    TOOL_CALL = "TOOL_CALL"
     #: 结果发布（写库）
     PUBLISH = "PUBLISH"
     #: 未归类

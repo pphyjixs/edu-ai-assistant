@@ -79,6 +79,16 @@ export const buddyApi = {
     return http.post<ChatSessionDto>(`/courses/${courseId}/chat-sessions`, {});
   },
 
+  /**
+   * 会话详情：``GET /chat-sessions/{session_id}``。
+   *
+   * 中央会话页刷新时只有 ``sessionId``，需要据此知道它属于哪门课程；
+   * 只读接口，权限与消息列表一致（仅所有者可读，否则 404）。
+   */
+  getSession(sessionId: string, signal?: AbortSignal): Promise<ChatSessionDto> {
+    return http.get<ChatSessionDto>(`/chat-sessions/${sessionId}`, { signal });
+  },
+
   /** 契约 6.3：GET /courses/{course_id}/chat-sessions —— 按 last_message_at 倒序 */
   listSessions(courseId: string, pageSize = 20): Promise<Page<ChatSessionDto>> {
     return http.get<Page<ChatSessionDto>>(

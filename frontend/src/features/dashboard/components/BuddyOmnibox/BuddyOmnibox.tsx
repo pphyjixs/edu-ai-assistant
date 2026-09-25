@@ -1,8 +1,12 @@
 /**
  * 首页的 Buddy 大输入框。
  *
- * 它本身就是一个完整的入口：选好课程 → 直接提问或点预设 Action，
- * 面板会自动打开并进入对应课程的会话（DEVELOPMENT_SPEC 第 2.2 节 A / 第 7.2 节）。
+ * 它本身就是完整的入口：选好课程 → 直接提问或点预设 Action。
+ *
+ * **发送后进入中央会话，不再弹出右侧面板**（开发方案 4.1 / 4.3）：
+ * ``onAsk`` 由 ``useStartHomeChat`` 提供，负责创建会话与 Run、导航到
+ * ``/chats/{sessionId}``。创建失败时这里**保留输入内容**并在下方显示错误，
+ * 用户改一下就能重发。
  *
  * 课程是必选的：契约 6 的会话按课程创建，没有课程就无法建立上下文。
  */
@@ -23,7 +27,10 @@ export type BuddyOmniboxProps = {
   isCoursesPending: boolean;
   selectedCourseId: string | undefined;
   onSelectCourse: (courseId: string) => void;
-  onAsk: (prompt: string) => void;
+  /** 发送首页第一条消息；失败时抛错，输入内容会被保留 */
+  onAsk: (prompt: string) => Promise<unknown>;
+  /** 发送失败的可读文案（显示在输入框下方） */
+  errorMessage?: string;
 };
 
 export function BuddyOmnibox({
@@ -32,15 +39,39 @@ export function BuddyOmnibox({
   selectedCourseId,
   onSelectCourse,
   onAsk,
+  errorMessage,
 }: BuddyOmniboxProps) {
   const [value, setValue] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const navigate = useNavigate();
 
-  function submit() {
+  const canSubmit = value.trim().length > 0 && !isSubmitting;
+
+  /**
+   * 统一的发送入口。
+   *
+   * 返回是否发送成功：调用方据此决定要不要清空草稿——**失败时保留输入内容**，
+   * 用户在输入框里打的字不会因为一次失败就凭空消失（开发方案 4.1）。
+   */
+  async function runAsk(text: string): Promise<boolean> {
+    if (isSubmitting) return false;
+    setIsSubmitting(true);
+    try {
+      await onAsk(text);
+      return true;
+    } catch {
+      // 错误经由页面的 errorMessage 展示，这里只报告失败
+      return false;
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function submitDraft(): Promise<void> {
     const text = value.trim();
     if (!text) return;
-    onAsk(text);
-    setValue("");
+    const sent = await runAsk(text);
+    if (sent) setValue("");
   }
 
   return (
@@ -57,15 +88,22 @@ export function BuddyOmnibox({
           className={styles.input}
           placeholder="问问 Buddy，比如：帮我拆解实验二的任务"
           value={value}
+          disabled={isSubmitting}
           onChange={(event) => setValue(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               event.preventDefault();
-              submit();
+              void submitDraft();
             }
           }}
         />
       </div>
+
+      {errorMessage ? (
+        <p className={styles.error} role="alert">
+          {errorMessage}
+        </p>
+      ) : null}
 
       <div className={styles.bottom}>
         <div className={styles.chips}>
@@ -84,7 +122,7 @@ export function BuddyOmnibox({
                     if (target) navigate(target);
                     return;
                   }
-                  if (action.prompt) onAsk(action.prompt);
+                  if (action.prompt) void runAsk(action.prompt);
                 }}
               >
                 {action.label}
@@ -117,8 +155,8 @@ export function BuddyOmnibox({
             variant="primary"
             size="sm"
             iconLeft="send"
-            onClick={submit}
-            disabled={value.trim().length === 0}
+            onClick={() => void submitDraft()}
+            disabled={!canSubmit}
             aria-label="发送"
           />
         </div>

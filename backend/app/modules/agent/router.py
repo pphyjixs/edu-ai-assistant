@@ -41,12 +41,14 @@ from app.modules.agent.deps import (
     ReadSessionScopeDep,
     RunScopeDep,
 )
-from app.modules.agent.models import AgentRun
+from app.modules.agent.models import AgentRun, AgentRunStep
 from app.modules.agent.schemas import (
     AgentActiveRunSchema,
+    AgentRunArtifactSchema,
     AgentRunCreateRequest,
     AgentRunSchema,
     AgentRunSourceSchema,
+    AgentRunStepSchema,
 )
 from app.modules.auth.permissions import CurrentUserDep
 from app.modules.jobs.models import Job
@@ -107,10 +109,39 @@ _AGENT_ERRORS: dict[int | str, dict] = {
 }
 
 
+def _artifacts_of(steps: list[AgentRunStep]) -> list[AgentRunArtifactSchema]:
+    """从步骤的 ``response_json`` 里聚合本次 Run 产出的业务结果。
+
+    artifact 与"是哪一次工具调用产生的"绑定在一起，因此不需要单独建表；
+    按 ``(kind, id)`` 去重，重试重放时不会重复出现同一张卡片。
+    """
+    seen: set[tuple[str, str]] = set()
+    artifacts: list[AgentRunArtifactSchema] = []
+    for step in steps:
+        payload = step.response_json or {}
+        for item in payload.get("artifacts") or []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                artifact = AgentRunArtifactSchema.model_validate(item)
+            except Exception:  # noqa: BLE001 - 老数据或裁剪过的条目直接跳过
+                continue
+            key = (artifact.kind, str(artifact.id))
+            if key in seen:
+                continue
+            seen.add(key)
+            artifacts.append(artifact)
+    return artifacts
+
+
 def _run_schema(
-    run: AgentRun, job: Job, sources: list | None = None
+    run: AgentRun,
+    job: Job,
+    sources: list | None = None,
+    steps: list[AgentRunStep] | None = None,
 ) -> AgentRunSchema:
-    """把「Run 行 + 任务行」组装成响应；状态与进度来自任务行。"""
+    """把「Run 行 + 任务行 + 步骤」组装成响应；状态与进度来自任务行。"""
+    step_rows = steps or []
     return AgentRunSchema(
         id=run.id,
         session_id=run.session_id,
@@ -140,6 +171,17 @@ def _run_schema(
             )
             for source in (sources or [])
         ],
+        steps=[
+            AgentRunStepSchema(
+                order=step.step_order,
+                kind=step.kind,
+                name=step.name,
+                status=step.status,
+                error_code=step.error_code,
+            )
+            for step in step_rows
+        ],
+        artifacts=_artifacts_of(step_rows),
     )
 
 
@@ -209,8 +251,14 @@ async def list_agent_runs(
     items, total = await service.list_runs(
         session, user=user, session_id=scope.session_id, limit=limit
     )
+    grouped = await repo.list_steps_for_runs(
+        session, run_ids=[run.id for run, _job in items]
+    )
     return Page[AgentRunSchema](
-        items=[_run_schema(run, job) for run, job in items],
+        items=[
+            _run_schema(run, job, steps=grouped.get(run.id, []))
+            for run, job in items
+        ],
         page=1,
         page_size=limit,
         total=total,
@@ -244,7 +292,8 @@ async def get_active_agent_run(
         return AgentActiveRunSchema(run=None)
     run, job = pair
     sources = await repo.list_sources(session, run.id)
-    return AgentActiveRunSchema(run=_run_schema(run, job, sources))
+    steps = await repo.list_steps(session, run.id)
+    return AgentActiveRunSchema(run=_run_schema(run, job, sources, steps))
 
 
 @agent_router.get(
@@ -269,7 +318,8 @@ async def get_agent_run(
 ) -> AgentRunSchema:
     run, job = await service.get_run(session, user=user, run_id=run_id)
     sources = await repo.list_sources(session, run_id)
-    return _run_schema(run, job, sources)
+    steps = await repo.list_steps(session, run_id)
+    return _run_schema(run, job, sources, steps)
 
 
 @agent_router.post(
@@ -311,7 +361,8 @@ async def cancel_agent_run(
         session, user=user, run_id=cancellable_id
     )
     sources = await repo.list_sources(session, run_id)
-    return _run_schema(run, job, sources)
+    steps = await repo.list_steps(session, run_id)
+    return _run_schema(run, job, sources, steps)
 
 
 __all__ = [

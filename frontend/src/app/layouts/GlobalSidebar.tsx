@@ -33,7 +33,6 @@ export function GlobalSidebar() {
   const courses = coursesQuery.data ?? [];
   const recentCourses = courses.slice(0, 3);
 
-  const openBuddy = useBuddyStore((state) => state.openBuddy);
   const clearChatSession = useBuddyStore((state) => state.clearChatSession);
   const openChatSession = useBuddyStore((state) => state.openChatSession);
   const logout = useLogout();
@@ -44,9 +43,15 @@ export function GlobalSidebar() {
     3,
   );
 
+  /**
+   * 新建对话：回到首页空态。
+   *
+   * 只清掉当前会话 id，**保留**最近选择的课程（``activeChatCourseId``），
+   * 因此首页会继续预选那门课。刻意不打开右侧面板——首页的对话在中央
+   * （开发方案 4.5）。
+   */
   function startNewConversation() {
     clearChatSession();
-    openBuddy();
     navigate("/");
   }
 
@@ -126,9 +131,9 @@ export function GlobalSidebar() {
               className={styles.courseLink}
               title={`对话 · ${session.activityLabel}`}
               onClick={() => {
+                // 进入首页中央会话页：消息在中央显示，不打开右侧抽屉
                 openChatSession(session.id, session.courseId);
-                openBuddy();
-                navigate(`/courses/${session.courseId}`);
+                navigate(`/chats/${session.id}`);
               }}
             >
               <Icon name="spark" size={12} />

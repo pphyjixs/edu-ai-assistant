@@ -49,6 +49,16 @@
   margin-top: var(--space-3);
 }
 
+/* 发送失败时的可读提示：输入内容保留，用户改一下就能重发 */
+.error {
+  margin-top: var(--space-2);
+  padding: 6px 10px;
+  border-radius: var(--radius-xs);
+  background: var(--color-danger-soft);
+  color: var(--color-danger-ink);
+  font-size: var(--text-caption);
+}
+
 .chips {
   display: flex;
   flex-wrap: wrap;

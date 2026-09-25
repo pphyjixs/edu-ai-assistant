@@ -6,6 +6,11 @@
   background: var(--color-surface);
 }
 
+/* 中央形态：与消息列表、建议提问共用同一对左右边缘 */
+.composerCenter {
+  margin: 0;
+}
+
 .error {
   margin-bottom: var(--space-2);
   padding: 6px 8px;

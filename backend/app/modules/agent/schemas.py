@@ -113,6 +113,10 @@ class AgentRunSchema(BaseModel):
     """Run 的响应（契约 6.4）。
 
     ``status`` / ``progress`` / ``error`` 来自关联的 Job，而不是 ``agent_runs``。
+
+    ``steps`` 与 ``artifacts``（开发方案 7.2）是**带默认值的新字段**，因此旧前端
+    继续解析时不会因为缺少字段而报错；它们只暴露名称、状态与稳定错误码，
+    **不返回**工具原始参数、课件摘录、Skill 正文或内部错误详情。
     """
 
     id: uuid.UUID
@@ -123,7 +127,7 @@ class AgentRunSchema(BaseModel):
     input_message_id: uuid.UUID
     output_message_id: uuid.UUID | None
     error: str | None
-    #: 失败阶段码（``DOWNLOAD`` / ``OUTLINE_GENERATION`` / …）；成功时为 null
+    #: 失败阶段码（``DOWNLOAD`` / ``OUTLINE_GENERATION`` / ``TOOL_CALL`` …）；成功时为 null
     failure_stage: str | None = None
     #: 本次回答的依据充分度：FULL（完整）/ PARTIAL（只有部分依据）/ NONE（无依据）
     evidence_level: str | None = None
@@ -132,6 +136,10 @@ class AgentRunSchema(BaseModel):
     finished_at: UtcTimestamp | None
     #: 本次实际注入的来源（不含原文快照），便于前端展示与排错
     sources: list[AgentRunSourceSchema] = Field(default_factory=list)
+    #: 本次执行的步骤：工具调用与 Skill 加载，前端据此显示"正在检索课程资料"等状态
+    steps: list[AgentRunStepSchema] = Field(default_factory=list)
+    #: 本次 Run 产出的业务结果（例如创建好的练习），前端渲染成可点击卡片
+    artifacts: list[AgentRunArtifactSchema] = Field(default_factory=list)
 
 
 class AgentActiveRunSchema(BaseModel):
@@ -156,6 +164,30 @@ class AgentRunSourceSchema(BaseModel):
     location_start: int | None
     location_end: int | None
     label: str
+
+
+class AgentRunStepSchema(BaseModel):
+    """执行步骤的展示视图（开发方案 7.2）。
+
+    只暴露「第几步、哪一类、工具/Skill 名、是否成功、稳定错误码」，
+    不暴露参数与结果明细。
+    """
+
+    order: int
+    kind: str
+    name: str
+    status: str
+    error_code: str | None = None
+
+
+class AgentRunArtifactSchema(BaseModel):
+    """Run 产出的业务结果（开发方案 7.2）。"""
+
+    kind: str
+    id: uuid.UUID
+    job_id: uuid.UUID | None = None
+    status: str
+    href: str
 
 
 # ---------------------------- 模型输出校验 ---------------------------- #

@@ -1,0 +1,48 @@
+/* 面板形态：填满 BuddyPanel 的剩余高度（标题栏下方） */
+.panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/*
+ * 中央形态：整个聊天列最大 920px 居中。
+ * 使用 flex + min-height:0，让消息列表自己滚动、输入框固定在底部。
+ *
+ * 水平内边距只在这里定义一次：上下文条、消息列表、建议提问与输入框
+ * 都不再自带水平 padding，因此四段的左右边缘完全对齐。
+ */
+.center {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  width: 100%;
+  max-width: 920px;
+  margin: 0 auto;
+  padding: var(--space-2) var(--space-5) 0;
+}
+
+.context {
+  flex: none;
+}
+
+/*
+ * 输入框：``position: sticky; bottom: 0``（开发方案 4.2）。
+ * 窄屏下外层容器会滚动，粘底保证 composer 不会盖住最后一条消息、
+ * 也不会在滚动到底部时被挤走。
+ */
+.composerWrap {
+  flex: none;
+  position: sticky;
+  bottom: 0;
+  padding: var(--space-2) 0 var(--space-3);
+  background: var(--color-bg);
+}
+
+@media (max-width: 720px) {
+  .center {
+    padding: var(--space-2) var(--space-3) 0;
+  }
+}

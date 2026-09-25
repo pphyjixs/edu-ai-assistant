@@ -54,6 +54,7 @@ EXPECTED_TABLES = {
     "assignment_rubric_items",
     "agent_runs",
     "agent_run_sources",
+    "agent_run_steps",
     "submissions",
     "submission_upload_sessions",
     "grade_reviews",
@@ -108,7 +109,7 @@ EXPECTED_ENUMS: dict[str, list[str]] = {
 COMPARE_OPTIONS = {"compare_type": True, "compare_server_default": True}
 
 #: head 对应的最新迁移
-REVISION = "0015_dashboard_indexes"
+REVISION = "0016_agent_tool_steps"
 
 #: jobs 的两条契约约束（库侧实际名字带双重前缀，见命名约定）
 JOBS_PROGRESS_CONSTRAINT = "ck_jobs_ck_jobs_progress_range"
@@ -648,6 +649,58 @@ def test_dashboard_indexes_round_trip(
         assert "ix_materials_course_status_updated_id" in {
             index["name"] for index in inspect(engine).get_indexes("materials")
         }
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one() == REVISION
+    finally:
+        engine.dispose()
+
+
+def test_agent_tool_steps_round_trip(
+    alembic_config: Config, migration_database_url: str
+) -> None:
+    """``0015 → 0016 → 0015 → 0016`` 往返：只增删审计表与编排器版本列。
+
+    0016（开发方案 7.1）为工具循环新增 ``agent_run_steps`` 与
+    ``agent_runs.orchestrator_version``，不修改任何既有行的语义，
+    因此降级后必须回到与 0015 完全一致的结构。
+    """
+    engine = create_engine(pg_support.to_sync(migration_database_url))
+    try:
+        with pg_support.alembic_database_url(migration_database_url):
+            command.downgrade(alembic_config, "0015_dashboard_indexes")
+
+            assert "agent_run_steps" not in inspect(engine).get_table_names()
+            assert "orchestrator_version" not in {
+                column["name"] for column in inspect(engine).get_columns("agent_runs")
+            }
+
+            command.upgrade(alembic_config, "head")
+
+        inspector = inspect(engine)
+        assert "agent_run_steps" in inspector.get_table_names()
+        assert "orchestrator_version" in {
+            column["name"] for column in inspector.get_columns("agent_runs")
+        }
+
+        # 两条唯一约束各司其职：步骤序号连续、call_id 幂等
+        constraints = {
+            constraint["name"] for constraint in inspector.get_unique_constraints("agent_run_steps")
+        }
+        assert "uq_agent_run_steps_run_order" in constraints
+        assert "uq_agent_run_steps_run_call" in constraints
+        assert "ix_agent_run_steps_run_order" in {
+            index["name"] for index in inspector.get_indexes("agent_run_steps")
+        }
+        check_names = {
+            constraint["name"]
+            for constraint in inspector.get_check_constraints("agent_run_steps")
+        }
+        # 命名约定会给 CHECK 再加一次 ck_<table>_ 前缀（与 jobs 的两条约束同理），
+        # 因此库侧实际名字是双前缀；ORM 里声明的是短名。
+        assert "ck_agent_run_steps_ck_agent_run_steps_request_object" in check_names
+
         with engine.connect() as connection:
             assert connection.execute(
                 text("SELECT version_num FROM alembic_version")

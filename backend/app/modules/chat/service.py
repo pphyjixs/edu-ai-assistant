@@ -129,6 +129,19 @@ async def _require_owned_session(
     return chat_session
 
 
+async def get_session(
+    session: AsyncSession, *, user: User, session_id: uuid.UUID
+) -> ChatSession:
+    """会话详情（首页中央会话刷新恢复用）。
+
+    中央会话页刷新时只有 ``sessionId``，需要据此知道它属于哪门课程——前端不能
+    相信 URL 或 sessionStorage 里的课程 ID。权限规则与消息列表完全一致：
+    仅会话所有者可读；不存在、非本人一律 ``404 RESOURCE_NOT_FOUND``，
+    避免用这个接口探测别人的会话 ID。
+    """
+    return await _require_owned_session(session, user=user, session_id=session_id)
+
+
 async def list_messages(
     session: AsyncSession,
     *,
@@ -474,6 +487,7 @@ async def send_question(
 
 __all__ = [
     "create_session",
+    "get_session",
     "list_messages",
     "list_sessions",
     "send_question",
