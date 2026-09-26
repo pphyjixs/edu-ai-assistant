@@ -408,7 +408,7 @@ Access Token 缺少、格式错误、签名不符或已过期时返回 `401` 与
 - `filename` 必须以上表扩展名之一结尾；扩展名比较不区分大小写。
 - `content_type` 必须**精确等于**该扩展名对应的规范 MIME。不接受 `application/octet-stream`、近似类型或带参数的形式（例如 `application/pdf; charset=utf-8`）。
 - 扩展名与 MIME 不匹配时以 `UPLOAD_INVALID` 拒绝，服务端不做猜测、纠正或规范化。
-- `size` 为对象字节数，取值 1 – 上限。上限默认 **50 MiB（52 428 800 字节）**，由部署配置 `MATERIAL_MAX_UPLOAD_BYTES` 决定；服务端按启动时生效值校验，并在超限错误的 `details.max_size_bytes` 中回显当前上限。
+- `size` 为对象字节数，取值 1 – 上限。上限默认 **5 MiB（5 242 880 字节）**，由部署配置 `MATERIAL_MAX_UPLOAD_BYTES` 决定；服务端按启动时生效值校验，并在超限错误的 `details.max_size_bytes` 中回显当前上限。
 - `sha256` 为 64 位十六进制字符串（`^[0-9a-fA-F]{64}$`），大小写均可接受，服务端统一按小写持久化。服务端**不在应用侧**重新读取文件做比对，而是把该摘要以 Base64 形式放进初始化响应的 `x-amz-checksum-sha256` 头并参与签名，由对象存储校验内容，不符时直接拒绝直传。
 - 同一课程、同一文件的重复初始化不做去重，每次调用都创建新的 `upload_id`。
 
@@ -425,7 +425,7 @@ Authorization: Bearer <access_token>
 | --- | --- | --- | --- |
 | `filename` | string | 是 | 4.2 的文件名与扩展名规则 |
 | `content_type` | string | 是 | 4.2 表中的规范 MIME，且必须与扩展名匹配 |
-| `size` | integer | 是 | 1 – `MATERIAL_MAX_UPLOAD_BYTES`（默认 52 428 800） |
+| `size` | integer | 是 | 1 – `MATERIAL_MAX_UPLOAD_BYTES`（默认 5 242 880） |
 | `sha256` | string | 是 | 64 位十六进制字符串 |
 
 请求体拒绝未声明字段和显式 `null`，否则返回 `422 VALIDATION_ERROR`。
@@ -646,7 +646,7 @@ Authorization: Bearer <access_token>
     "details": {
       "reason": "SIZE_OUT_OF_RANGE",
       "field": "size",
-      "max_size_bytes": 52428800
+      "max_size_bytes": 5242880
     },
     "request_id": "uuid"
   }
@@ -1790,7 +1790,7 @@ Authorization: Bearer <access_token>
 | --- | --- | --- |
 | `filename` | string（**严格**） | 必填，去除首尾空白后 1–255 字符，不含路径分隔符 |
 | `content_type` | string（**严格**） | 必填，必须与扩展名对应的规范 MIME 一致 |
-| `size` | integer（**严格**） | 必填，1 字节到 `SUBMISSION_MAX_UPLOAD_BYTES`（默认 50 MiB） |
+| `size` | integer（**严格**） | 必填，1 字节到 `SUBMISSION_MAX_UPLOAD_BYTES`（默认 5 MiB） |
 | `sha256` | string（**严格**） | 必填，64 位十六进制（大小写不敏感，落库转小写） |
 
 - 仅 `.pdf`（`application/pdf`）与 `.docx`（`application/vnd.openxmlformats-officedocument.wordprocessingml.document`）；`.doc`、`.pptx` 及其他类型返回 `422 UPLOAD_INVALID`（`details.reason = FILE_TYPE_NOT_ALLOWED`）。

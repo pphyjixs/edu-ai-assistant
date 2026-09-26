@@ -66,7 +66,7 @@ JOB_CALLBACK_SECRET
 
 `APP_SECRET_KEY` 是访问令牌的签名密钥，开发环境也必填；长度为 32 字符以上的随机值，三个环境各用一份。`LOGIN_RATE_LIMIT_*` 有默认值（900 秒 / 5 次），不配置时按默认执行。
 
-对象存储：`STORAGE_*` 全部有安全默认值，未配置时上传接口返回 `503 SERVICE_UNAVAILABLE`（`details.component = storage`），不会启动失败。`STORAGE_PATH_STYLE` 默认 `true`（MinIO 与多数自建服务需要），云端 S3 可设为 `false` 使用 virtual-host 寻址；`STORAGE_CONNECT_TIMEOUT_SECONDS` / `STORAGE_READ_TIMEOUT_SECONDS` 默认 3 / 10 秒。`STORAGE_UPLOAD_URL_TTL_SECONDS`（默认 600）与 `MATERIAL_MAX_UPLOAD_BYTES`（默认 52428800）、`MATERIAL_UPLOAD_CONFIRM_TTL_SECONDS`（默认 86400）分别对应契约 4.2 / 4.6 中"可配置"的三项。
+对象存储：`STORAGE_*` 全部有安全默认值，未配置时上传接口返回 `503 SERVICE_UNAVAILABLE`（`details.component = storage`），不会启动失败。`STORAGE_PATH_STYLE` 默认 `true`（MinIO 与多数自建服务需要），云端 S3 可设为 `false` 使用 virtual-host 寻址；`STORAGE_CONNECT_TIMEOUT_SECONDS` / `STORAGE_READ_TIMEOUT_SECONDS` 默认 3 / 10 秒。`STORAGE_UPLOAD_URL_TTL_SECONDS`（默认 600）与 `MATERIAL_MAX_UPLOAD_BYTES`（默认 5242880，即 5 MiB）、`MATERIAL_UPLOAD_CONFIRM_TTL_SECONDS`（默认 86400）分别对应契约 4.2 / 4.6 中"可配置"的三项。
 
 SigV4 预签名与 HeadObject 请求都在应用侧完成（`app/storage/s3.py`），不依赖 S3 SDK；桶需预先存在（应用不会在启动期建桶）。本地验收可用 `scripts/verify_storage.py` 一键对 MinIO 运行存储侧用例。
 
@@ -167,7 +167,7 @@ python scripts/grading_worker.py
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `SUBMISSION_MAX_UPLOAD_BYTES` | `52428800` | 实验报告单文件大小上限（50 MiB） |
+| `SUBMISSION_MAX_UPLOAD_BYTES` | `5242880` | 实验报告单文件大小上限（5 MiB） |
 | `SUBMISSION_UPLOAD_CONFIRM_TTL_SECONDS` | `86400` | 报告上传的完成确认窗口（24 小时） |
 | `SUBMISSION_UPLOAD_DELETE_BUFFER_SECONDS` | `3600` | 报告上传对象清理缓冲（秒）：预签名 PUT 到期后再等该时长才删除孤立对象，覆盖晚到 PUT 的重建窗口 |
 

@@ -130,8 +130,9 @@ class Settings(BaseSettings):
     storage_upload_url_ttl_seconds: int = 10 * 60
 
     # ------------------------ 课件上传（Materials）-------------------
-    #: 单文件大小上限（字节），契约 4.2 默认 50 MiB
-    material_max_upload_bytes: int = 50 * 1024 * 1024
+    #: 单文件大小上限（字节）：课件上传、作业附件与实验报告统一 5 MiB，
+    #: 须与前端 ``DEFAULT_MAX_UPLOAD_BYTES``、nginx ``client_max_body_size`` 对齐
+    material_max_upload_bytes: int = 5 * 1024 * 1024
     #: 上传确认窗口（秒），契约 4.6 固定 24 小时
     material_upload_confirm_ttl_seconds: int = 24 * 3600
     #: Worker 租约时长（秒）：RUNNING 超过租约视为执行者失联，
@@ -176,8 +177,8 @@ class Settings(BaseSettings):
     agent_course_summary_max_materials: int = 12
 
     # ------------------- 提交与批改（Grading）-------------------
-    #: 实验报告单文件大小上限（字节），契约 9.2 默认 50 MiB
-    submission_max_upload_bytes: int = 50 * 1024 * 1024
+    #: 实验报告单文件大小上限（字节）：统一 5 MiB（见 material_max_upload_bytes）
+    submission_max_upload_bytes: int = 5 * 1024 * 1024
     #: 报告上传的完成确认窗口（秒），契约 9.2/9.3 默认 24 小时
     submission_upload_confirm_ttl_seconds: int = 24 * 3600
     #: 报告上传对象清理缓冲（秒）：预签名 PUT 到期后再等该时长才真正删除孤立对象，
@@ -189,8 +190,8 @@ class Settings(BaseSettings):
     submission_grade_max_chars: int = 120_000
 
     # ------------------- 作业附件（Assignments）-------------------
-    #: 附件单文件大小上限（字节），与课件上传一致：默认 50 MiB
-    assignment_attachment_max_upload_bytes: int = 50 * 1024 * 1024
+    #: 附件单文件大小上限（字节），与课件上传一致：统一 5 MiB
+    assignment_attachment_max_upload_bytes: int = 5 * 1024 * 1024
     #: 附件上传的完成确认窗口（秒），默认 24 小时（与课件、报告一致）
     assignment_attachment_confirm_ttl_seconds: int = 24 * 3600
 

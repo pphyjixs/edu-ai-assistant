@@ -44,7 +44,7 @@ SIZE = len(BODY)
 PDF_MIME = "application/pdf"
 
 #: 默认上限（Settings.material_max_upload_bytes）
-DEFAULT_MAX_BYTES = 50 * 1024 * 1024
+DEFAULT_MAX_BYTES = 5 * 1024 * 1024
 
 
 # --------------------------------------------------------------------------- #

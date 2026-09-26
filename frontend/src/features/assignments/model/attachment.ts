@@ -7,9 +7,15 @@
  * 允许的类型也与课件一致（PDF / PPTX / DOCX）；差异在权限与状态：
  * 附件只有课程创建教师能写，且**草稿、进行中、已关闭**的任务都能改
  * （附件是教师自己的参考资料，与学生能否提交无关）。
+ *
+ * 文件里还有一个不走直传的例外：创建任务时的「自动解析评分项」
+ * （`suggestRubricFromFile`）把文件 base64 后塞进普通 JSON 请求体，因此有自己的
+ * 大小上限与提示文案（见 `services/upload` 的 `RUBRIC_SUGGEST_MAX_*`）。
  */
 
 import {
+  RUBRIC_SUGGEST_MAX_BYTES,
+  RUBRIC_SUGGEST_MAX_MB,
   checkLocalFile,
   describeLocalProblem,
   putFileToStorage,
@@ -24,11 +30,14 @@ import { assignmentsApi, type AssignmentAttachmentDto } from "../api";
 export async function suggestRubricFromFile(
   courseId: string, file: File, description: string, totalScore: number,
 ) {
-  const local = checkLocalFile(file);
-  if (local.kind !== "ok") throw new AttachmentUploadProblem(describeLocalProblem(local));
-  if (file.size > 1024 * 1024) {
-    throw new AttachmentUploadProblem("自动解析的作业文件不能超过 1 MB。");
+  // 走按参数给的上限：这条路径的请求体是 base64 后的 JSON，与直传不是同一个约束
+  const local = checkLocalFile(file, RUBRIC_SUGGEST_MAX_BYTES);
+  if (local.kind === "too-large") {
+    throw new AttachmentUploadProblem(
+      `自动解析的作业文件不能超过 ${RUBRIC_SUGGEST_MAX_MB} MB。`,
+    );
   }
+  if (local.kind !== "ok") throw new AttachmentUploadProblem(describeLocalProblem(local));
   const bytes = new Uint8Array(await file.arrayBuffer());
   let binary = "";
   for (let index = 0; index < bytes.length; index += 8192) {
