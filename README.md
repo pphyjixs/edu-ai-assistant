@@ -168,7 +168,7 @@ docker compose up -d
 - PostgreSQL 数据保存在 `postgres_data` 持久卷。
 - 课件、作业附件和学生报告保存在 `uploads_data` 持久卷。
 - 重启或重建容器不会删除上述数据。
-- 默认单文件上限为 5 MiB（课件、作业附件与学生报告一致），前端和后端都会进行校验。
+- 默认单文件上限为 1 MiB，前端和后端都会进行校验。
 - 教师删除课件或作业附件时，对应实体文件与元数据会一并清理。
 
 不要在日常停止项目时执行：
@@ -201,6 +201,17 @@ http://localhost/health/ready
 ```
 
 `live` 表示后端进程正在运行，`ready` 会同时检查必要配置和数据库连接。
+
+
+
+## TIPS
+
+```
+测试账号： teacher-test1@example.com    admin123
+          student-test1@example.com    admin123
+          student-test2@example.com    admin123
+如果发生会话加载失败，可能是标签页缓存了会话信息，新建标签页访问即可
+```
 
 ## 更多文档
 
