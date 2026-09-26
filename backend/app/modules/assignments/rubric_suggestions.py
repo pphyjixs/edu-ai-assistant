@@ -18,7 +18,13 @@ from app.modules.materials import extraction
 from app.modules.materials.schemas import MaterialUploadInitRequest
 from app.modules.materials.service import validate_upload_request
 
-MAX_SUGGESTION_FILE_BYTES = 1024 * 1024
+#: 自动解析评分项的单文件上限。与课件/附件上传上限同值（5 MiB），但**语义不同**：
+#: 这里文件会被 base64 编码后放进 JSON 请求体，体积膨胀约 4/3，因此反向代理
+#: （frontend/docker/nginx.conf 的 client_max_body_size）必须按膨胀后的体积留余量。
+MAX_SUGGESTION_FILE_BYTES = 5 * 1024 * 1024
+#: 提示文案里的 MB 数由上限推导，避免改了上限忘了改文案
+_SUGGESTION_MAX_MB = MAX_SUGGESTION_FILE_BYTES // (1024 * 1024)
+_TOO_LARGE_MESSAGE = f"自动解析的作业文件不能超过 {_SUGGESTION_MAX_MB} MB"
 MAX_SUGGESTION_TEXT_CHARS = 24_000
 
 
@@ -39,13 +45,13 @@ class RubricSuggestionResponse(BaseModel):
 
 def extract_source(payload: RubricSuggestionRequest, settings: Settings) -> str:
     if len(payload.content_base64) > MAX_SUGGESTION_FILE_BYTES * 4 // 3 + 8:
-        raise UploadInvalidError("自动解析的作业文件不能超过 1 MB")
+        raise UploadInvalidError(_TOO_LARGE_MESSAGE)
     try:
         data = base64.b64decode(payload.content_base64, validate=True)
     except (ValueError, binascii.Error) as exc:
         raise UploadInvalidError("作业文件编码无效") from exc
     if not data or len(data) > min(settings.assignment_attachment_max_upload_bytes, MAX_SUGGESTION_FILE_BYTES):
-        raise UploadInvalidError("自动解析的作业文件不能超过 1 MB，且不能为空")
+        raise UploadInvalidError(f"{_TOO_LARGE_MESSAGE}，且不能为空")
     validate_upload_request(
         MaterialUploadInitRequest(
             filename=payload.filename,

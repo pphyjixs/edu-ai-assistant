@@ -20,8 +20,27 @@ export const CANONICAL_MIME_BY_EXTENSION: Record<string, string> = {
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 };
 
-/** Docker 单机部署统一限制为 1 MiB；后端仍会独立校验 */
-export const DEFAULT_MAX_UPLOAD_BYTES = 1_048_576;
+/**
+ * 单文件上限：课件上传、作业附件、实验报告统一为 5 MiB。
+ *
+ * 与后端 `MATERIAL_MAX_UPLOAD_BYTES` / `ASSIGNMENT_ATTACHMENT_MAX_UPLOAD_BYTES` /
+ * `SUBMISSION_MAX_UPLOAD_BYTES` 以及 nginx 的 `client_max_body_size` 保持一致；
+ * 后端仍会独立校验，这里只是提前拦住明显超限的文件。
+ */
+export const DEFAULT_MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+
+/**
+ * 「自动解析评分项」的文件上限。
+ *
+ * 与单文件上传上限同值，但**语义不同**：这条路径不做对象存储直传，而是把文件
+ * base64 编码后放进 JSON 请求体（体积膨胀约 4/3），因此 nginx 的
+ * `client_max_body_size` 必须按膨胀后的体积留余量。二者取值当前一致，
+ * 复用同一个常量以免改动时只改了一边。
+ */
+export const RUBRIC_SUGGEST_MAX_BYTES = DEFAULT_MAX_UPLOAD_BYTES;
+
+/** 上限对应的 MB 数，用于提示文案（上限取值都是整 MB，直接整除即可）。 */
+export const RUBRIC_SUGGEST_MAX_MB = RUBRIC_SUGGEST_MAX_BYTES / 1024 / 1024;
 
 export const ACCEPTED_EXTENSIONS = Object.keys(CANONICAL_MIME_BY_EXTENSION);
 
@@ -108,7 +127,7 @@ export async function sha256Hex(file: File): Promise<string> {
 
   // Web Crypto 只在 HTTPS、localhost 等安全上下文中可用。Docker 单机版在
   // 备案和证书配置完成前可能通过公网 HTTP IP 访问，因此需要同步实现兜底。
-  // 文件上限为 1 MiB，兜底计算不会造成明显的主线程停顿。
+  // 只在拿不到 Web Crypto 时才会走纯 JS 实现；文件上限 5 MiB，可接受。
   let digest: Uint8Array;
   const subtle = globalThis.crypto?.subtle;
   if (subtle) {

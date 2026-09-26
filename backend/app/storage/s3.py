@@ -107,7 +107,8 @@ class S3StorageConfig:
     local_root: str = "/data/uploads"
     public_base_url: str = ""
     local_signing_secret: str = ""
-    local_max_upload_bytes: int = 50 * 1024 * 1024
+    #: 本地存储后端的单对象上限兜底值；实际值由三个上传配置的最大值派生
+    local_max_upload_bytes: int = 5 * 1024 * 1024
 
     @classmethod
     def from_settings(cls, settings: Settings) -> S3StorageConfig:

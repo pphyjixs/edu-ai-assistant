@@ -22,7 +22,7 @@ cp .env.docker.example .env
 
 编辑 `.env`：填写强随机 `POSTGRES_PASSWORD` 和 `APP_SECRET_KEY`、正式域名 `FRONTEND_ORIGINS`。建议使用只含十六进制字符的数据库密码，避免连接串中的特殊字符需要 URL 编码。`APP_SECRET_KEY` 至少 32 字符，同时用于签发本地文件的短期上传/下载地址。不要把 `.env` 提交到 Git。
 
-Docker 部署默认将课件、作业附件和学生报告的单文件上限统一设为 1 MiB（1048576 字节）。前端会在上传前提示并拦截，后端会再次校验；可通过 `MATERIAL_MAX_UPLOAD_BYTES`、`ASSIGNMENT_ATTACHMENT_MAX_UPLOAD_BYTES` 和 `SUBMISSION_MAX_UPLOAD_BYTES` 调整后端限制。
+Docker 部署默认将课件、作业附件和学生报告的单文件上限统一设为 5 MiB（5242880 字节）。前端会在上传前提示并拦截，后端会再次校验；可通过 `MATERIAL_MAX_UPLOAD_BYTES`、`ASSIGNMENT_ATTACHMENT_MAX_UPLOAD_BYTES` 和 `SUBMISSION_MAX_UPLOAD_BYTES` 调整后端限制。前端 nginx 的 `client_max_body_size`（`frontend/docker/nginx.conf`）必须不低于该上限，否则直传 PUT 会先被 nginx 以 413 拦掉。
 
 默认 `STORAGE_BACKEND=local`，浏览器通过同源 `/api/v1/storage/` 上传与下载，无需另外安装 MinIO、S3 或配置 CORS。文件保存到 `uploads_data` 持久卷，重建容器不会丢失。AI 配置可选；未配置时 AI 队列任务无法成功处理。
 

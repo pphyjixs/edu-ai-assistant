@@ -24,6 +24,7 @@ import type {
   AssignmentUpdateRequestDto,
 } from "@/features/assignments/api";
 import { toAppError } from "@/services/http";
+import { RUBRIC_SUGGEST_MAX_MB } from "@/services/upload";
 
 import styles from "./AssignmentForm.module.css";
 
@@ -252,7 +253,9 @@ export function AssignmentForm({
               setAttachmentFile(event.target.files?.[0] ?? null);
               setRubricReady(false);
             }} />
-          <p className={styles.hint}>创建时上传为作业附件；自动解析评分项需要文件不超过 1 MB。</p>
+          <p className={styles.hint}>
+            创建时上传为作业附件；自动解析评分项需要文件不超过 {RUBRIC_SUGGEST_MAX_MB} MB。
+          </p>
           {attachmentFile ? <p className={styles.hint}>已选择：{attachmentFile.name}</p> : null}
         </div>
       ) : null}
