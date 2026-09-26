@@ -207,6 +207,7 @@ http://localhost/health/ready
 ## TIPS
 
 ```
+在线体验链接：http://47.101.214.130
 测试账号： teacher-test1@example.com    admin123
           student-test1@example.com    admin123
           student-test2@example.com    admin123
